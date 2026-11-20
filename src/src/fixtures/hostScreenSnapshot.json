@@ -1,0 +1,107 @@
+{
+ "cols": 47,
+ "content": "\u001b[38;2;102;102;102mModel scope: gpt-6.2-astra, gpt-6.1-terra, gpt-6.2-sol\u001b[38;2;128;128;128m (Ctrl+P to cycle)\u001b[1B\u001b[25D\u001b[0m\u001b[?1049h\u001b[H\u001b[38;2;128;128;128mbevFusion\u001b[0m                             \u001b[38;2;181;189;104m\u2591\u2591\u2591\u2591\u2591\u2591\u001b[0m \u001b[38;2;128;128;128m8%\r\n\u001b[0m \u8fd9\u5957\u8def\u5f84\u548c\u6784\u5efa\u65b9\u5f0f\u53ef\u4f5c\u4e3a\u540e\u7eed\u540c\u6b3e\u57df\u63a7\u8f66\u8f86\u73af\u5883  \r\n \u7684\u90e8\u7f72\u524d\u590d\u73b0\u57fa\u7840\uff0c\u4f46\u6682\u4e0d\u4ee3\u8868\u8f66\u8f86\u90e8\u7f72\u6216\u751f\u4ea7\u542f  \r\n \u7528\u3002                                          \r\n\r\n \u8fd9\u4e24\u4e2a\u540e\u53f0\u641c\u7d22\u4efb\u52a1\u5df2\u505c\u6b62\uff0c\u672a\u5f71\u54cd\u5df2\u5b8c\u6210\u7684\u8fdc\u7aef  \r\n \u8d44\u6e90\u6821\u9a8c\u3001\u6784\u5efa\u548c\u542f\u52a8\u63a2\u9488\u7ed3\u679c\u3002                \r\n\r\n\u001b[48;2;45;40;56m                                               \u001b[0m\r\n\u001b[48;2;45;40;56m \u001b[38;2;149;117;205;1m[compaction]\u001b[39;22m                                  \u001b[0m\r\n\u001b[48;2;45;40;56m                                               \u001b[0m\r\n\u001b[48;2;45;40;56m \u001b[38;2;212;212;212mCompacted from 611,162 to 21,103 tokens\u001b[39m       \u001b[0m\r\n\u001b[48;2;45;40;56m                                               \u001b[0m\r\n\r\n\u001b[38;2;255;255;0m\u2699 8\u001b[38;2;128;128;128m \u00b7 scp -q -o BatchMode=yes -o ConnectTimeout\r\n\u001b[38;2;138;190;183;3m\u2726 **Confirming stopped task IDs**\r\n\u001b[38;2;181;189;104;23m\u25c6 \u001b[38;2;212;212;212;1mbash\u001b[38;2;128;128;128;22m  python3 /home/w/.epi/agent/skills/ \u00b7 59\r\n\r\n\u001b[0m \u001b[38;2;128;128;128;3mworked 36m 49s\r\n\r\n\r\n\u001b[38;2;185;154;232;23m\u256d\u2500 \u276f 10:54 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\r\n\u2502\u001b[0m \u001b[38;2;138;190;183m1. \u001b[38;2;185;154;232;1m\u5408\u6cd5\u516d\u8def FHD RGB/GPU fixture\uff1b\u001b[0m           \u001b[38;2;185;154;232m\u2502\r\n\u2502\u001b[0m \u001b[38;2;138;190;183m2. \u001b[38;2;185;154;232;1mcurrent + 9 history\uff1b\u001b[0m                    \u001b[38;2;185;154;232m\u2502\r\n\u2502\u001b[0m \u001b[38;2;138;190;183m3. \u001b[38;2;185;154;232;1m\u5df2\u5b58\u5728\u7684 session/READY/lease \u8bc1\u636e\uff1b\u001b[0m      \u001b[38;2;185;154;232m\u2502\r\n\u2502\u001b[0m \u001b[38;2;138;190;183m4. \u001b[38;2;185;154;232;1m\u7cbe\u786e 16-stage ledger producer\u3002\u89e3\u91ca\u8fd94\u4e2a \u2502\r\n\u001b[22m\u2502\u001b[0m    \u001b[38;2;185;154;232;1m\u5206\u522b\u662f\u4ec0\u4e48\u001b[0m                               \u001b[38;2;185;154;232m\u2502\r\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\r\n\r\n\r\n\u001b[0m \u8fd9\u56db\u9879\u4e0d\u662f\u666e\u901a\u6587\u4ef6\uff0c\u800c\u662f B0 \u56de\u653e\u7684\u56db\u7c7b\u001b[1m\u8f93\u5165\u4e0e  \r\n\u001b[0m \u001b[1m\u5ba1\u8ba1\u95e8\u69db\u001b[0m\u3002                                    \r\n\r\n\r\n                     \u001b[38;2;138;190;183m \u2b07\ufe0f \r\n\u001b[38;2;209;131;232m\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\r\n\u2502\u001b[38;2;138;190;183m\u276f \u001b[39;7m \u001b[0m                                          \u001b[38;2;209;131;232m\u2502\r\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u001b[0m \u001b[38;2;138;190;183mgpt-6.2-sol\u001b[38;2;128;128;128m \u2022 \u001b[38;2;209;131;232mxhigh\u001b[38;2;128;128;128m \u2022 fast\u001b[0m \u001b[38;2;209;131;232m\u2500\u256f\r\n\u001b[38;2;102;102;102m\u2191\u001b[38;2;212;212;212m77M\u001b[38;2;102;102;102m \u2193\u001b[38;2;212;212;212m13M\u001b[38;2;102;102;102m R\u001b[38;2;212;212;212m4833M\u001b[38;2;102;102;102m CR\u001b[38;2;212;212;212m96.2%\u001b[38;2;102;102;102m $\u001b[38;2;212;212;212m6045.785\r\n\u001b[38;2;128;128;128mCodex: casy\u001b[3A\u001b[8D\u001b[0m\u001b[?2004h\u001b[?1004h\u001b[?7l\u001b[?1003h",
+ "pending": [],
+ "rows": 40,
+ "state": {
+  "alt": {
+   "base": 0,
+   "savedCurAttrData": {
+    "bg": 0,
+    "extended": {
+     "_ext": 0,
+     "_urlId": 0
+    },
+    "fg": 0
+   },
+   "savedX": 0,
+   "savedY": 0,
+   "scrollBottom": 39,
+   "scrollTop": 0,
+   "tabs": {
+    "0": true,
+    "104": true,
+    "112": true,
+    "120": true,
+    "128": true,
+    "16": true,
+    "24": true,
+    "32": true,
+    "40": true,
+    "48": true,
+    "56": true,
+    "64": true,
+    "72": true,
+    "8": true,
+    "80": true,
+    "88": true,
+    "96": true
+   },
+   "x": 3,
+   "y": 36
+  },
+  "charset": {
+   "_charsets": [],
+   "glevel": 0
+  },
+  "current": {
+   "bg": 0,
+   "extended": {
+    "_ext": 0,
+    "_urlId": 0
+   },
+   "fg": 0
+  },
+  "dec": {
+   "applicationCursorKeys": false,
+   "applicationKeypad": false,
+   "bracketedPasteMode": true,
+   "origin": false,
+   "reverseWraparound": false,
+   "sendFocus": true,
+   "wraparound": false
+  },
+  "modes": {
+   "insertMode": false
+  },
+  "mouseEncoding": "SGR",
+  "mouseProtocol": "ANY",
+  "normal": {
+   "base": 0,
+   "savedCurAttrData": {
+    "bg": 0,
+    "extended": {
+     "_ext": 0,
+     "_urlId": 0
+    },
+    "fg": 0
+   },
+   "savedX": 0,
+   "savedY": 2,
+   "scrollBottom": 39,
+   "scrollTop": 0,
+   "tabs": {
+    "0": true,
+    "104": true,
+    "112": true,
+    "120": true,
+    "128": true,
+    "16": true,
+    "24": true,
+    "32": true,
+    "40": true,
+    "48": true,
+    "56": true,
+    "64": true,
+    "72": true,
+    "8": true,
+    "80": true,
+    "88": true,
+    "96": true
+   },
+   "x": 0,
+   "y": 2
+  },
+  "version": 1
+ }
+}
