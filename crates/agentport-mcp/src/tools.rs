@@ -71,7 +71,8 @@ pub const TOOLS: &[ToolDef] = &[
         name: "wait_for_task",
         description: "Wait for the Session's current turn to settle. Returns idle | needs_input | \
                       exited | timeout together with the source, confidence and evidence used, so \
-                      an uncertain verdict is never reported as success.",
+                      an uncertain verdict is never reported as success. Keep timeoutMs under your \
+                      own request timeout (default 45s); call again to keep waiting.",
         schema: wait_for_task_schema,
     },
     ToolDef {
@@ -650,14 +651,22 @@ impl Toolbox {
                 // Baseline before the prompt so `wait_for_task` can require a
                 // *newer* status transition.
                 let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
-                match self.ops.send_bytes(&session_id, &prompt_payload(&prompt)) {
-                    Ok(bytes) => {
+                match self.ops.deliver_prompt(&session_id, &prompt) {
+                    Ok(delivery) => {
                         if let Some(baseline) = baseline {
                             self.baselines.insert(session_id.clone(), baseline);
                         }
                         self.settled.remove(&session_id);
-                        result["promptSent"] = json!(true);
-                        result["promptBytes"] = json!(bytes);
+                        result["promptSent"] = json!(delivery.submitted);
+                        result["promptBytes"] = json!(delivery.bytes);
+                        result["promptSubmitted"] = json!(delivery.submitted);
+                        result["enterRetries"] = json!(delivery.enter_retries);
+                        if !delivery.submitted {
+                            result["hint"] = json!(
+                                "the text was typed but the CLI never redrew, so the turn may \
+                                 not have started; check outputTail before waiting"
+                            );
+                        }
                     }
                     Err(failure) => {
                         result["promptSent"] = json!(false);
@@ -699,16 +708,25 @@ impl Toolbox {
             ));
         }
         let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
-        let bytes = self.ops.send_bytes(&session_id, &prompt_payload(&prompt))?;
-        if let Some(baseline) = baseline {
-            self.baselines.insert(session_id.clone(), baseline);
+        let delivery = self.ops.deliver_prompt(&session_id, &prompt)?;
+        if delivery.submitted {
+            if let Some(baseline) = baseline {
+                self.baselines.insert(session_id.clone(), baseline);
+            }
+            self.settled.remove(&session_id);
         }
-        self.settled.remove(&session_id);
         Ok(json!({
             "sessionId": session_id,
-            "sent": true,
-            "bytes": bytes,
+            "sent": delivery.submitted,
+            "submitted": delivery.submitted,
+            "bytes": delivery.bytes,
+            "enterRetries": delivery.enter_retries,
             "statusSequence": baseline.map(|mark| mark.sequence),
+            "hint": if delivery.submitted {
+                Value::Null
+            } else {
+                json!("the text is typed but the CLI never redrew; the turn may not have started")
+            },
         }))
     }
 
@@ -739,8 +757,10 @@ impl Toolbox {
             }
         }
         let outcome = self.ops.wait_for_task(&session_id, timeout, since)?;
-        if outcome.state != "timeout" {
-            // The turn is over; a second wait answers from this record.
+        // Only a real turn boundary clears the baseline and is remembered. A
+        // quiet-window verdict is a guess: caching it would turn silence into
+        // a confident "finished" on the next call.
+        if outcome.state != "timeout" && outcome.source != "quiet_window" {
             self.baselines.remove(&session_id);
             self.settled.insert(
                 session_id.clone(),
@@ -860,13 +880,6 @@ impl Toolbox {
             })
             .count())
     }
-}
-
-fn prompt_payload(prompt: &str) -> Vec<u8> {
-    let mut bytes = prompt.as_bytes().to_vec();
-    // A TUI submit is Enter (CR), not LF: several CLIs insert a newline instead.
-    bytes.push(b'\r');
-    bytes
 }
 
 fn remote_agent(agent: AgentType) -> RemoteAgentType {
@@ -1042,11 +1055,6 @@ mod tests {
             assert!(schema["properties"].is_object(), "{}", tool.name);
             assert!(schema["required"].is_array(), "{}", tool.name);
         }
-    }
-
-    #[test]
-    fn prompt_payload_submits_with_carriage_return() {
-        assert_eq!(prompt_payload("hi there"), b"hi there\r".to_vec());
     }
 
     #[test]

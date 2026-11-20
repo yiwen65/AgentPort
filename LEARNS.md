@@ -1062,3 +1062,21 @@
 - Correct approach: 完成判定以 service 的 `SessionSummary.latest_status`（自带活体握手缓存）为准，只承认**比调用方 prompt 基线更新**的状态迁移，并要求 `needs_input` 一等返回；PTY 静默只在"从未见过 working"时兜底且标 `confidence: low`；EOF 只当作"重连"信号，`detach` 后继续。界面侧由 App 内观察者用 `PRAGMA data_version`（另一连接提交即变化，无锁）触发一次 `projects-changed` 并先 `ensure_live_session_monitors` 再广播。
 - Prevention: 读文本不要用 `replay_tail_bytes` 落在 1..=65536 —— service 会判定为 "small seed" 并改走 4 MiB + 屏幕模拟的渲染器引导路径；非渲染读取用 >64 KiB 的普通重放再自行裁剪。多进程共享的归属/状态文件必须"加锁 + 读-改-写合并"，否则第二个 MCP 进程会把第一个的条目整文件覆盖；判 `exited` 之前永远先看生命周期与 `hostAlive`。
 - Verified by: 独立评审复现了三条缺陷（EOF 误报 exited、0.96 s 误判 idle、重复 wait 必超时）；修复后 `scripts/test-agentport-mcp.py` 端到端断言"sleep 4 的命令不会在 3.5 s 前被判定完成且输出里有 END 标记"、重复 wait 0.0 s 返回、terminate 后报 `exited`/`ended`；真实调试 App 中由 MCP 创建的会话自动出现在侧栏并自动打开窗格，随后清理干净。
+
+## `TUI prompt delivery` — 一次写入"文本 + 回车"会被当成粘贴，回车被吞掉
+
+- Wrong approach: 把 prompt 文本和 `\r` 拼成一个字节串一次性写进 PTY，并假设"发出后看到输出变化"就等于提交成功。
+- Why it failed: Ink 类 TUI 按一次 read 处理输入，一个 read 里只要多于一个字符就按粘贴路径插入，行进了输入框但不会提交；PTY 是否把两次写合并成一次 read 取决于时序，所以短英文 prompt 常常侥幸通过，长中文 prompt 稳定失败（Claude Code v2.1.329 实测：同一脚本短 prompt PASS，长 prompt 2/2 FAIL，屏幕上是 `❯ <整段文本>` 且没有 spinner）。
+- Recognition signal: 文本停留在输入框、没有 `esc to interrupt`/spinner，`session read` 里能看到 `❯` 行但没有后续回复；`promptSubmitted: false`（修复后自带该字段）。
+- Correct approach: 文本与 `\r` 分两次写、中间留 ~150ms；发 Enter 前后各 drain 一次，避免把"自己文本的回显"当成提交证据；Enter 后 900ms 内没有新输出/状态帧就重发 Enter（最多 2 次，空输入框上重发无害），并把 `submitted` 如实返回给调用方。
+- Prevention: 任何"替用户往 TUI 打字"的通道都要按"键"发送而不是拼字符串；提交证据必须来自 Enter 之后的新事件；出现"文本已上屏但任务没开始"优先怀疑键盘语义而不是 Agent 卡死。
+- Verified by: 长中文 prompt 2/2 PASS（工作区二进制与打包 sidecar 各两次），`promptSubmitted: true`、`enterRetries: 0`；修复前同一脚本 2/2 FAIL。
+
+## `wait_for_task` 判定 — PTY 静默 3 秒的 idle 不是回合结束
+
+- Wrong approach: 把 `state=idle`（Host 的 PTY 启发式，输出静默 3 s 就置 idle）当成"这一轮做完了"，也把"本次调用里没见过输出"当成"会话安静"。
+- Why it failed: 模型思考时本来就没有输出，Claude 连续生成诗的那 20 s 里 Host 会先报 `idle/pty`，父 Agent 于是以为任务完成并去 `read_output` 拿空结果；反过来，prompt 回显和快速回答可能全部发生在 attach 之前，`last_output_at` 永远是 None，静默兜底因此永不触发。
+- Recognition signal: `wait_for_task` 返回 `idle/pty` 但屏幕里还有 `esc to interrupt`；或返回 `timeout/watchdog` 而同屏一切早已静止。
+- Correct approach: 只用"回合边界"结算 prompted turn —— `latest_attention_kind == turn_completed`，或状态来源是 `hook`/`adapter` 的 idle；PTY idle 只当暂停。静默兜底仅用于**从未报告过回合边界**的 Agent，基线取"任何活动的最后时刻"（输出或状态帧，缺省用开始观察的时刻），并要求 4 s 且当前不是 `working`；兜底结论一律 `confidence: low`，且不得被缓存成"已完成"。
+- Prevention: 完成判定要区分"状态为 idle"和"回合已结束"；任何兜底信号都要有可验证的基线（不能依赖"我看到的最后一条输出"），并且低置信结论不得写进"已结算"缓存。
+- Verified by: 端到端脚本的新增断言（`sleep 4` 的命令不会在 3.5 s 前被判完成、重复 wait 仍为 `quiet_window/low` 且 4.2 s 内返回）；Claude 长 prompt 两次均 `idle/hook` 且 `outputTail` 里带回诗文（2.4 KB）；shell 会话两次分别 7.4 s/4.3 s 诚实返回 `quiet_window/low`。

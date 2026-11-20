@@ -233,17 +233,20 @@ def main() -> int:
             "output tail proves the command actually completed",
         )
 
-        print("already-finished turns settle instead of timing out")
+        print("a repeated wait never reports a false turn boundary")
         begun = time.monotonic()
         repeat, is_error = client.call(
-            "wait_for_task", {"sessionId": session_id, "timeoutMs": 5000}
+            "wait_for_task", {"sessionId": session_id, "timeoutMs": 20000}
         )
         repeat_elapsed = time.monotonic() - begun
         check(not is_error and repeat["state"] == "idle", "repeat wait settles as idle")
+        # Shell reports no turn boundary, so the honest answer keeps the
+        # low-confidence label instead of being cached as a completion.
         check(
-            repeat_elapsed < 4.0,
-            f"repeat wait returned immediately ({repeat_elapsed:.1f}s)",
+            repeat["confidence"] == "low" and repeat["source"] == "quiet_window",
+            "repeat verdict stays low confidence for an Agent without turn signals",
         )
+        check(repeat_elapsed < 15.0, f"repeat wait stayed bounded ({repeat_elapsed:.1f}s)")
 
         print("terminate_session")
         stopped, is_error = client.call(

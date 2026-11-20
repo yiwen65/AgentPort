@@ -29,11 +29,19 @@ pub const ATTACH_REPLAY_BYTES: u64 = 65_537;
 const MAX_ATTACHMENTS: usize = 8;
 /// Upper bound for one tool call's completion wait.
 pub const MAX_WAIT_MS: u64 = 600_000;
-pub const DEFAULT_WAIT_MS: u64 = 120_000;
+/// Default stays below a typical MCP client request timeout (60 s). The server
+/// handles one request at a time, so a wait that outlives the client's timeout
+/// reports "unknown outcome" and blocks every later call behind it.
+pub const DEFAULT_WAIT_MS: u64 = 45_000;
+/// Gap between the prompt text and its Enter keypress. See `deliver_prompt`.
+const ENTER_GAP: Duration = Duration::from_millis(150);
+/// How long to watch for the redraw that proves the prompt was submitted.
+const SUBMIT_EVIDENCE: Duration = Duration::from_millis(900);
+const MAX_ENTER_RETRIES: u32 = 2;
 /// Quiet window for the fallback used when the service reports no status at
 /// all. It must exceed the Host's own PTY-silence threshold (3 s), or the MCP
 /// would declare a turn finished while the Agent is merely thinking.
-const QUIET_TURN: Duration = Duration::from_millis(3_500);
+const QUIET_TURN: Duration = Duration::from_millis(4_000);
 /// Quiet window used to decide a freshly launched TUI finished painting.
 const QUIET_READY: Duration = Duration::from_millis(500);
 pub const DEFAULT_READY_MS: u64 = 25_000;
@@ -54,6 +62,12 @@ impl ToolFailure {
 }
 
 pub type TResult<T> = Result<T, ToolFailure>;
+
+/// `AGENTPORT_MCP_WAIT_TRACE=1` explains why a wait has not settled yet.
+fn wait_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| cfg!(debug_assertions) && std::env::var_os("AGENTPORT_MCP_WAIT_TRACE").is_some())
+}
 
 impl From<ServiceError> for ToolFailure {
     fn from(error: ServiceError) -> Self {
@@ -238,6 +252,18 @@ impl StreamState {
         }
     }
 
+    /// Newest moment the Session showed any sign of life. Used as the quiet
+    /// baseline: output may have happened before this process attached, so a
+    /// missing `last_output_at` must not disable the silence fallback.
+    pub fn last_activity_at(&self) -> Option<Instant> {
+        match (self.last_output_at, self.latest_state.as_ref().and_then(|state| state.observed_at)) {
+            (Some(output), Some(state)) => Some(output.max(state)),
+            (Some(output), None) => Some(output),
+            (None, Some(state)) => Some(state),
+            (None, None) => None,
+        }
+    }
+
     pub fn tail_text(&self) -> String {
         let (tail, _) = text::tail(&self.tail, text::WAIT_TAIL_BYTES);
         tail
@@ -376,6 +402,81 @@ impl SessionOps {
                     .map_err(ToolFailure::from)
             }
             Err(error) => Err(ToolFailure::from(error)),
+        }
+    }
+
+    /// Type a prompt and submit it.
+    ///
+    /// The text and the Enter keypress are written separately on purpose. A
+    /// full-screen TUI receives one read per write, and Ink-based CLIs treat a
+    /// multi-character read as a paste: when the trailing CR rides along with
+    /// the text, the line is inserted and *never submitted* (observed with
+    /// Claude Code). Writing them apart, then retrying Enter while no redraw
+    /// appears, makes submission robust instead of a race against PTY packet
+    /// boundaries.
+    pub fn deliver_prompt(&mut self, session_id: &str, text: &str) -> TResult<PromptDelivery> {
+        // Flush the startup paint first so the echo of our own text cannot be
+        // mistaken for the redraw that proves submission.
+        let _ = self.drain(session_id);
+        let mut bytes = self.send_bytes(session_id, text.as_bytes())?;
+        std::thread::sleep(ENTER_GAP);
+        let _ = self.drain(session_id);
+        let mut retries = 0;
+        loop {
+            bytes += self.send_bytes(session_id, b"\r")?;
+            if self.await_submit(session_id)? {
+                return Ok(PromptDelivery {
+                    bytes,
+                    submitted: true,
+                    enter_retries: retries,
+                });
+            }
+            if retries >= MAX_ENTER_RETRIES {
+                return Ok(PromptDelivery {
+                    bytes,
+                    submitted: false,
+                    enter_retries: retries,
+                });
+            }
+            retries += 1;
+            std::thread::sleep(ENTER_GAP);
+        }
+    }
+
+    /// Drain anything already buffered without waiting.
+    fn drain(&mut self, session_id: &str) -> TResult<usize> {
+        let mut seen = 0;
+        for _ in 0..3 {
+            let poll = self.poll(session_id, 256, 0)?;
+            let count = poll.events.len();
+            seen += count;
+            if count == 0 || poll.closed {
+                break;
+            }
+        }
+        Ok(seen)
+    }
+
+    /// True when the Session produced anything after the Enter keypress: a TUI
+    /// that accepted the prompt clears its input box or starts a spinner.
+    fn await_submit(&mut self, session_id: &str) -> TResult<bool> {
+        let deadline = Instant::now() + SUBMIT_EVIDENCE;
+        loop {
+            let poll = self.poll(session_id, 256, 100)?;
+            if !poll.events.is_empty() {
+                let mut stream = StreamState::default();
+                stream.absorb(&poll.events);
+                if stream.wrote_output || stream.latest_state.is_some() {
+                    return Ok(true);
+                }
+            }
+            if poll.closed {
+                self.detach(session_id);
+                return Ok(false);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
         }
     }
 
@@ -539,7 +640,8 @@ impl SessionOps {
         let started = Instant::now();
         let deadline = started + Duration::from_millis(timeout_ms.min(MAX_WAIT_MS));
         let mut stream = StreamState::default();
-        let mut saw_working = false;
+        let mut saw_turn_source = false;
+        let watching_since = Instant::now();
         loop {
             let summary = self.summary(session_id)?;
             let terminal = matches!(
@@ -547,7 +649,8 @@ impl SessionOps {
                 "exited" | "stopped" | "interrupted" | "failed"
             );
             if terminal && !summary.host_alive {
-                return Ok(settle(
+                return Ok(self.settle(
+                    session_id,
                     "exited",
                     "lifecycle",
                     "high",
@@ -556,15 +659,25 @@ impl SessionOps {
                     started,
                 ));
             }
+            // A turn boundary is not the same as an idle moment: the PTY
+            // heuristic reports `idle` after 3 s without output, which is
+            // exactly what a model thinking mid-answer looks like. Only a
+            // completion classifier (`turn_completed`) or a hook-reported idle
+            // settles a prompted turn.
+            let attention = summary.latest_attention_kind.as_deref();
             if let Some(status) = summary.latest_status.as_ref() {
                 let mark = StatusMark {
                     run_ordinal: status.run_ordinal,
                     sequence: status.sequence,
                 };
                 let fresh = since.is_none_or(|baseline| mark.is_newer_than(baseline));
+                if matches!(status.source.as_str(), "hook" | "adapter") {
+                    saw_turn_source = true;
+                }
                 match status.state.as_str() {
                     "needs_input" => {
-                        return Ok(settle(
+                        return Ok(self.settle(
+                    session_id,
                             "needs_input",
                             &status.source,
                             &status.confidence,
@@ -574,7 +687,8 @@ impl SessionOps {
                         ))
                     }
                     "exited" => {
-                        return Ok(settle(
+                        return Ok(self.settle(
+                    session_id,
                             "exited",
                             &status.source,
                             &status.confidence,
@@ -583,26 +697,23 @@ impl SessionOps {
                             started,
                         ))
                     }
-                    "working" => saw_working = true,
-                    "idle" if fresh => {
-                        return Ok(settle(
+                    "idle"
+                        if attention == Some("turn_completed")
+                            || status.source == "hook"
+                            || (since.is_none() && stream.latest_state.is_none()) =>
+                    {
+                        return Ok(self.settle(
+                    session_id,
                             "idle",
                             &status.source,
                             &status.confidence,
-                            "status moved to idle after the prompt".into(),
-                            &stream,
-                            started,
-                        ))
-                    }
-                    // Already idle before this process sent anything: the turn
-                    // the caller is asking about is over (regression: a repeat
-                    // wait used to burn the whole timeout).
-                    "idle" if since.is_none() && stream.latest_state.is_none() => {
-                        return Ok(settle(
-                            "idle",
-                            &status.source,
-                            &status.confidence,
-                            "status was already idle and no prompt is pending".into(),
+                            if attention == Some("turn_completed") {
+                                "turn completion reported after the prompt".into()
+                            } else if since.is_some() && fresh {
+                                "status moved to idle after the prompt".into()
+                            } else {
+                                "status was already idle and no prompt is pending".into()
+                            },
                             &stream,
                             started,
                         ))
@@ -613,8 +724,10 @@ impl SessionOps {
 
             // Drain the attachment: live turn frames, and the only thing that
             // keeps the Host from evicting us as a lagging client.
+            let mut polled = 0;
             match self.poll(session_id, 128, 250) {
                 Ok(poll) => {
+                    polled = poll.events.len();
                     stream.absorb(&poll.events);
                     if poll.closed {
                         self.detach(session_id);
@@ -622,10 +735,21 @@ impl SessionOps {
                 }
                 Err(_) => self.detach(session_id),
             }
+            if wait_trace_enabled() {
+                eprintln!(
+                    "wait_trace events={polled} state={:?} quiet_age_ms={:?} turn_source={saw_turn_source}",
+                    stream.latest_state.as_ref().map(|state| state.state.clone()),
+                    stream.last_output_at.map(|at| at.elapsed().as_millis()),
+                );
+            }
             if let Some(state) = stream.latest_state.clone() {
+                if matches!(state.source.as_str(), "hook" | "adapter") {
+                    saw_turn_source = true;
+                }
                 match state.state.as_str() {
                     "needs_input" => {
-                        return Ok(settle(
+                        return Ok(self.settle(
+                    session_id,
                             "needs_input",
                             &state.source,
                             &state.confidence,
@@ -637,7 +761,8 @@ impl SessionOps {
                         ))
                     }
                     "exited" => {
-                        return Ok(settle(
+                        return Ok(self.settle(
+                    session_id,
                             "exited",
                             &state.source,
                             &state.confidence,
@@ -646,15 +771,20 @@ impl SessionOps {
                             started,
                         ))
                     }
-                    "working" => saw_working = true,
-                    "idle" if saw_working || since.is_none() => {
-                        return Ok(settle(
+                    // A hook/adapter idle is a turn boundary; a PTY idle is a
+                    // pause and must not settle.
+                    "idle"
+                        if matches!(state.source.as_str(), "hook" | "adapter")
+                            || (since.is_none() && !saw_turn_source) =>
+                    {
+                        return Ok(self.settle(
+                    session_id,
                             "idle",
                             &state.source,
                             &state.confidence,
                             state
                                 .evidence
-                                .unwrap_or_else(|| "status moved to idle".into()),
+                                .unwrap_or_else(|| "turn boundary reported".into()),
                             &stream,
                             started,
                         ))
@@ -663,18 +793,25 @@ impl SessionOps {
                 }
             }
 
-            // No turn signal was ever observed: fall back to silence, clearly
-            // labelled. This only happens for Agents whose status is a spawn
-            // fact rather than a turn heuristic.
-            if !saw_working {
-                if let Some(at) = stream.last_output_at {
+            // No turn boundary was ever observed: fall back to silence, clearly
+            // labelled, and only for Agents that never reported a hook or
+            // semantic turn event at all. The baseline is "any activity", not
+            // just output: a Session that went quiet before we attached still
+            // has to be able to settle.
+            let working = stream
+                .latest_state
+                .as_ref()
+                .is_some_and(|state| state.state == "working");
+            if !saw_turn_source && !working {
+                if let Some(at) = stream.last_activity_at().or(Some(watching_since)) {
                     if at.elapsed() >= QUIET_TURN {
-                        return Ok(settle(
+                        return Ok(self.settle(
+                    session_id,
                             "idle",
                             "quiet_window",
                             "low",
                             format!(
-                                "no turn-status signal from this Agent; terminal quiet for {}ms",
+                                "this Agent reports no turn boundary; quiet for {}ms",
                                 at.elapsed().as_millis()
                             ),
                             &stream,
@@ -685,7 +822,8 @@ impl SessionOps {
             }
 
             if Instant::now() >= deadline {
-                return Ok(settle(
+                return Ok(self.settle(
+                    session_id,
                     "timeout",
                     "watchdog",
                     "low",
@@ -695,6 +833,33 @@ impl SessionOps {
                 ));
             }
         }
+    }
+
+    /// Settle with a tail the caller can actually read.
+    ///
+    /// The live stream only carries what this call happened to observe; the
+    /// prompt echo and a fast answer are often already behind it. A bounded
+    /// replay of the Host tail is the authoritative "what does the terminal
+    /// show now", so the verdict and the evidence travel together.
+    #[allow(clippy::too_many_arguments)]
+    fn settle(
+        &mut self,
+        session_id: &str,
+        state: &'static str,
+        source: &str,
+        confidence: &str,
+        evidence: String,
+        stream: &StreamState,
+        started: Instant,
+    ) -> WaitOutcome {
+        let mut outcome = settle(state, source, confidence, evidence, stream, started);
+        if let Ok(replay) = self.read_output(session_id, text::WAIT_TAIL_BYTES) {
+            if !replay.text.trim().is_empty() {
+                outcome.tail = replay.text;
+                outcome.incomplete |= replay.incomplete;
+            }
+        }
+        outcome
     }
 
     /// Read the newest terminal bytes. Replays the Host tail, so this works
@@ -783,6 +948,13 @@ pub struct ReadyOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub struct PromptDelivery {
+    pub bytes: u64,
+    /// The TUI redrew after Enter, i.e. the prompt went in as a submitted turn.
+    pub submitted: bool,
+    pub enter_retries: u32,
+}
+
 pub struct ReadOutcome {
     pub text: String,
     pub truncated: bool,
