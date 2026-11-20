@@ -16,7 +16,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ops::{
-    SessionOps, StatusMark, ToolFailure, TResult, DEFAULT_READY_MS, DEFAULT_WAIT_MS, MAX_WAIT_MS,
+    ReadyOutcome, SessionOps, StatusMark, ToolFailure, TResult, DEFAULT_READY_MS, DEFAULT_WAIT_MS,
+    MAX_WAIT_MS, SEND_READY_MS,
 };
 use crate::registry::{OwnedSession, Registry};
 use crate::text;
@@ -710,7 +711,18 @@ impl Toolbox {
                 // Baseline before the prompt so `wait_for_task` can require a
                 // *newer* status transition.
                 let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
-                match self.ops.deliver_prompt(&session_id, &prompt) {
+                // A first delivery can still fail if the Agent was not reading
+                // input yet; give it one more readiness round rather than
+                // handing the caller a prompt they must re-send by hand.
+                let mut delivery = self.ops.deliver_prompt(&session_id, &prompt);
+                if matches!(&delivery, Ok(value) if !value.submitted && value.blocked_on.is_none()) {
+                    if let Ok(ready_again) = self.ops.wait_ready(&session_id, prompt_timeout) {
+                        if ready_again.ready {
+                            delivery = self.ops.deliver_prompt(&session_id, &prompt);
+                        }
+                    }
+                }
+                match delivery {
                     Ok(delivery) => {
                         if let Some(baseline) = baseline {
                             self.baselines.insert(session_id.clone(), baseline);
@@ -721,6 +733,7 @@ impl Toolbox {
                         result["promptSubmitted"] = json!(delivery.submitted);
                         result["promptRedrew"] = json!(delivery.redrew);
                         result["enterRetries"] = json!(delivery.enter_retries);
+                        result["promptAttempts"] = json!(delivery.attempts);
                         if let Some(dialog) = delivery.blocked_on.clone() {
                             result["blockedOn"] = json!(dialog);
                         }
@@ -778,8 +791,23 @@ impl Toolbox {
                 ),
             ));
         }
+        // Typing into a TUI that is still starting is how a prompt gets lost:
+        // the tty echoes the text, the Agent never receives it. Any send waits
+        // for the same readiness gate `create_session` uses, bounded so a busy
+        // Agent does not block the call.
+        let ready = if !self.ops.is_starting(&session_id) {
+            ReadyOutcome {
+                ready: true,
+                reason: "already painted".into(),
+                state: None,
+                tail: String::new(),
+            }
+        } else {
+            self.ops.wait_ready(&session_id, SEND_READY_MS)?
+        };
         let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
         let delivery = self.ops.deliver_prompt(&session_id, &prompt)?;
+        let _ = ready;
         if delivery.submitted {
             if let Some(baseline) = baseline {
                 self.baselines.insert(session_id.clone(), baseline);
@@ -793,6 +821,8 @@ impl Toolbox {
             "redrew": delivery.redrew,
             "bytes": delivery.bytes,
             "enterRetries": delivery.enter_retries,
+            "promptAttempts": delivery.attempts,
+            "readyBeforeSend": ready.ready,
             "blockedOn": delivery.blocked_on.clone(),
             "statusSequence": baseline.map(|mark| mark.sequence),
             "hint": if delivery.submitted {

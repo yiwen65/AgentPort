@@ -99,9 +99,16 @@ Pi、Amp、Generic Shell 上游没有审批概念，`effectivePermissionMode` �
 
 **输入**：没有裸字节输入工具。`send_prompt` 只接受一行文本，拒绝 ESC 与控制字符，上限 8 KiB。
 
-**首发任务**：交互式 TUI 启动期间会把提前写入的字节丢掉，所以 `create_session` 自己等
-"已有输出 + 终端静默 500 ms"或状态 `idle` 后才发送，并回报 `ready` 与 `readyEvidence`；
-等不到就返回 `promptSent: false`，由调用方用 `send_prompt` 自己决定。
+**首发任务**：交互式 TUI 启动期间会把提前写入的字节丢掉（尤其 Qoder：它先画出输入框，再继续加载
+MCP servers，此时打进去的字会被丢弃）。所以：
+
+- `create_session` / `send_prompt` 都会先过 ready 门：已有输出 + 终端静默 **1.2 s**，并且启动
+  宽限期内（6 s）不接受"状态来源仍是 `process`"（那只是 spawn 事实，不代表 TUI 能收键盘）。启动
+  宽限后不再等，避免 hooks 装不上的会话永远不就绪。
+- 打完字会**验证文本是否真的进了输入框**（屏幕投影优先；日志里的 tty 回显不算，raw mode 之前的
+  回显是假证据），没进就再打一次；回车后没看到回合开始也会重发回车。整轮最多 4 次。
+- 回执带 `promptAttempts` / `enterRetries` / `promptSubmitted`，并如实给出 `hint`（比如"可能卡在
+  信任/登录弹窗"）。正常路径下调用方**不需要**手工重发。
 
 **完成判定**：`wait_for_task` 先看 `needs_input`（Agent 在等审批，这是委派最常见的死结），
 再看 `state` 帧上的 `working → idle` 迁移与 `exited`。`create_session`/`send_prompt` 会返回

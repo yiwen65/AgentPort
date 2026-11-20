@@ -37,6 +37,11 @@ pub const DEFAULT_WAIT_MS: u64 = 45_000;
 const ENTER_GAP: Duration = Duration::from_millis(150);
 /// How long to watch for evidence that the prompt actually started a turn.
 const SUBMIT_EVIDENCE: Duration = Duration::from_millis(1_500);
+/// A TUI can paint its frame before its composer exists; type again after this.
+const TYPE_RETRY_GAP: Duration = Duration::from_millis(600);
+const MAX_TYPE_ATTEMPTS: u32 = 4;
+/// How long a `process`-only status is treated as "still starting".
+const STARTUP_GRACE: Duration = Duration::from_millis(6_000);
 const MAX_ENTER_RETRIES: u32 = 2;
 /// Quiet window before calling a Shell Session finished: a command that printed
 /// nothing for four seconds after Enter is done, and the Shell has no other
@@ -46,13 +51,20 @@ const QUIET_SHELL: Duration = Duration::from_millis(4_000);
 /// routinely think for many seconds without a byte of output, so this only
 /// produces an `unknown` verdict, never "done".
 /// Quiet window used to decide a freshly launched TUI finished painting.
-const QUIET_READY: Duration = Duration::from_millis(500);
+///
+/// 500 ms was too eager: Qoder paints its prompt box and then keeps loading
+/// MCP servers, so a prompt typed at "quiet" landed nowhere. Input is also
+/// verified after typing, so this only has to be generous, not perfect.
+const QUIET_READY: Duration = Duration::from_millis(1_200);
 /// Cadence for scanning the rendered screen for trust/login prompts.
 const DIALOG_CHECK: Duration = Duration::from_millis(1_500);
 /// A finished turn's transcript line can lag the completion hook slightly.
 const REPLY_SETTLE_ATTEMPTS: usize = 4;
 const REPLY_SETTLE_GAP: Duration = Duration::from_millis(350);
 pub const DEFAULT_READY_MS: u64 = 25_000;
+/// Readiness budget for `send_prompt` on a Session that is still starting. It is
+/// shorter than a launch budget because the caller is mid-conversation.
+pub const SEND_READY_MS: u64 = 15_000;
 
 #[derive(Debug, Clone)]
 pub struct ToolFailure {
@@ -477,75 +489,128 @@ impl SessionOps {
     /// Claude Code). Writing them apart, then retrying Enter while no redraw
     /// appears, makes submission robust instead of a race against PTY packet
     /// boundaries.
+    /// Type a prompt and submit it, proving each step where it can be proven.
+    ///
+    /// Three things can go wrong and each is checked instead of assumed:
+    /// the text can be dropped because the TUI is still starting, the Enter can
+    /// be swallowed, and a dialog can own the keyboard. Typing is therefore
+    /// retried until the text is visible on the session, and Enter until a turn
+    /// actually starts. A caller should never have to re-send by hand.
     pub fn deliver_prompt(&mut self, session_id: &str, text: &str) -> TResult<PromptDelivery> {
-        // Flush the startup paint first so the echo of our own text cannot be
-        // mistaken for the redraw that proves submission.
-        let _ = self.drain(session_id);
-        let mut bytes = self.send_bytes(session_id, text.as_bytes())?;
-        std::thread::sleep(ENTER_GAP);
-        let _ = self.drain(session_id);
-        // Never type into a trust/login dialog: the keystrokes are dropped and
-        // the caller would wait for a turn that never starts.
-        if let Some(dialog) = self
-            .peek_screen(session_id)
-            .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
-        {
-            return Ok(PromptDelivery {
-                bytes: 0,
-                submitted: false,
-                redrew: false,
-                enter_retries: 0,
-                blocked_on: Some(dialog),
-            });
-        }
-        // A distinctive prefix identifies our own prompt in the transcript
-        // echo; a dialog that swallows keystrokes never shows it.
+        // A distinctive prefix identifies our own text in the composer echo.
         let token: String = text.trim().chars().take(10).collect();
-        let mut retries = 0;
-        loop {
+        let mut typed = false;
+        let mut entered = 0;
+        let mut bytes = 0;
+        for attempt in 0..MAX_TYPE_ATTEMPTS {
+            // Flush the paint that arrived while we were waiting.
+            let _ = self.drain(session_id);
+            if !typed || !self.text_is_present(session_id, &token) {
+                bytes += self.send_bytes(session_id, text.as_bytes())?;
+                typed = true;
+                std::thread::sleep(ENTER_GAP);
+                let _ = self.drain(session_id);
+                // Nothing on screen and nothing in the log means the TUI was
+                // not accepting input yet. Wait for it and type again rather
+                // than sending Enter into an empty box.
+                if !self.text_is_present(session_id, &token) {
+                    std::thread::sleep(TYPE_RETRY_GAP);
+                    continue;
+                }
+            }
+            if let Some(dialog) = self.peek_blocking_prompt(session_id) {
+                return Ok(PromptDelivery {
+                    bytes,
+                    submitted: false,
+                    redrew: false,
+                    enter_retries: entered,
+                    blocked_on: Some(dialog),
+                    attempts: attempt + 1,
+                });
+            }
             bytes += self.send_bytes(session_id, b"\r")?;
-            let blocked_on = |this: &mut Self| -> Option<String> {
-                this.peek_screen(session_id)
-                    .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
-            };
+            entered += 1;
             match self.await_turn_start(session_id, &token)? {
                 SubmitEvidence::Started => {
                     return Ok(PromptDelivery {
                         bytes,
                         submitted: true,
                         redrew: true,
-                        enter_retries: retries,
+                        enter_retries: entered.saturating_sub(1),
                         blocked_on: None,
+                        attempts: attempt + 1,
                     })
                 }
-                // The screen changed but no turn began: most likely a trust,
-                // login or permission dialog owns the keyboard. Pressing Enter
-                // again could choose an item in that dialog, so stop here and
-                // report it honestly.
                 SubmitEvidence::RedrewOnly => {
+                    // The screen changed without a turn starting: a dialog owns
+                    // the keyboard, and another Enter could pick a menu item.
                     return Ok(PromptDelivery {
                         bytes,
                         submitted: false,
                         redrew: true,
-                        enter_retries: retries,
-                        blocked_on: blocked_on(self),
+                        enter_retries: entered.saturating_sub(1),
+                        blocked_on: self.peek_blocking_prompt(session_id),
+                        attempts: attempt + 1,
                     })
                 }
                 SubmitEvidence::Silent => {
-                    if retries >= MAX_ENTER_RETRIES {
-                        return Ok(PromptDelivery {
-                            bytes,
-                            submitted: false,
-                            redrew: false,
-                            enter_retries: retries,
-                            blocked_on: blocked_on(self),
-                        });
-                    }
-                    retries += 1;
+                    // Enter was swallowed and the text is still in the box (or
+                    // gone with it); loop re-types when needed and presses
+                    // Enter again.
                     std::thread::sleep(ENTER_GAP);
                 }
             }
         }
+        Ok(PromptDelivery {
+            bytes,
+            submitted: false,
+            redrew: false,
+            enter_retries: entered.saturating_sub(1),
+            blocked_on: self.peek_blocking_prompt(session_id),
+            attempts: MAX_TYPE_ATTEMPTS,
+        })
+    }
+
+    /// Is this Session still inside its startup window?
+    ///
+    /// Paint is not a readiness signal (Qoder draws its frame, then loads MCP
+    /// servers). The Agent's own status is: while it is absent or still a spawn
+    /// fact (`process`), input can fall into a composer that does not exist yet.
+    pub fn is_starting(&mut self, session_id: &str) -> bool {
+        match self.summary(session_id) {
+            Ok(summary) => match summary.latest_status {
+                Some(status) => status.source == "process",
+                None => true,
+            },
+            Err(_) => true,
+        }
+    }
+
+    /// Is our text on the session right now — in the composer, or in the log?
+    ///
+    /// The screen is the direct witness for a TUI whose composer is still
+    /// initialising; the accumulated log covers Sessions whose screen cannot be
+    /// serialized.
+    fn text_is_present(&mut self, session_id: &str, token: &str) -> bool {
+        if token.is_empty() {
+            return true;
+        }
+        // The rendered composer is the authoritative witness. The log is not:
+        // before the TUI installs raw mode the tty itself echoes our bytes, so
+        // the log "contains" text that the Agent never received — exactly the
+        // case where a prompt typed during startup vanishes.
+        if let Ok(screen) = self.read_screen(session_id, text::DEFAULT_READ_LINES) {
+            if screen.source == "screen" {
+                return screen.lines.iter().any(|line| line.contains(token));
+            }
+        }
+        self.peek_stream(session_id)
+            .is_some_and(|tail| tail.contains(token))
+    }
+
+    fn peek_blocking_prompt(&mut self, session_id: &str) -> Option<String> {
+        self.peek_screen(session_id)
+            .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
     }
 
     /// Drain anything already buffered without waiting.
@@ -712,7 +777,8 @@ impl SessionOps {
     /// window loses bytes in some TUIs. Readiness is "output observed, then
     /// quiet" or an explicit idle status, never a fixed sleep.
     pub fn wait_ready(&mut self, session_id: &str, timeout_ms: u64) -> TResult<ReadyOutcome> {
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(timeout_ms);
         let mut stream = StreamState::default();
         loop {
             let poll = self.poll(session_id, 64, 120)?;
@@ -751,7 +817,20 @@ impl SessionOps {
                     .last_output_at
                     .map(|at| at.elapsed())
                     .unwrap_or_default();
-                if quiet >= QUIET_READY {
+                // A `process`-sourced status means the Host has only seen the
+                // spawn; Qoder paints its frame at that point but keeps loading
+                // MCP servers, and a prompt typed now is discarded. That claim
+                // is only trusted during the startup grace: an Agent whose
+                // hooks never install reports `process` for its whole life, and
+                // blocking on it forever would never become ready.
+                let strict = started.elapsed() < STARTUP_GRACE;
+                let still_spawning = strict
+                    && self
+                        .summary(session_id)
+                        .ok()
+                        .and_then(|summary| summary.latest_status)
+                        .is_some_and(|status| status.source == "process");
+                if quiet >= QUIET_READY && !still_spawning {
                     return Ok(ReadyOutcome {
                         ready: true,
                         reason: format!("terminal quiet for {}ms", quiet.as_millis()),
@@ -1390,6 +1469,8 @@ pub struct PromptDelivery {
     pub enter_retries: u32,
     /// Recognized trust/login prompt that has to be answered first.
     pub blocked_on: Option<String>,
+    /// How many type-and-submit rounds this delivery needed.
+    pub attempts: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
