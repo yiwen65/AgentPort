@@ -560,11 +560,6 @@ function AdapterSection({
                           aria-label={label}
                           onClick={() => void toggleMcp(a.agentType, !registered)}
                         />
-                        {report && report.state === "unsupported" ? (
-                          <span className="adapter-mcp-note dim">
-                            {t("settings:ui.adapters.mcpUnsupported")}
-                          </span>
-                        ) : null}
                       </span>
                     );
                   })()}

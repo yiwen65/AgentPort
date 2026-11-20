@@ -188,7 +188,6 @@
       "mcpEnabled": "AgentPort MCP registered for {{agent}}",
       "mcpDisabled": "AgentPort MCP removed for {{agent}}",
       "mcpFailed": "Could not change the MCP registration for {{agent}}: {{detail}}",
-      "mcpUnsupported": "not supported",
       "mcpUnknown": "could not read this Agent's MCP configuration"
     },
     "commitAi": {

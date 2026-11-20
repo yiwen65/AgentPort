@@ -1231,16 +1231,11 @@ body.is-project-dragging .tree-row.project {
   opacity: 0.45;
 }
 
-/* MCP registration cell: switch plus a one-word reason when unsupported. */
+/* MCP registration cell: a switch only; unsupported Agents render it disabled. */
 .adapter-mcp-cell {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.adapter-mcp-note {
-  font-size: 11px;
-  white-space: nowrap;
 }
 
 .tree-row.session {

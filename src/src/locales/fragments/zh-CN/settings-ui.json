@@ -188,7 +188,6 @@
       "mcpEnabled": "已为 {{agent}} 注册 AgentPort MCP",
       "mcpDisabled": "已移除 {{agent}} 的 AgentPort MCP 注册",
       "mcpFailed": "{{agent}} 的 MCP 注册失败：{{detail}}",
-      "mcpUnsupported": "暂不支持",
       "mcpUnknown": "无法读取该 Agent 的 MCP 配置"
     },
     "commitAi": {
