@@ -181,10 +181,68 @@ def main() -> int:
             "MCP-E2E-OK" in waited.get("outputTail", ""),
             "output tail contains the command echo",
         )
+        check(
+            waited.get("outputSource") in {"screen", "stream", "transcript"},
+            f"the verdict says where its tail came from ({waited.get('outputSource')})",
+        )
 
-        print("read_output")
-        output, is_error = client.call("read_output", {"sessionId": session_id, "tailBytes": 4096})
-        check(not is_error and "MCP-E2E-OK" in output["text"], "read_output returns the marker")
+        print("read_output (screen projection, lines, no redraw garbage)")
+        output, is_error = client.call("read_output", {"sessionId": session_id})
+        check(not is_error, "read_output returned")
+        check(output["source"] == "screen", f"screen source projected (source={output['source']})")
+        check(isinstance(output.get("lines"), list) and output["lines"], "lines are returned")
+        check("MCP-E2E-OK" in output["text"], "read_output returns the marker")
+        # A carriage-return overwrite must collapse to one row: this is the TUI
+        # redraw case that a byte tail gets wrong.
+        client.call(
+            "send_prompt",
+            {"sessionId": session_id, "text": "printf 'OLDROW7\\rNEWROW9\\n'"},
+        )
+        time.sleep(1.5)
+        overwritten, _ = client.call("read_output", {"sessionId": session_id, "limit": 200})
+        rows = [line.rstrip() for line in overwritten["lines"]]
+        # The command echo legitimately shows both strings; the rendered rows are
+        # what must carry the overwrite.
+        rendered = [row for row in rows if "printf" not in row]
+        check(
+            any("NEWROW9" in row for row in rendered),
+            "the overwrite is on screen",
+        )
+        check(
+            not any("OLDROW7" in row for row in rendered),
+            "the overwritten row is gone (no stitched redraw)",
+        )
+
+        print("cursor-paged stream reads")
+        first, is_error = client.call(
+            "read_output", {"sessionId": session_id, "source": "stream", "limit": 50}
+        )
+        check(not is_error and first["source"] == "stream", "stream source works")
+        check(bool(first.get("nextCursor")), "a stream read hands back a cursor")
+        second, is_error = client.call(
+            "read_output",
+            {"sessionId": session_id, "source": "stream", "cursor": first["nextCursor"]},
+        )
+        check(not is_error, "the cursor is accepted")
+        check(
+            len(second["lines"]) <= len(first["lines"]),
+            "continuing from a cursor does not replay the whole log",
+        )
+        bad, is_error = client.call(
+            "read_output", {"sessionId": session_id, "source": "stream", "cursor": "garbage"}
+        )
+        check(is_error and bad["error"]["code"] == "invalid_cursor", "foreign cursors are rejected")
+
+        print("transcript source is honest about absence")
+        transcript, is_error = client.call(
+            "read_output", {"sessionId": session_id, "source": "transcript"}
+        )
+        check(not is_error, "transcript read does not fail")
+        check(
+            transcript["source"] == "transcript-unavailable",
+            "a Shell Session has no native transcript and says so",
+        )
+        check(bool(transcript.get("fallbackReason")), "the reason is reported")
 
         print("session_status")
         status, is_error = client.call("session_status", {"sessionId": session_id})

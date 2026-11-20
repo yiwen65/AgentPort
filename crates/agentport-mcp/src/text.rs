@@ -10,6 +10,10 @@
 pub const DEFAULT_READ_BYTES: usize = 16 * 1024;
 /// Hard ceiling for a single tool result tail.
 pub const MAX_READ_BYTES: usize = 64 * 1024;
+/// Default line window for a read (a screenful at 120x40), and the ceiling.
+/// Lines, not bytes: a byte window cuts a wide TUI mid-row.
+pub const DEFAULT_READ_LINES: usize = 120;
+pub const MAX_READ_LINES: usize = 2_000;
 /// Ceiling for the tail carried inside `wait_for_task`.
 pub const WAIT_TAIL_BYTES: usize = 8 * 1024;
 

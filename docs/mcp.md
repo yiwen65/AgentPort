@@ -49,7 +49,7 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `create_session` | 建 Session；带 `prompt` 时在后端等 CLI ready 再发 |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
 | `wait_for_task` | 等当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 |
-| `read_output` | 读终端尾部（去 ANSI、有上限） |
+| `read_output` | 按 `source` 读取：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）+ 行数与 `truncated`/`limited` 标注 |
 | `cancel_turn` | 发 Ctrl-C，会话保留 |
 | `terminate_session` | 停止并清理整个进程组，不可逆 |
 | `open_pane` | 请求桌面 App 把这个 Session 放进可见布局并聚焦 |
@@ -94,8 +94,18 @@ Pi、Amp、Generic Shell 上游没有审批概念，`effectivePermissionMode` �
 并且一律报 `confidence: "low"` 与 `source: "quiet_window"`，不会把不确定当成完成。
 重复调用 `wait_for_task` 会直接返回上一次已结算的结论（`alreadySettled: true`），不会重新等满超时。
 
-**尾部完整性**：Host 报告日志缺口（`resync_required`）时，`read_output`/`wait_for_task` 返回
-`incomplete: true`，不会把有缺口的片段当作完整输出。
+**输出读取**（对齐 Orca 的三层设计）：
+
+| `source` | 语义 |
+|---|---|
+| `screen`（默认 `auto` 的首选） | 取 Host 的 `terminal_snapshot_v1` 序列化网格，投影成**当前屏幕**：TUI 的重绘覆盖已被解析，不会得到一堆互相覆盖的原始字节 |
+| `stream` | 从 Host 日志按**不透明游标**继续读行；先不带游标读一次，后续用返回的 `nextCursor` 续读，不会把两段不相干的窗口拼起来 |
+| `transcript` | 读 Agent 自己的历史（Claude/Codex/Pi 的 JSONL），会话结束后仍然可读；没有历史时返回 `transcript-unavailable` + `fallbackReason` |
+
+返回 `{source, lines[], returnedLineCount, truncated, limited, nextCursor}`：`truncated` 表示为了 `limit`
+丢掉了更早的行，`limited` 表示 Host 无法兑现游标（日志轮转或 resync）；`incomplete: true` 表示有缺口，
+不会把片段当作完整输出。`wait_for_task` 的 `outputTail` 同样优先 `transcript` → `screen` → `stream`，
+并回 `outputSource` / `outputFallbackReason`，判定与依据一起交付。
 
 **会话结束**：`terminate_session` 之后 Host 的内存尾部就没了。再调 `wait_for_task` 会得到
 `state: "exited"`，`read_output` 返回 `ended: true` 并明确提示"正文需从 Agent 原生历史读取"，

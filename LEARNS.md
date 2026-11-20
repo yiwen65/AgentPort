@@ -1089,3 +1089,11 @@
 - Correct approach: 提交证据只认"回合真的开始"（hook/adapter 的 working 或 attention），其次才用"transcript 里出现自己的 prompt 前缀 + 屏幕有重绘"；纯重绘不算提交。等待期间每 1.5 s 扫一次渲染后的尾部，命中信任/登录/首启菜单关键词就返回 `needs_input`（`screen_pattern`、中置信度、带 `blockedOn`），并**在发送前**先做同样的检查，避免把字打进菜单里。非 Shell 的 Agent 只用真正的回合边界结算，静默只给 `timeout`。
 - Prevention: 任何一个"替用户操作 TUI"的开关都要区分"按键"与"文本"、区分"红绘"与"开始工作"、区分"安静"与"完成"；委派优先落在 Agent 已经信任过的目录；新增 Agent 支持时按同一脚本跑一遍矩阵，不要只测一个 Agent。
 - Verified by: 9 个已安装 Agent 的矩阵——claude/codex/easy-pi/pi/omp `submitted:true + idle/hook|adapter(high)` 且拿回回答；kimi/qoder/cursor/grok 在 4.5–12.6 s 内返回 `needs_input/screen_pattern` 并给出 `blockedOn`（修复前分别是 60–70 s 的 `timeout` 或假的 `idle/low`）；Shell 端到端脚本仍全过。
+
+## `委派结果读取` — 不要给协调者 PTY 字节尾巴，要给他"投影 + 游标 + 来源"
+
+- Wrong approach: `read_output` 只返回"去掉 ANSI 的最后 64 KB 字节"，并默认它就是"屏幕"；`wait_for_task` 的结论尾巴也来自同一份字节重放。
+- Why it failed: 全屏 TUI 是差分重绘，字节尾巴里同一个位置被反复覆盖，去 ANSI 后得到的是"每次重绘的残片"，不是屏幕；64 KB 又会在宽终端里把一行切两半。更糟的是它无法区分"没有更多内容"和"我们没拿到"。
+- Correct approach（照 Orca 的三层做）：①`source=screen` 用 Host 的 `terminal_snapshot_v1` 序列化网格投影当前屏幕（覆盖已解析）；②`source=stream` 返回行 + **不透明游标**（base64 的 `RunCursor`），续读从游标之后开始，`limited` 明确表示 Host 兑现不了游标（轮转/resync）；③`source=transcript` 读 Agent 原生历史，会话结束仍可读，缺失时返回 `transcript-unavailable` + `fallbackReason`。`wait_for_task` 的 `outputTail` 按 transcript → screen → stream 取，并用 `outputSource` 交代来源。
+- Prevention: 屏幕快照只能由"同时订阅输出"的客户端拿到（`agentport-host/src/server.rs:317` 的条件），一次性 screen attach **不要**驱逐会话的常驻 poll attachment —— 一旦驱逐，下一次 poll 会重放整段日志，把静默计时器永远刷新，等待就永不结算（本轮一开始就踩了这个）。提交证据仍然要用 **stream**（回显在日志里），屏幕只用于识别信任/登录弹窗。
+- Verified by: `scripts/test-agentport-mcp.py` 新增 11 条断言（screen 源、CR 覆盖只剩新行不留旧行、游标续读、伪造游标被拒、Shell 无原生历史时 `transcript-unavailable`、判定自带 `outputSource`）；Claude 委派实测 `outputSource=transcript` 且答案在尾巴里；打包 sidecar 与工作区二进制双双通过。

@@ -19,7 +19,7 @@ use crate::ops::{
     SessionOps, StatusMark, ToolFailure, TResult, DEFAULT_READY_MS, DEFAULT_WAIT_MS, MAX_WAIT_MS,
 };
 use crate::registry::{OwnedSession, Registry};
-use crate::text::{self, DEFAULT_READ_BYTES};
+use crate::text;
 use crate::ui;
 
 pub struct ToolDef {
@@ -205,11 +205,28 @@ fn read_output_schema() -> Value {
     obj(
         json!({
             "sessionId": { "type": "string" },
+            "source": {
+                "type": "string",
+                "enum": ["auto", "screen", "stream", "transcript"],
+                "default": "auto",
+                "description": "auto/screen project the Host's VT grid (overwrites resolved); stream returns accumulated lines from a cursor; transcript reads the Agent's own message history."
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": text::MAX_READ_LINES,
+                "default": text::DEFAULT_READ_LINES,
+                "description": "Lines to return, counted from the newest."
+            },
+            "cursor": {
+                "type": "string",
+                "description": "nextCursor from a previous source=stream read; continues exactly after it."
+            },
             "tailBytes": {
                 "type": "integer",
                 "minimum": 1024,
                 "maximum": text::MAX_READ_BYTES,
-                "default": DEFAULT_READ_BYTES
+                "description": "Deprecated alias for limit, converted at ~80 bytes per line."
             }
         }),
         json!(["sessionId"]),
@@ -246,6 +263,8 @@ struct SettledTurn {
     source: String,
     confidence: String,
     evidence: String,
+    tail_source: &'static str,
+    fallback_reason: Option<String>,
 }
 
 /// Everything a tool call needs. One instance lives for the whole stdio
@@ -762,6 +781,8 @@ impl Toolbox {
                     "evidence": previous.evidence,
                     "waitedMs": 0,
                     "outputTail": "",
+                    "outputSource": previous.tail_source,
+                    "outputFallbackReason": previous.fallback_reason,
                     "outputIncomplete": false,
                     "alreadySettled": true,
                 }));
@@ -783,6 +804,8 @@ impl Toolbox {
                     source: outcome.source.clone(),
                     confidence: outcome.confidence.clone(),
                     evidence: outcome.evidence.clone(),
+                    tail_source: outcome.tail_source,
+                    fallback_reason: outcome.fallback_reason.clone(),
                 },
             );
         }
@@ -794,6 +817,8 @@ impl Toolbox {
             "evidence": outcome.evidence,
             "waitedMs": outcome.waited_ms,
             "outputTail": outcome.tail,
+            "outputSource": outcome.tail_source,
+            "outputFallbackReason": outcome.fallback_reason,
             "outputIncomplete": outcome.incomplete,
         }))
     }
@@ -801,22 +826,73 @@ impl Toolbox {
     fn read_output(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
-        let tail_bytes =
-            optional_u64(args, "tailBytes").unwrap_or(DEFAULT_READ_BYTES as u64) as usize;
-        let outcome = self.ops.read_output(&session_id, tail_bytes)?;
+        let limit = optional_u64(args, "limit")
+            .map(|value| value as usize)
+            .unwrap_or_else(|| {
+                // Backwards compatibility: an old caller passed a byte budget.
+                optional_u64(args, "tailBytes")
+                    .map(|bytes| ((bytes as usize) / 80).max(1))
+                    .unwrap_or(text::DEFAULT_READ_LINES)
+            });
+        let source = optional_str(args, "source").unwrap_or_else(|| "auto".into());
+        if !matches!(source.as_str(), "auto" | "screen" | "stream" | "transcript") {
+            return Err(ToolFailure::new(
+                "invalid_arguments",
+                "source must be auto, screen, stream or transcript",
+            ));
+        }
+        if source == "transcript" {
+            let transcript = self.ops.read_transcript(&session_id, limit)?;
+            let (tail, truncated) = text::tail(
+                &transcript.lines.join("\n"),
+                text::MAX_READ_BYTES,
+            );
+            return Ok(json!({
+                "sessionId": session_id,
+                "source": if transcript.available { "transcript" } else { "transcript-unavailable" },
+                "lines": if truncated { tail.lines().map(str::to_string).collect::<Vec<_>>() } else { transcript.lines },
+                "truncated": truncated,
+                "limited": false,
+                "fallbackReason": transcript.reason,
+                "nextCursor": Value::Null,
+            }));
+        }
+        let outcome = if source == "stream" {
+            self.ops.read_stream(
+                &session_id,
+                optional_str(args, "cursor").as_deref(),
+                limit,
+            )?
+        } else {
+            // `auto` and `screen` both project the VT grid; a Host that cannot
+            // serialize one degrades to the cursor-free stream instead of
+            // handing back redraw bytes as if they were a screen.
+            let screen = self.ops.read_screen(&session_id, limit)?;
+            if screen.source == "screen" || source == "screen" {
+                screen
+            } else {
+                self.ops.read_stream(&session_id, None, limit)?
+            }
+        };
+        let text = outcome.text();
         let mut value = json!({
             "sessionId": session_id,
-            "text": outcome.text,
+            "source": outcome.source,
+            "lines": outcome.lines,
+            // Joined convenience view; `lines` is the contract.
+            "text": text,
+            "returnedLineCount": outcome.returned_line_count,
             "truncated": outcome.truncated,
+            "limited": outcome.limited,
+            "nextCursor": outcome.next_cursor,
             "incomplete": outcome.incomplete,
-            "bytes": outcome.bytes,
         });
         if outcome.ended {
             value["ended"] = json!(true);
-            if outcome.text.trim().is_empty() {
+            if text.trim().is_empty() {
                 value["hint"] = json!(
-                    "this Session has ended and its Host tail is gone; read the Agent's native \
-                     history from the AgentPort app instead"
+                    "this Session has ended and its Host tail is gone; source=transcript reads the \
+                     Agent's own history instead"
                 );
             }
         }

@@ -6,7 +6,7 @@
 //! process-group cleanup, same status evidence.
 
 use agentport_remote_protocol::{
-    SessionAttachParams, SessionControlKind, SessionControlParams, SessionDetachParams,
+    RunCursor, SessionAttachParams, SessionControlKind, SessionControlParams, SessionDetachParams,
     SessionInputParams, SessionPollParams, SessionStopParams,
 };
 use agentport_service::{
@@ -332,6 +332,10 @@ pub struct WaitOutcome {
     pub confidence: String,
     pub evidence: String,
     pub tail: String,
+    /// Where `tail` came from: `transcript`, `screen` or `stream`.
+    pub tail_source: &'static str,
+    /// Why the transcript was not used, when it was not.
+    pub fallback_reason: Option<String>,
     /// The Host reported a gap, so `tail` is not a complete window.
     pub incomplete: bool,
     pub waited_ms: u128,
@@ -402,13 +406,25 @@ impl SessionOps {
     }
 
     fn open_attachment(&self, session_id: &str) -> TResult<SessionAttachResult> {
+        self.open_attachment_with(session_id, false)
+    }
+
+    /// `screen_snapshot` asks the Host for its serialized VT grid instead of a
+    /// byte replay, which is what makes a full-screen TUI readable.
+    fn open_attachment_with(
+        &self,
+        session_id: &str,
+        screen_snapshot: bool,
+    ) -> TResult<SessionAttachResult> {
         self.service
             .attach_session(SessionAttachParams {
                 session_id: session_id.to_string(),
-                replay_tail_bytes: ATTACH_REPLAY_BYTES,
+                replay_tail_bytes: if screen_snapshot { 0 } else { ATTACH_REPLAY_BYTES },
                 resume_from: None,
+                // The Host serializes the grid only for a client that also
+                // subscribes to output (agentport-host/src/server.rs:317).
                 subscribe_output: true,
-                screen_snapshot: false,
+                screen_snapshot,
             })
             .map_err(ToolFailure::from)
     }
@@ -464,7 +480,7 @@ impl SessionOps {
         // Never type into a trust/login dialog: the keystrokes are dropped and
         // the caller would wait for a turn that never starts.
         if let Some(dialog) = self
-            .peek_tail(session_id)
+            .peek_screen(session_id)
             .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
         {
             return Ok(PromptDelivery {
@@ -482,7 +498,7 @@ impl SessionOps {
         loop {
             bytes += self.send_bytes(session_id, b"\r")?;
             let blocked_on = |this: &mut Self| -> Option<String> {
-                this.peek_tail(session_id)
+                this.peek_screen(session_id)
                     .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
             };
             match self.await_turn_start(session_id, &token)? {
@@ -580,7 +596,7 @@ impl SessionOps {
                 // Fall back to the transcript: a submitted prompt is echoed as
                 // a user message, a swallowed one never reaches it.
                 let echoed = self
-                    .peek_tail(session_id)
+                    .peek_stream(session_id)
                     .map(|tail| tail.contains(token))
                     .unwrap_or(false);
                 return Ok(match (echoed, redrew) {
@@ -592,10 +608,19 @@ impl SessionOps {
         }
     }
 
-    /// Bounded replay of the Host tail, used as a submission oracle.
-    fn peek_tail(&mut self, session_id: &str) -> Option<String> {
-        let outcome = self.read_output(session_id, text::WAIT_TAIL_BYTES).ok()?;
-        Some(outcome.text)
+    /// Current screen text. Dialogs and menus are screen facts, so this is the
+    /// right oracle for "is the CLI asking me something".
+    fn peek_screen(&mut self, session_id: &str) -> Option<String> {
+        let outcome = self.read_screen(session_id, text::DEFAULT_READ_LINES).ok()?;
+        (!outcome.lines.is_empty()).then(|| outcome.text())
+    }
+
+    /// Accumulated log tail. The echo of a submitted prompt lives here even
+    /// after the screen scrolls or a redraw overwrites it, so submission
+    /// evidence uses the stream rather than the grid.
+    fn peek_stream(&mut self, session_id: &str) -> Option<String> {
+        let outcome = self.read_stream(session_id, None, text::DEFAULT_READ_LINES).ok()?;
+        (!outcome.lines.is_empty()).then(|| outcome.text())
     }
 
     pub fn send_bytes(&mut self, session_id: &str, bytes: &[u8]) -> TResult<u64> {
@@ -952,7 +977,7 @@ impl SessionOps {
             if last_dialog_check.elapsed() >= DIALOG_CHECK {
                 last_dialog_check = Instant::now();
                 if let Some(dialog) = self
-                    .peek_tail(session_id)
+                    .peek_screen(session_id)
                     .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
                 {
                     return Ok(self.settle(
@@ -999,10 +1024,39 @@ impl SessionOps {
         started: Instant,
     ) -> WaitOutcome {
         let mut outcome = settle(state, source, confidence, evidence, stream, started);
-        if let Ok(replay) = self.read_output(session_id, text::WAIT_TAIL_BYTES) {
-            if !replay.text.trim().is_empty() {
-                outcome.tail = replay.text;
-                outcome.incomplete |= replay.incomplete;
+        // Prefer the Agent's own transcript: it is the conversation, it survives
+        // the Session ending, and it does not depend on a render. The screen is
+        // the fallback; a byte tail is the last resort.
+        let mut fallback_reason = None;
+        if let Ok(transcript) = self.read_transcript(session_id, 40) {
+            if transcript.available && !transcript.lines.is_empty() {
+                let text = transcript.lines.join("\n");
+                // A transcript page can be tens of kilobytes; the verdict needs
+                // the answer, not the whole conversation. Callers that want more
+                // page it explicitly with read_output(source="transcript").
+                let (tail, _) = text::tail(&text, text::WAIT_TAIL_BYTES * 2);
+                outcome.tail = tail;
+                outcome.tail_source = "transcript";
+                return outcome;
+            }
+            fallback_reason = transcript.reason;
+        }
+        if let Ok(screen) = self.read_screen(session_id, text::DEFAULT_READ_LINES) {
+            let text = screen.text();
+            if !text.trim().is_empty() {
+                outcome.tail = text;
+                outcome.tail_source = "screen";
+                outcome.fallback_reason = fallback_reason;
+                return outcome;
+            }
+        }
+        if let Ok(stream) = self.read_stream(session_id, None, text::DEFAULT_READ_LINES) {
+            let text = stream.text();
+            if !text.trim().is_empty() {
+                outcome.tail = text;
+                outcome.tail_source = "stream";
+                outcome.fallback_reason = fallback_reason;
+                outcome.incomplete |= stream.incomplete;
             }
         }
         outcome
@@ -1010,27 +1064,108 @@ impl SessionOps {
 
     /// Read the newest terminal bytes. Replays the Host tail, so this works
     /// while the Session is running and after a Host restart.
-    pub fn read_output(&mut self, session_id: &str, tail_bytes: usize) -> TResult<ReadOutcome> {
-        let want = tail_bytes.clamp(1024, text::MAX_READ_BYTES);
+    /// Read the Session's screen, projected from the Host's VT grid.
+    ///
+    /// This is the answer to full-screen TUIs: a serialized grid already has
+    /// every overwrite resolved, so the caller gets what the user sees instead
+    /// of a pile of redraw bytes. When the Host predates
+    /// `terminal_snapshot_v1`, or could not serialize a grid, the result says so
+    /// (`screen-unavailable`) rather than pretending a byte tail is a screen.
+    pub fn read_screen(&mut self, session_id: &str, limit: usize) -> TResult<ReadOutcome> {
+        let limit = limit.clamp(1, text::MAX_READ_LINES);
         if self.is_terminal(session_id)? {
-            // The Host keeps terminal bytes only while it runs; after that the
-            // text lives in the Agent's native history.
-            return Ok(ReadOutcome {
-                text: String::new(),
-                truncated: false,
-                bytes: 0,
-                ended: true,
-                incomplete: false,
-            });
+            // The Host keeps the grid only while it runs; after that the record
+            // lives in the Agent's own transcript.
+            return Ok(ReadOutcome::ended());
+        }
+        let attachment = self.open_attachment_with(session_id, true)?;
+        // A screen attach carries a grid, not a stream: read it once and release
+        // it. It is deliberately kept out of the poll-attachment cache — evicting
+        // the cached attachment here would make the next poll replay the log,
+        // and that replay would keep refilling the quiet-window timer.
+        let _ = self.service().detach_session(SessionDetachParams {
+            attachment_id: attachment.attachment_id.clone(),
+        });
+        let Some(snapshot) = attachment.screen_snapshot else {
+            return Ok(ReadOutcome::unavailable("screen-unavailable"));
+        };
+        let content = snapshot
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        // The grid is serialized as a full repaint: stripping the escape
+        // sequences leaves the rows the terminal would draw.
+        let rendered = text::render(content.as_bytes(), true);
+        let mut lines: Vec<String> = rendered
+            .split('\n')
+            .map(|line| line.trim_end().to_string())
+            .collect();
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+        let truncated = lines.len() > limit;
+        if truncated {
+            lines.drain(..lines.len() - limit);
+        }
+        Ok(ReadOutcome {
+            source: "screen",
+            returned_line_count: lines.len(),
+            lines,
+            truncated,
+            limited: false,
+            next_cursor: None,
+            ended: false,
+            incomplete: false,
+        })
+    }
+
+    /// Read accumulated lines from the Host log, from an opaque cursor.
+    ///
+    /// Without a cursor this returns a bounded tail; with one it continues
+    /// exactly after it, so a caller never stitches two unrelated windows
+    /// together. `limited` says the Host could not honour the cursor (log
+    /// rotation or a resync), which is not the same as "you asked for few lines".
+    pub fn read_stream(
+        &mut self,
+        session_id: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> TResult<ReadOutcome> {
+        let limit = limit.clamp(1, text::MAX_READ_LINES);
+        let resume = match cursor {
+            Some(cursor) => Some(decode_cursor(cursor)?),
+            None => None,
+        };
+        if self.is_terminal(session_id)? {
+            return Ok(ReadOutcome::ended());
         }
         self.detach(session_id);
-        let attachment = self.open_attachment(session_id)?;
-        self.attachments.touch(session_id, &attachment.attachment_id);
+        let attachment = self.service().attach_session(SessionAttachParams {
+            session_id: session_id.to_string(),
+            replay_tail_bytes: if resume.is_some() { 0 } else { ATTACH_REPLAY_BYTES },
+            resume_from: resume.clone(),
+            subscribe_output: true,
+            screen_snapshot: false,
+        })?;
+        let attachment_id = attachment.attachment_id.clone();
+        self.attachments.touch(session_id, &attachment_id);
         let mut stream = StreamState::default();
+        let mut last_cursor = attachment.cursor.clone().or(resume);
+        let mut limited = false;
         let mut idle_polls = 0;
         for _ in 0..12 {
-            let poll = self.poll(session_id, 256, 100)?;
+            let poll = self.service().poll_session(SessionPollParams {
+                attachment_id: attachment_id.clone(),
+                limit: 256,
+                wait_ms: 100,
+            })?;
             let empty = poll.events.is_empty();
+            for event in &poll.events {
+                if event.event_type == "resync_required" {
+                    limited = true;
+                }
+                last_cursor = Some(event.cursor.clone());
+            }
             stream.absorb(&poll.events);
             if poll.closed || stream.exit.is_some() {
                 break;
@@ -1044,26 +1179,110 @@ impl SessionOps {
                 idle_polls = 0;
             }
         }
-        let (trimmed, truncated) = text::tail(&stream.tail, want);
+        let mut lines: Vec<String> = stream
+            .tail
+            .split('\n')
+            .map(|line| line.trim_end().to_string())
+            .collect();
+        while lines.last().is_some_and(|line| line.is_empty()) {
+            lines.pop();
+        }
+        let truncated = lines.len() > limit;
+        if truncated {
+            lines.drain(..lines.len() - limit);
+        }
         Ok(ReadOutcome {
-            text: trimmed,
+            source: "stream",
+            returned_line_count: lines.len(),
+            lines,
             truncated,
-            bytes: stream.bytes,
-            ended: stream.exit.is_some() || self.session_ended(session_id),
+            limited,
+            next_cursor: last_cursor.as_ref().map(encode_cursor),
+            ended: stream.exit.is_some(),
             incomplete: stream.incomplete,
         })
     }
 
-    fn session_ended(&self, session_id: &str) -> bool {
-        self.summary(session_id)
-            .map(|summary| {
-                matches!(
-                    summary.lifecycle.as_str(),
-                    "exited" | "stopped" | "interrupted" | "failed"
-                )
+    /// The Agent's own transcript, when it can be read exactly.
+    ///
+    /// Preferred over scraping a screen: it is the conversation, not a render of
+    /// it, and it survives the Session ending. `reason` mirrors the Host's own
+    /// source status so a caller can tell "no transcript exists" from "we could
+    /// not read it".
+    pub fn read_transcript(
+        &mut self,
+        session_id: &str,
+        limit: usize,
+    ) -> TResult<TranscriptOutcome> {
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "limit": limit.clamp(1, 200),
+            "includeToolResults": false,
+        });
+        let page = match self
+            .service()
+            .extended_facade("history.page", params)
+        {
+            Ok(page) => page,
+            Err(error) => {
+                return Ok(TranscriptOutcome {
+                    available: false,
+                    reason: Some(format!("{error:?}").chars().take(160).collect()),
+                    lines: Vec::new(),
+                })
+            }
+        };
+        let status = page
+            .get("sourceStatus")
+            .and_then(|status| status.get("status"))
+            .and_then(|status| status.as_str())
+            .unwrap_or("unavailable");
+        if status != "available" {
+            let reason = page
+                .get("sourceStatus")
+                .and_then(|status| status.get("reason"))
+                .and_then(|reason| reason.as_str())
+                .map(str::to_string)
+                .or_else(|| Some(status.to_string()));
+            return Ok(TranscriptOutcome {
+                available: false,
+                reason,
+                lines: Vec::new(),
+            });
+        }
+        let lines: Vec<String> = page
+            .get("events")
+            .and_then(|events| events.as_array())
+            .map(|events| {
+                events
+                    .iter()
+                    .filter_map(|event| event.get("text").and_then(|text| text.as_str()))
+                    .flat_map(str::lines)
+                    .map(|line| line.trim_end().to_string())
+                    .collect()
             })
-            .unwrap_or(false)
+            .unwrap_or_default();
+        Ok(TranscriptOutcome {
+            available: true,
+            reason: None,
+            lines,
+        })
     }
+
+}
+
+/// Opaque cursor: callers must round-trip it, never parse it.
+fn encode_cursor(cursor: &RunCursor) -> String {
+    let json = serde_json::to_vec(cursor).unwrap_or_default();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+}
+
+fn decode_cursor(cursor: &str) -> TResult<RunCursor> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor.as_bytes())
+        .map_err(|_| ToolFailure::new("invalid_cursor", "cursor is not a value this server issued"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| ToolFailure::new("invalid_cursor", "cursor is not a value this server issued"))
 }
 
 fn settle(
@@ -1080,6 +1299,8 @@ fn settle(
         confidence: confidence.to_string(),
         evidence,
         tail: stream.tail_text(),
+        tail_source: "stream",
+        fallback_reason: None,
         incomplete: stream.incomplete,
         waited_ms: started.elapsed().as_millis(),
     }
@@ -1114,17 +1335,90 @@ enum SubmitEvidence {
 }
 
 pub struct ReadOutcome {
-    pub text: String,
+    /// Where these lines came from: `screen`, `stream` or `screen-unavailable`.
+    pub source: &'static str,
+    pub lines: Vec<String>,
+    pub returned_line_count: usize,
+    /// Older lines were dropped to honour `limit`.
     pub truncated: bool,
-    pub bytes: u64,
+    /// The Host could not honour the cursor (rotation or resync).
+    pub limited: bool,
+    /// Opaque continuation for `source: "stream"`.
+    pub next_cursor: Option<String>,
     pub ended: bool,
-    /// The Host reported a gap; the returned text is not a complete window.
+    /// The Host reported a gap; these lines are not a complete window.
     pub incomplete: bool,
+}
+
+impl ReadOutcome {
+    fn unavailable(source: &'static str) -> ReadOutcome {
+        ReadOutcome {
+            source,
+            lines: Vec::new(),
+            returned_line_count: 0,
+            truncated: false,
+            limited: false,
+            next_cursor: None,
+            ended: false,
+            incomplete: false,
+        }
+    }
+
+    fn ended() -> ReadOutcome {
+        ReadOutcome {
+            ended: true,
+            ..ReadOutcome::unavailable("screen-unavailable")
+        }
+    }
+
+    /// Joined view for callers that only want text (and for the dialog checks).
+    pub fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+}
+
+/// Result of reading the Agent's own transcript.
+pub struct TranscriptOutcome {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub lines: Vec<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursors_round_trip_and_reject_foreign_values() {
+        let cursor = RunCursor {
+            run_id: "run_1".into(),
+            run_ordinal: 3,
+            generation: 2,
+            offset: 41_000,
+            status_sequence: 7,
+        };
+        let encoded = encode_cursor(&cursor);
+        // Opaque to callers: no plain JSON leaks the internals.
+        assert!(!encoded.contains('{'));
+        let decoded = decode_cursor(&encoded).unwrap();
+        assert_eq!(decoded.run_id, "run_1");
+        assert_eq!(decoded.offset, 41_000);
+        let error = decode_cursor("not-a-cursor").unwrap_err();
+        assert_eq!(error.code, "invalid_cursor");
+    }
+
+    #[test]
+    fn read_outcome_joins_lines_and_reports_absence() {
+        let outcome = ReadOutcome {
+            source: "screen",
+            lines: vec!["one".into(), "two".into()],
+            returned_line_count: 2,
+            ..ReadOutcome::unavailable("screen")
+        };
+        assert_eq!(outcome.text(), "one\ntwo");
+        assert!(ReadOutcome::unavailable("screen-unavailable").lines.is_empty());
+        assert!(ReadOutcome::ended().ended);
+    }
 
     #[test]
     fn blocking_prompts_are_recognized_from_real_screens() {
