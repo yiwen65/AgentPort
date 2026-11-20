@@ -33,7 +33,12 @@ vi.mock("./terminals", () => ({
   resetForRestart: vi.fn(),
 }));
 
-import { openSessionForExternalAgent } from "./actions";
+import {
+  applyExternalPaneCommand,
+  closeSessionPaneForExternalAgent,
+  openSessionForExternalAgent,
+  splitSessionForExternalAgent,
+} from "./actions";
 import {
   orderedLayoutSessionIds,
   singletonPaneLayout,
@@ -157,6 +162,132 @@ describe("openSessionForExternalAgent", () => {
     expect(orderedLayoutSessionIds(getState().terminalLayout)).toContain(
       "ses_agent",
     );
+  });
+
+  it("splits a pane in either direction and focuses the new one", () => {
+    for (const direction of ["right", "down"] as const) {
+      setState({
+        projects: projectWith(baseSession, agentSession),
+        activeSessionId: "ses_old",
+        terminalLayout: singletonPaneLayout("ses_old"),
+        terminalLayoutGroups: [],
+        maximizedSessionId: null,
+        attachedIds: ["ses_old"],
+        dialog: null,
+        confirm: null,
+        toasts: [],
+        archivingSessionIds: [],
+      });
+      expect(splitSessionForExternalAgent("ses_agent", direction, null)).toBe(true);
+      const ids = orderedLayoutSessionIds(getState().terminalLayout);
+      expect(ids).toContain("ses_old");
+      expect(ids).toContain("ses_agent");
+      expect(getState().activeSessionId).toBe("ses_agent");
+    }
+  });
+
+  it("splits beside an explicit target pane", () => {
+    const layout = splitPane(
+      singletonPaneLayout("ses_watching"),
+      "ses_watching",
+      "ses_old",
+      "right",
+    );
+    setState({
+      projects: projectWith(baseSession, watchingSession, agentSession),
+      // `splitPane` focuses the new pane, so the workspace focus is `ses_old`.
+      activeSessionId: "ses_old",
+      terminalLayout: layout,
+      terminalLayoutGroups: [],
+      maximizedSessionId: null,
+      attachedIds: ["ses_watching", "ses_old"],
+      dialog: null,
+      confirm: null,
+      toasts: [],
+      archivingSessionIds: [],
+    });
+    expect(
+      splitSessionForExternalAgent("ses_agent", "down", "ses_old", false),
+    ).toBe(true);
+    const ids = orderedLayoutSessionIds(getState().terminalLayout);
+    expect(ids).toHaveLength(3);
+    // focus=false keeps the user's focus where it was, not on the new pane.
+    expect(getState().activeSessionId).toBe("ses_old");
+  });
+
+  it("focuses instead of duplicating a Session already on screen", () => {
+    const layout = splitPane(
+      singletonPaneLayout("ses_watching"),
+      "ses_watching",
+      "ses_old",
+      "right",
+    );
+    setState({
+      projects: projectWith(baseSession, watchingSession),
+      activeSessionId: "ses_watching",
+      terminalLayout: layout,
+      terminalLayoutGroups: [],
+      maximizedSessionId: null,
+      attachedIds: ["ses_watching", "ses_old"],
+      dialog: null,
+      confirm: null,
+      toasts: [],
+      archivingSessionIds: [],
+    });
+    expect(splitSessionForExternalAgent("ses_old", "down", null)).toBe(true);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toHaveLength(2);
+    expect(getState().activeSessionId).toBe("ses_old");
+  });
+
+  it("closes a pane without touching the Session", () => {
+    const layout = splitPane(
+      singletonPaneLayout("ses_watching"),
+      "ses_watching",
+      "ses_old",
+      "right",
+    );
+    setState({
+      projects: projectWith(baseSession, watchingSession),
+      activeSessionId: "ses_old",
+      terminalLayout: layout,
+      terminalLayoutGroups: [],
+      maximizedSessionId: null,
+      attachedIds: ["ses_watching", "ses_old"],
+      dialog: null,
+      confirm: null,
+      toasts: [],
+      archivingSessionIds: [],
+    });
+    expect(closeSessionPaneForExternalAgent("ses_old")).toBe(true);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      "ses_watching",
+    ]);
+  });
+
+  it("routes queued intents and ignores unknown kinds", () => {
+    setState({
+      projects: projectWith(baseSession, agentSession),
+      activeSessionId: "ses_old",
+      terminalLayout: singletonPaneLayout("ses_old"),
+      terminalLayoutGroups: [],
+      maximizedSessionId: null,
+      attachedIds: ["ses_old"],
+      dialog: null,
+      confirm: null,
+      toasts: [],
+      archivingSessionIds: [],
+    });
+    expect(
+      applyExternalPaneCommand({
+        kind: "split_pane",
+        sessionId: "ses_agent",
+        direction: "right",
+      }),
+    ).toBe(true);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toContain("ses_agent");
+    expect(
+      applyExternalPaneCommand({ kind: "nonsense", sessionId: "ses_agent" }),
+    ).toBe(false);
   });
 
   it("retries after a refresh when the Session is not in the tree yet", async () => {

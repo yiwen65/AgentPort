@@ -53,6 +53,9 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `cancel_turn` | 发 Ctrl-C，会话保留 |
 | `terminate_session` | 停止并清理整个进程组，不可逆 |
 | `open_pane` | 请求桌面 App 把这个 Session 放进可见布局并聚焦 |
+| `split_pane` | 请求给这个 Session 新开一个窗格：`direction=right\|down`，`targetSessionId` 指定参照窗格（默认当前聚焦的），`focus` 决定是否夺焦 |
+| `focus_pane` | 请求聚焦这个 Session 的窗格（不在屏上就先放上去） |
+| `close_pane` | 请求把这个 Session 的窗格从布局移除；**只改视图，不停会话** |
 
 一次典型委派：
 
@@ -127,9 +130,13 @@ user 消息就停——所以 tool result 和 thinking 永远不会混进来（t
 
 AgentPort 界面本身是"可重连客户端"，它并没有轮询本机数据库。因此外部进程写入的 Session
 由 App 内的观察者接手：检测到别的连接提交了事务，就采纳运行中的 Session（挂上 Host monitor，
-状态、未读、通知随之而来）并广播一次 `projects-changed`。`open_pane` 走的是同一套机制里的
+状态、未读、通知随之而来）并广播一次 `projects-changed`。分屏/聚焦/关窗格走的是同一套机制里的
 命令行队列（`<数据目录>/mcp/ui-commands.jsonl`），由渲染层用自己的 action 应用 ——
-分屏布局的权威始终在前端，MCP 只能"请求"。
+分屏布局的权威始终在前端，MCP 只能"请求"，所以回执说的是 `queued`，不是"窗格已存在"。
+
+语义细节：已经上屏的 Session 再请求 `split_pane` 只会聚焦、不会重复开窗格；窗格太小放不下
+（320×180 门限）或找不到参照窗格时，退化为"就在当前视图显示它"，不会留下空白工作区；
+`focus: false` 保持用户原来的焦点，而不是把焦点扔给新窗格。
 
 桌面 App 没在运行时：Session 照常创建和运行，`open_pane` 命令留在队列里，等 App 起来后消费。
 

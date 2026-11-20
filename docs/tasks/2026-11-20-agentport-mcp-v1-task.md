@@ -98,7 +98,7 @@ AgentPort 的界面只是可重连客户端，真正拥有进程的是 `agentpor
 | P1 | `agentport-mcp` crate：stdio JSON-RPC、工具框架、只读工具、归属注册表 | done |
 | P2 | 写入工具：`create_session`（ready 门）、`send_prompt`、`wait_for_task`、`read_output`、`cancel_turn`、`terminate_session` | done |
 | P3 | GUI 可见性：本地 DB 变更观察（`PRAGMA data_version`）→ 采纳 Session + 广播 `projects-changed` | done |
-| P4 | `open_pane`：命令队列 + GUI 消费 + 前端 `openSessionForExternalAgent` | done |
+| P4 | 窗格意图：命令队列 + GUI 消费 + 前端 `openSessionForExternalAgent` / `splitSessionForExternalAgent` / `closeSessionPaneForExternalAgent`（open/split/focus/close） | done |
 | P5 | 打包与文档：`externalBin`、macOS/CI/Linux 构建脚本、`docs/mcp.md`、README | done（安装 wrapper 未做，见 R-005） |
 
 <!-- task-doc-section:verification -->

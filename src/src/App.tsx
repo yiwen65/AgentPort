@@ -21,7 +21,7 @@ import {
   applyThemeSettings,
   isMac,
   openNewSessionDialog,
-  openSessionForExternalAgent,
+  applyExternalPaneCommand,
   openSplitAgentPicker,
   refreshProjectsSoon,
   restartSessionFlow,
@@ -203,11 +203,7 @@ function useBoot() {
           onMcpUiCommand((command) => {
             applyWhenBooted(() => {
               if (!shouldApplyLocalBackendEvent(getState())) return;
-              if (command.kind !== "open_pane" || !command.sessionId) return;
-              openSessionForExternalAgent(
-                command.sessionId,
-                command.focus !== false,
-              );
+              applyExternalPaneCommand(command);
             });
           }),
           onSessionState((ev) => {

@@ -805,6 +805,87 @@ export function openSessionForExternalAgent(
   return true;
 }
 
+/**
+ * Put a Session in a new pane beside the focused one (or beside `targetSessionId`).
+ *
+ * Used by the desktop-side pane intents the MCP queues, so a coordinator can
+ * line up several delegated agents. A Session already on screen is focused
+ * instead of duplicated, and a pane too small to split falls back to showing the
+ * Session in the ordinary view — the intent must never leave a blank workspace.
+ */
+export function splitSessionForExternalAgent(
+  sessionId: string,
+  direction: PaneSplitDirection,
+  targetSessionId: string | null,
+  focus = true,
+): boolean {
+  const state = getState();
+  if (!findSession(state.projects, sessionId)) {
+    void refreshProjects().then(() => {
+      if (findSession(getState().projects, sessionId)) {
+        splitSessionForExternalAgent(sessionId, direction, targetSessionId, focus);
+      }
+    });
+    return false;
+  }
+  const key = activeKeyFor(sessionId);
+  const layout = visiblePaneLayout(state.terminalLayout, activeSessionKey(state));
+  if (layoutContains(layout, key)) {
+    return openSessionForExternalAgent(sessionId, focus);
+  }
+  const targetKey =
+    (targetSessionId ? activeKeyFor(targetSessionId) : null) ??
+    layout.focusedSessionId ??
+    activeSessionKey(state);
+  if (!targetKey || targetKey === key) {
+    return openSessionForExternalAgent(sessionId, focus);
+  }
+  // `focus: false` must keep the pane the user was in, which is not
+  // necessarily the split target.
+  const previous = plainActiveId(layout.focusedSessionId ?? activeSessionKey(state));
+  if (!splitSessionIntoPane(targetKey, key, direction)) {
+    return openSessionForExternalAgent(sessionId, focus);
+  }
+  if (!focus && previous) selectSession(previous);
+  return true;
+}
+
+/** Drop a Session's pane from the layout; the Session keeps running. */
+export function closeSessionPaneForExternalAgent(sessionId: string): boolean {
+  return removeSessionPane(activeKeyFor(sessionId));
+}
+
+/** One pane intent from the MCP queue (see `crates/agentport-mcp/src/ui.rs`). */
+export interface ExternalPaneCommand {
+  kind: string;
+  sessionId: string;
+  focus?: boolean;
+  direction?: string;
+  targetSessionId?: string;
+}
+
+/** Apply one queued pane intent. Unknown kinds are ignored, never guessed. */
+export function applyExternalPaneCommand(command: ExternalPaneCommand): boolean {
+  if (!command.sessionId) return false;
+  switch (command.kind) {
+    case "open_pane":
+      return openSessionForExternalAgent(command.sessionId, command.focus !== false);
+    case "split_pane":
+      return splitSessionForExternalAgent(
+        command.sessionId,
+        command.direction === "down" ? "down" : "right",
+        command.targetSessionId ?? null,
+        command.focus !== false,
+      );
+    case "focus_pane":
+      return openSessionForExternalAgent(command.sessionId, true);
+    case "close_pane":
+      return closeSessionPaneForExternalAgent(command.sessionId);
+    default:
+      return false;
+  }
+}
+
 export function removeSessionPane(key: string): boolean {
   const state = getState();
   const displayLayout = visiblePaneLayout(

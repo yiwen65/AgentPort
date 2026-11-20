@@ -131,6 +131,9 @@ def main() -> int:
             "cancel_turn",
             "terminate_session",
             "open_pane",
+            "split_pane",
+            "focus_pane",
+            "close_pane",
         }
         check(names == expected, f"exactly the v1 tool set ({len(names)} tools)")
         check("send_input" not in names, "raw byte input is not exposed")
@@ -279,11 +282,39 @@ def main() -> int:
         )
         check(is_error and bad["error"]["code"] == "invalid_permission", "unknown permission rejected")
 
-        print("open_pane")
+        print("pane intents")
         pane, is_error = client.call("open_pane", {"sessionId": session_id})
-        check(not is_error and pane["queued"], "pane command queued")
+        check(not is_error and pane["queued"], "open_pane queued")
         queue = data_dir / "mcp" / "ui-commands.jsonl"
         check(queue.is_file(), "ui command queue written")
+        split, is_error = client.call(
+            "split_pane", {"sessionId": session_id, "direction": "down"}
+        )
+        check(not is_error and split["kind"] == "split_pane", "split_pane queued")
+        bad_split, is_error = client.call(
+            "split_pane", {"sessionId": session_id, "direction": "left"}
+        )
+        check(is_error and bad_split["error"]["code"] == "invalid_arguments", "bad direction rejected")
+        focused, is_error = client.call("focus_pane", {"sessionId": session_id})
+        check(not is_error and focused["queued"], "focus_pane queued")
+        closed, is_error = client.call("close_pane", {"sessionId": session_id})
+        check(not is_error and closed["queued"], "close_pane queued")
+        commands = [
+            json.loads(line) for line in queue.read_text().splitlines() if line.strip()
+        ]
+        kinds = [command["kind"] for command in commands]
+        check(
+            kinds[-4:] == ["open_pane", "split_pane", "focus_pane", "close_pane"],
+            f"every pane intent reaches the desktop queue ({kinds[-4:]})",
+        )
+        check(
+            commands[-3]["direction"] == "down",
+            "the split direction travels with the intent",
+        )
+        check(
+            all(command["source"] == "mcp" for command in commands),
+            "queued intents are attributed to the MCP",
+        )
 
         print("completion is not guessed (regression: quiet window vs a running command)")
         # A prompt that runs for seconds must never be reported as finished

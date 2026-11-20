@@ -102,6 +102,25 @@ pub const TOOLS: &[ToolDef] = &[
                       layout. Fails when the app is not running.",
         schema: open_pane_schema,
     },
+    ToolDef {
+        name: "split_pane",
+        description: "Ask the desktop app to put this Session in a NEW pane, to the right of or \
+                      below the focused pane (or below/right of targetSessionId). Use this to \
+                      watch several delegated agents side by side.",
+        schema: split_pane_schema,
+    },
+    ToolDef {
+        name: "focus_pane",
+        description: "Ask the desktop app to focus this Session's pane (opening it first when it \
+                      is not on screen).",
+        schema: focus_pane_schema,
+    },
+    ToolDef {
+        name: "close_pane",
+        description: "Ask the desktop app to drop this Session's pane from the layout. The \
+                      Session keeps running; only the view changes.",
+        schema: close_pane_schema,
+    },
 ];
 
 fn obj(properties: Value, required: Value) -> Value {
@@ -247,6 +266,29 @@ fn terminate_session_schema() -> Value {
     )
 }
 
+fn split_pane_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "direction": { "type": "string", "enum": ["right", "down"], "default": "right" },
+            "targetSessionId": {
+                "type": "string",
+                "description": "Split beside this Session instead of the focused pane"
+            },
+            "focus": { "type": "boolean", "default": true }
+        }),
+        json!(["sessionId"]),
+    )
+}
+
+fn focus_pane_schema() -> Value {
+    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+}
+
+fn close_pane_schema() -> Value {
+    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+}
+
 fn open_pane_schema() -> Value {
     obj(
         json!({
@@ -343,6 +385,9 @@ impl Toolbox {
             "cancel_turn" => self.cancel_turn(&args),
             "terminate_session" => self.terminate_session(&args),
             "open_pane" => self.open_pane(&args),
+            "split_pane" => self.split_pane(&args),
+            "focus_pane" => self.focus_pane(&args),
+            "close_pane" => self.close_pane(&args),
             other => Err(ToolFailure::new(
                 "unknown_tool",
                 format!("unknown tool {other}"),
@@ -976,15 +1021,75 @@ impl Toolbox {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
         let focus = args.get("focus").and_then(Value::as_bool).unwrap_or(true);
-        let command_id = ui::enqueue(&self.root, "open_pane", &session_id, focus, &now_rfc3339())
-            .map_err(|error| {
-                ToolFailure::new("ui_queue_failed", format!("could not queue the pane: {error}"))
-            })?;
+        self.queue_pane(ui::PaneIntent::open(&session_id, focus))
+    }
+
+    /// Put the Session in a new pane beside the focused one (or beside
+    /// `targetSessionId`). The renderer owns the layout, so this is an intent;
+    /// the reply says the command was queued, not that a pane exists.
+    fn split_pane(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let direction = optional_str(args, "direction").unwrap_or_else(|| "right".into());
+        if !matches!(direction.as_str(), "right" | "down") {
+            return Err(ToolFailure::new(
+                "invalid_arguments",
+                "direction must be right or down",
+            ));
+        }
+        let target = optional_str(args, "targetSessionId");
+        if let Some(target) = target.as_ref() {
+            self.require_owned(target)?;
+        }
+        let focus = args.get("focus").and_then(Value::as_bool).unwrap_or(true);
+        self.queue_pane(ui::PaneIntent {
+            kind: "split_pane",
+            session_id: &session_id,
+            direction: Some(if direction == "down" { "down" } else { "right" }),
+            target_session_id: target.as_deref(),
+            focus,
+        })
+    }
+
+    fn focus_pane(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        self.queue_pane(ui::PaneIntent {
+            kind: "focus_pane",
+            session_id: &session_id,
+            direction: None,
+            target_session_id: None,
+            focus: true,
+        })
+    }
+
+    /// Remove the Session's pane from the layout. The Session keeps running:
+    /// only the view changes.
+    fn close_pane(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        self.queue_pane(ui::PaneIntent {
+            kind: "close_pane",
+            session_id: &session_id,
+            direction: None,
+            target_session_id: None,
+            focus: false,
+        })
+    }
+
+    fn queue_pane(&self, intent: ui::PaneIntent<'_>) -> TResult<Value> {
+        let kind = intent.kind;
+        let session_id = intent.session_id.to_string();
+        let command_id = ui::enqueue(&self.root, intent, &now_rfc3339()).map_err(|error| {
+            ToolFailure::new("ui_queue_failed", format!("could not queue the pane: {error}"))
+        })?;
         Ok(json!({
             "sessionId": session_id,
+            "kind": kind,
             "queued": true,
             "commandId": command_id,
-            "note": "the desktop app applies this on its next queue poll",
+            "note": "the desktop app applies this on its next queue poll; the pane layout is \
+                     owned by the renderer, so a queued intent is not a promise of layout",
         }))
     }
 

@@ -814,6 +814,10 @@ export interface McpUiCommand {
   kind: string;
   sessionId: string;
   focus?: boolean;
+  /** `right` | `down`, for `split_pane`. */
+  direction?: string;
+  /** Split beside this Session instead of the focused pane. */
+  targetSessionId?: string;
   createdAt?: string;
   source?: string;
 }
