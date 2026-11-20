@@ -796,6 +796,22 @@ describe("SessionWorkspace", () => {
     persist.mockRestore();
   });
 
+  it("continues a paced fullscreen redraw on the parser microtask, not a frame later", async () => {
+    const { client, emit } = setupClient();
+    terminalHarness.queued = true;
+    render(<SessionWorkspace open={open} client={client} onSessionChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("article")).toHaveAttribute("data-connection-state", "live"));
+    act(() => emit({ subscriptionId: "att-1", eventType: "output", cursor: null,
+      payload: { session_id: "ses-1", dataBase64: btoa("first") } }));
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+    act(() => emit({ subscriptionId: "att-1", eventType: "output", cursor: null,
+      payload: { session_id: "ses-1", dataBase64: btoa("second") } }));
+    expect(terminalHarness.writesQueue).toHaveLength(2);
+    act(() => terminalHarness.writesQueue.shift()?.());
+    await act(async () => { await Promise.resolve(); });
+    expect(terminalHarness.writesQueue).toHaveLength(1);
+  });
+
   it("shows the small replay immediately and allows input before replay completes", async () => {
     const { client, request, emit } = setupClient({ autoReplay: false });
     terminalHarness.queued = true;

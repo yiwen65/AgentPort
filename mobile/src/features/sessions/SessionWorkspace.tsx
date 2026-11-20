@@ -240,8 +240,18 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
     outputWriteInFlight.current = true;
     handle.write(mergeChunks(chunks, totalBytes), () => {
       outputWriteInFlight.current = false;
-      if (pendingOutputChunks.current.length > 0 && outputFrame.current === undefined) {
-        outputFrame.current = window.requestAnimationFrame(flushTerminalOutput);
+      if (pendingOutputChunks.current.length > 0) {
+        // A DEC 2026 fullscreen redraw can span several output chunks. Waiting
+        // for another animation frame between chunks turns a single remote
+        // frame into hundreds of milliseconds of blank/held UI on mobile. The
+        // xterm write callback already marks a parser boundary; cancel the
+        // speculative frame queued while this write was parsing and continue
+        // on a microtask. Rendering remains gated by synchronizedOutput.
+        if (outputFrame.current !== undefined) {
+          window.cancelAnimationFrame(outputFrame.current);
+          outputFrame.current = undefined;
+        }
+        queueMicrotask(flushTerminalOutput);
       }
     });
   }, [mergeChunks]);
