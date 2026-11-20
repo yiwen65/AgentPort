@@ -44,6 +44,21 @@ pub fn tail(text: &str, max_bytes: usize) -> (String, bool) {
     (text[start..].to_string(), true)
 }
 
+/// Keep at most `max_bytes` from the beginning, on a char boundary.
+///
+/// A reply is cut from the end: the beginning is the answer, the tail is where
+/// a caller can afford to lose text.
+pub fn head(text: &str, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text.to_string(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
 /// Append `chunk` and keep the buffer under `cap` bytes, trimming from the
 /// front on a char boundary.
 pub fn push_bounded(buffer: &mut String, chunk: &str, cap: usize) {

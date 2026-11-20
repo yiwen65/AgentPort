@@ -207,9 +207,9 @@ fn read_output_schema() -> Value {
             "sessionId": { "type": "string" },
             "source": {
                 "type": "string",
-                "enum": ["auto", "screen", "stream", "transcript"],
+                "enum": ["auto", "reply", "screen", "stream", "transcript"],
                 "default": "auto",
-                "description": "auto/screen project the Host's VT grid (overwrites resolved); stream returns accumulated lines from a cursor; transcript reads the Agent's own message history."
+                "description": "auto/screen project the Host's VT grid (overwrites resolved); reply returns the assistant's answer for the current turn only; stream returns accumulated lines from a cursor; transcript returns the assistant messages in the Agent's own history."
             },
             "limit": {
                 "type": "integer",
@@ -263,6 +263,8 @@ struct SettledTurn {
     source: String,
     confidence: String,
     evidence: String,
+    reply: Option<String>,
+    reply_unavailable_reason: Option<String>,
     tail_source: &'static str,
     fallback_reason: Option<String>,
 }
@@ -772,7 +774,14 @@ impl Toolbox {
             None => self.baselines.get(&session_id).copied(),
         };
         if since.is_none() {
-            if let Some(previous) = self.settled.get(&session_id) {
+            // Only answer from the cache when it carries the reply: a settled
+            // turn with no answer is worth re-reading (the transcript may have
+            // caught up since).
+            if let Some(previous) = self
+                .settled
+                .get(&session_id)
+                .filter(|previous| previous.reply.is_some())
+            {
                 return Ok(json!({
                     "sessionId": session_id,
                     "state": previous.state,
@@ -780,6 +789,9 @@ impl Toolbox {
                     "confidence": previous.confidence,
                     "evidence": previous.evidence,
                     "waitedMs": 0,
+                    "reply": previous.reply,
+                    "replyTruncated": false,
+                    "replyUnavailableReason": previous.reply_unavailable_reason,
                     "outputTail": "",
                     "outputSource": previous.tail_source,
                     "outputFallbackReason": previous.fallback_reason,
@@ -804,6 +816,8 @@ impl Toolbox {
                     source: outcome.source.clone(),
                     confidence: outcome.confidence.clone(),
                     evidence: outcome.evidence.clone(),
+                    reply: outcome.reply.clone(),
+                    reply_unavailable_reason: outcome.reply_unavailable_reason.clone(),
                     tail_source: outcome.tail_source,
                     fallback_reason: outcome.fallback_reason.clone(),
                 },
@@ -816,6 +830,11 @@ impl Toolbox {
             "confidence": outcome.confidence,
             "evidence": outcome.evidence,
             "waitedMs": outcome.waited_ms,
+            // The conversational part: the child's answer for this turn.
+            "reply": outcome.reply,
+            "replyTruncated": outcome.reply_truncated,
+            "replyUnavailableReason": outcome.reply_unavailable_reason,
+            // Evidence for when no transcript exists (or the turn wrote none).
             "outputTail": outcome.tail,
             "outputSource": outcome.tail_source,
             "outputFallbackReason": outcome.fallback_reason,
@@ -835,22 +854,46 @@ impl Toolbox {
                     .unwrap_or(text::DEFAULT_READ_LINES)
             });
         let source = optional_str(args, "source").unwrap_or_else(|| "auto".into());
-        if !matches!(source.as_str(), "auto" | "screen" | "stream" | "transcript") {
+        if !matches!(
+            source.as_str(),
+            "auto" | "reply" | "screen" | "stream" | "transcript"
+        ) {
             return Err(ToolFailure::new(
                 "invalid_arguments",
-                "source must be auto, screen, stream or transcript",
+                "source must be auto, reply, screen, stream or transcript",
             ));
         }
+        if source == "reply" {
+            let reply = self.ops.read_reply(&session_id, text::MAX_READ_BYTES)?;
+            return Ok(json!({
+                "sessionId": session_id,
+                "source": reply.source,
+                "lines": reply.text.lines().map(str::to_string).collect::<Vec<_>>(),
+                "text": reply.text,
+                "truncated": reply.truncated,
+                "limited": false,
+                "nextCursor": Value::Null,
+                "fallbackReason": reply.unavailable_reason,
+            }));
+        }
         if source == "transcript" {
-            let transcript = self.ops.read_transcript(&session_id, limit)?;
-            let (tail, truncated) = text::tail(
-                &transcript.lines.join("\n"),
-                text::MAX_READ_BYTES,
-            );
+            let transcript = self.ops.read_transcript_events(&session_id, limit)?;
+            let lines: Vec<String> = transcript
+                .events
+                .iter()
+                .filter(|event| event.role == "assistant" && !event.text.trim().is_empty())
+                .flat_map(|event| event.text.lines().map(str::to_string))
+                .collect();
+            let (text, truncated) = text::tail(&lines.join("\n"), text::MAX_READ_BYTES);
+            let lines: Vec<String> = if truncated {
+                text.lines().map(str::to_string).collect()
+            } else {
+                lines
+            };
             return Ok(json!({
                 "sessionId": session_id,
                 "source": if transcript.available { "transcript" } else { "transcript-unavailable" },
-                "lines": if truncated { tail.lines().map(str::to_string).collect::<Vec<_>>() } else { transcript.lines },
+                "lines": lines,
                 "truncated": truncated,
                 "limited": false,
                 "fallbackReason": transcript.reason,

@@ -185,6 +185,11 @@ def main() -> int:
             waited.get("outputSource") in {"screen", "stream", "transcript"},
             f"the verdict says where its tail came from ({waited.get('outputSource')})",
         )
+        check(waited.get("reply") is None, "a Shell has no conversational reply")
+        check(
+            bool(waited.get("replyUnavailableReason")),
+            "and the reason is reported instead of an empty string",
+        )
 
         print("read_output (screen projection, lines, no redraw garbage)")
         output, is_error = client.call("read_output", {"sessionId": session_id})
@@ -232,6 +237,16 @@ def main() -> int:
             "read_output", {"sessionId": session_id, "source": "stream", "cursor": "garbage"}
         )
         check(is_error and bad["error"]["code"] == "invalid_cursor", "foreign cursors are rejected")
+
+        print("reply source is scoped to one turn")
+        reply, is_error = client.call(
+            "read_output", {"sessionId": session_id, "source": "reply"}
+        )
+        check(not is_error, "a reply read does not fail")
+        check(
+            reply["source"] == "transcript-unavailable" and not reply["lines"],
+            "a Shell turn has no reply to read",
+        )
 
         print("transcript source is honest about absence")
         transcript, is_error = client.call(

@@ -48,7 +48,7 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `list_sessions` / `session_status` | 只读观察；状态带 source / confidence / evidence |
 | `create_session` | 建 Session；带 `prompt` 时在后端等 CLI ready 再发 |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
-| `wait_for_task` | 等当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 |
+| `wait_for_task` | 等当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 + **`reply`（本轮助手的回答原文）** |
 | `read_output` | 按 `source` 读取：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）+ 行数与 `truncated`/`limited` 标注 |
 | `cancel_turn` | 发 Ctrl-C，会话保留 |
 | `terminate_session` | 停止并清理整个进程组，不可逆 |
@@ -101,6 +101,11 @@ Pi、Amp、Generic Shell 上游没有审批概念，`effectivePermissionMode` �
 | `screen`（默认 `auto` 的首选） | 取 Host 的 `terminal_snapshot_v1` 序列化网格，投影成**当前屏幕**：TUI 的重绘覆盖已被解析，不会得到一堆互相覆盖的原始字节 |
 | `stream` | 从 Host 日志按**不透明游标**继续读行；先不带游标读一次，后续用返回的 `nextCursor` 续读，不会把两段不相干的窗口拼起来 |
 | `transcript` | 读 Agent 自己的历史（Claude/Codex/Pi 的 JSONL），会话结束后仍然可读；没有历史时返回 `transcript-unavailable` + `fallbackReason` |
+
+`source: "reply"` 只给**本轮**助手的回答：从原生历史倒着走，跳过 tool 事件、遇到我们发出的那条
+user 消息就停——所以 tool result 和 thinking 永远不会混进来（thinking 在解析层就被丢弃）。
+`wait_for_task` 的 `reply` 字段就是这个东西；拿不到时给 `replyUnavailableReason`，并用
+`outputTail`（screen/stream）作为证据兜底。
 
 返回 `{source, lines[], returnedLineCount, truncated, limited, nextCursor}`：`truncated` 表示为了 `limit`
 丢掉了更早的行，`limited` 表示 Host 无法兑现游标（日志轮转或 resync）；`incomplete: true` 表示有缺口，

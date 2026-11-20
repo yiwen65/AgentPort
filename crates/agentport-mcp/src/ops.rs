@@ -49,6 +49,9 @@ const QUIET_SHELL: Duration = Duration::from_millis(4_000);
 const QUIET_READY: Duration = Duration::from_millis(500);
 /// Cadence for scanning the rendered screen for trust/login prompts.
 const DIALOG_CHECK: Duration = Duration::from_millis(1_500);
+/// A finished turn's transcript line can lag the completion hook slightly.
+const REPLY_SETTLE_ATTEMPTS: usize = 4;
+const REPLY_SETTLE_GAP: Duration = Duration::from_millis(350);
 pub const DEFAULT_READY_MS: u64 = 25_000;
 
 #[derive(Debug, Clone)]
@@ -332,6 +335,10 @@ pub struct WaitOutcome {
     pub confidence: String,
     pub evidence: String,
     pub tail: String,
+    /// The assistant's reply for this turn, when it could be read exactly.
+    pub reply: Option<String>,
+    pub reply_truncated: bool,
+    pub reply_unavailable_reason: Option<String>,
     /// Where `tail` came from: `transcript`, `screen` or `stream`.
     pub tail_source: &'static str,
     /// Why the transcript was not used, when it was not.
@@ -1024,29 +1031,41 @@ impl SessionOps {
         started: Instant,
     ) -> WaitOutcome {
         let mut outcome = settle(state, source, confidence, evidence, stream, started);
-        // Prefer the Agent's own transcript: it is the conversation, it survives
-        // the Session ending, and it does not depend on a render. The screen is
-        // the fallback; a byte tail is the last resort.
-        let mut fallback_reason = None;
-        if let Ok(transcript) = self.read_transcript(session_id, 40) {
-            if transcript.available && !transcript.lines.is_empty() {
-                let text = transcript.lines.join("\n");
-                // A transcript page can be tens of kilobytes; the verdict needs
-                // the answer, not the whole conversation. Callers that want more
-                // page it explicitly with read_output(source="transcript").
-                let (tail, _) = text::tail(&text, text::WAIT_TAIL_BYTES * 2);
-                outcome.tail = tail;
-                outcome.tail_source = "transcript";
-                return outcome;
+        // The answer first: the assistant's own text for this one turn. Tool
+        // output and reasoning never reach it (the transcript layer drops both),
+        // so the caller reads a reply, not a log.
+        //
+        // A completion hook fires before the provider has necessarily flushed
+        // its transcript line, so the answer can be a few hundred milliseconds
+        // late. Wait for it briefly rather than reporting an empty turn.
+        for attempt in 0..REPLY_SETTLE_ATTEMPTS {
+            if let Ok(reply) = self.read_reply(session_id, text::WAIT_TAIL_BYTES * 2) {
+                if reply.is_available() {
+                    outcome.tail = reply.text.clone();
+                    outcome.reply = Some(reply.text);
+                    outcome.reply_truncated = reply.truncated;
+                    outcome.tail_source = reply.source;
+                    return outcome;
+                }
+                if !reply.retryable {
+                    outcome.reply_unavailable_reason = reply.unavailable_reason.clone();
+                    outcome.fallback_reason = reply.unavailable_reason;
+                    break;
+                }
+                outcome.reply_unavailable_reason = reply.unavailable_reason.clone();
+                outcome.fallback_reason = reply.unavailable_reason;
             }
-            fallback_reason = transcript.reason;
+            if attempt + 1 < REPLY_SETTLE_ATTEMPTS {
+                std::thread::sleep(REPLY_SETTLE_GAP);
+            }
         }
+        // Evidence fallbacks for a Session whose Agent keeps no readable
+        // transcript (or has not written the turn yet): the screen, then bytes.
         if let Ok(screen) = self.read_screen(session_id, text::DEFAULT_READ_LINES) {
             let text = screen.text();
             if !text.trim().is_empty() {
                 outcome.tail = text;
                 outcome.tail_source = "screen";
-                outcome.fallback_reason = fallback_reason;
                 return outcome;
             }
         }
@@ -1055,7 +1074,6 @@ impl SessionOps {
             if !text.trim().is_empty() {
                 outcome.tail = text;
                 outcome.tail_source = "stream";
-                outcome.fallback_reason = fallback_reason;
                 outcome.incomplete |= stream.incomplete;
             }
         }
@@ -1203,13 +1221,13 @@ impl SessionOps {
         })
     }
 
-    /// The Agent's own transcript, when it can be read exactly.
+    /// The Agent's own transcript events, newest page first-in-file order.
     ///
-    /// Preferred over scraping a screen: it is the conversation, not a render of
-    /// it, and it survives the Session ending. `reason` mirrors the Host's own
-    /// source status so a caller can tell "no transcript exists" from "we could
-    /// not read it".
-    pub fn read_transcript(
+    /// `history.page` with no cursor starts at the end of the newest source and
+    /// scans backwards, so one call returns the most recent events without
+    /// walking the whole conversation. Thinking blocks never reach this layer
+    /// (the parser drops them) and tool results are excluded on request.
+    pub fn read_transcript_events(
         &mut self,
         session_id: &str,
         limit: usize,
@@ -1219,16 +1237,13 @@ impl SessionOps {
             "limit": limit.clamp(1, 200),
             "includeToolResults": false,
         });
-        let page = match self
-            .service()
-            .extended_facade("history.page", params)
-        {
+        let page = match self.service().extended_facade("history.page", params) {
             Ok(page) => page,
             Err(error) => {
                 return Ok(TranscriptOutcome {
                     available: false,
                     reason: Some(format!("{error:?}").chars().take(160).collect()),
-                    lines: Vec::new(),
+                    events: Vec::new(),
                 })
             }
         };
@@ -1247,25 +1262,72 @@ impl SessionOps {
             return Ok(TranscriptOutcome {
                 available: false,
                 reason,
-                lines: Vec::new(),
+                events: Vec::new(),
             });
         }
-        let lines: Vec<String> = page
+        let events = page
             .get("events")
             .and_then(|events| events.as_array())
             .map(|events| {
                 events
                     .iter()
-                    .filter_map(|event| event.get("text").and_then(|text| text.as_str()))
-                    .flat_map(str::lines)
-                    .map(|line| line.trim_end().to_string())
+                    .map(|event| TranscriptEvent {
+                        role: event
+                            .get("role")
+                            .and_then(|role| role.as_str())
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        kind: event
+                            .get("kind")
+                            .and_then(|kind| kind.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        text: event
+                            .get("text")
+                            .and_then(|text| text.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    })
                     .collect()
             })
             .unwrap_or_default();
         Ok(TranscriptOutcome {
             available: true,
             reason: None,
-            lines,
+            events,
+        })
+    }
+
+    /// The Agent's reply to the prompt this turn, i.e. one conversational turn.
+    ///
+    /// Walks back from the newest event: assistant text is the reply, tool and
+    /// system events are skipped, and the first user message is the boundary —
+    /// that is the prompt we sent. Nothing about tool output or reasoning can
+    /// leak into the answer because neither is an assistant text event.
+    pub fn read_reply(&mut self, session_id: &str, max_bytes: usize) -> TResult<ReplyOutcome> {
+        let transcript = self.read_transcript_events(session_id, 80)?;
+        if !transcript.available {
+            return Ok(ReplyOutcome::unavailable(transcript.reason));
+        }
+        let reply = last_assistant_turn(&transcript.events);
+        if reply.trim().is_empty() {
+            return Ok(ReplyOutcome {
+                text: String::new(),
+                truncated: false,
+                source: "transcript-unavailable",
+                unavailable_reason: Some(
+                    "the transcript has no assistant reply for this turn yet".into(),
+                ),
+                retryable: true,
+            });
+        }
+        let (text, truncated) = text::head(&reply, max_bytes);
+        Ok(ReplyOutcome {
+            text,
+            truncated,
+            source: "transcript",
+            unavailable_reason: None,
+            retryable: false,
         })
     }
 
@@ -1299,6 +1361,9 @@ fn settle(
         confidence: confidence.to_string(),
         evidence,
         tail: stream.tail_text(),
+        reply: None,
+        reply_truncated: false,
+        reply_unavailable_reason: None,
         tail_source: "stream",
         fallback_reason: None,
         incomplete: stream.incomplete,
@@ -1377,16 +1442,101 @@ impl ReadOutcome {
     }
 }
 
+/// One transcript event as the history layer exposes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptEvent {
+    pub role: String,
+    pub kind: String,
+    pub text: String,
+}
+
 /// Result of reading the Agent's own transcript.
 pub struct TranscriptOutcome {
     pub available: bool,
     pub reason: Option<String>,
-    pub lines: Vec<String>,
+    pub events: Vec<TranscriptEvent>,
+}
+
+/// The assistant's answer for one conversational turn.
+#[derive(Debug, Clone)]
+pub struct ReplyOutcome {
+    pub text: String,
+    pub truncated: bool,
+    pub source: &'static str,
+    pub unavailable_reason: Option<String>,
+    /// The transcript itself was readable; only the turn's answer was missing.
+    /// That is worth a short retry, a missing transcript is not.
+    pub retryable: bool,
+}
+
+impl ReplyOutcome {
+    pub fn unavailable(reason: Option<String>) -> ReplyOutcome {
+        ReplyOutcome {
+            text: String::new(),
+            truncated: false,
+            source: "transcript-unavailable",
+            unavailable_reason: reason,
+            retryable: false,
+        }
+    }
+
+    pub fn is_available(&self) -> bool {
+        !self.text.trim().is_empty()
+    }
+}
+
+/// Assistant text of the newest turn, reading the events backwards.
+fn last_assistant_turn(events: &[TranscriptEvent]) -> String {
+    let mut collected: Vec<&str> = Vec::new();
+    for event in events.iter().rev() {
+        match event.role.as_str() {
+            "assistant" if event.kind.is_empty() || event.kind == "assistant" => {
+                if !event.text.trim().is_empty() {
+                    collected.push(event.text.trim());
+                }
+            }
+            // Tool calls and results are not part of the answer, and they must
+            // not end the walk: an agent that used tools still answered.
+            "tool" => continue,
+            "system" => continue,
+            // The prompt we sent is the turn boundary.
+            "user" => break,
+            _ => continue,
+        }
+    }
+    collected.reverse();
+    collected.join("\n\n")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_is_the_assistant_turn_not_the_log() {
+        let event = |role: &str, kind: &str, text: &str| TranscriptEvent {
+            role: role.into(),
+            kind: kind.into(),
+            text: text.into(),
+        };
+        // Previous turn, then our prompt, then a turn that used tools.
+        let events = vec![
+            event("user", "message", "older question"),
+            event("assistant", "assistant", "older answer"),
+            event("user", "message", "the prompt we sent"),
+            event("tool", "tool", "Bash echo hi"),
+            event("assistant", "assistant", "first part"),
+            event("tool", "tool", "Bash npm test"),
+            event("assistant", "assistant", "final answer"),
+        ];
+        // Only this turn's assistant text, tool calls skipped, prompt excluded.
+        assert_eq!(last_assistant_turn(&events), "first part\n\nfinal answer");
+        // Our prompt is the newest event: the turn has not answered yet, so
+        // there is no reply (never the previous turn's answer).
+        assert_eq!(last_assistant_turn(&events[..3]), "");
+        let only_prompt = vec![event("user", "message", "prompt")];
+        assert_eq!(last_assistant_turn(&only_prompt), "");
+    }
 
     #[test]
     fn cursors_round_trip_and_reject_foreign_values() {
