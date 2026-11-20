@@ -137,6 +137,11 @@ user 消息就停——所以 tool result 和 thinking 永远不会混进来（t
 不会把片段当作完整输出。`wait_for_task` 的 `outputTail` 同样优先 `transcript` → `screen` → `stream`，
 并回 `outputSource` / `outputFallbackReason`，判定与依据一起交付。
 
+**会话生命周期**：委派出来的会话**不会自己关闭**。它答完问题后仍然活着（像你开着的终端窗口），
+你可以继续看、继续追问、直接接管；Host 是独立进程，MCP 退出或 GUI 关掉都不会结束它。
+只有这几种情况会停：调用方显式 `terminate_session`、你在界面里停止/归档/删除、删除所属项目或
+Worktree、或 Agent 进程自己退出。**任务完成不是终止的理由**（MCP 的说明里也是这么写的）。
+
 **会话结束**：`terminate_session` 之后 Host 的内存尾部就没了。再调 `wait_for_task` 会得到
 `state: "exited"`，`read_output` 返回 `ended: true` 并明确提示"正文需从 Agent 原生历史读取"，
 不会报成连接错误，也不会伪造内容。

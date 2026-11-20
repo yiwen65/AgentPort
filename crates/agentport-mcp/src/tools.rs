@@ -95,7 +95,9 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "terminate_session",
         description: "Stop the Session and clean up its whole process group. Irreversible: the \
-                      Agent process is gone and only native history remains.",
+                      Agent process is gone and only native history remains. A finished task is \
+                      NOT a reason to call this: Sessions stay open for the user to read and \
+                      continue. Use it only when the user asks, or the Session is stuck.",
         schema: terminate_session_schema,
     },
     ToolDef {
@@ -590,7 +592,8 @@ impl Toolbox {
             return Err(ToolFailure::new(
                 "too_many_sessions",
                 format!(
-                    "this MCP already drives {live_owned} live Sessions (limit {}); terminate one first",
+                    "this MCP already drives {live_owned} live Sessions (limit {}); finish or reuse one, \
+                     or terminate one only if it is actually finished or stuck",
                     self.max_sessions
                 ),
             ));

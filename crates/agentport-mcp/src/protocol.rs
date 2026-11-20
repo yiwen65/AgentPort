@@ -189,7 +189,13 @@ pane-sized Session and sends the first prompt once the CLI is ready; then
 wait_for_task returns idle | needs_input | exited | timeout with the evidence it
 used; read_output returns the bounded terminal tail. cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
-undone. Always terminate Sessions you no longer need.";
+undone.
+
+Sessions are not disposable: a delegated Session keeps running after it answers,
+exactly like a terminal window the user is watching, and the user can read it,
+reply to it or take it over. Do not terminate one because its task finished. Leave
+it running; only terminate a Session when the user asks for it, or when it is stuck
+and cannot be rescued.";
 
 #[cfg(test)]
 mod tests {
