@@ -17,8 +17,9 @@ use std::sync::Arc;
 /// created by the user's Agent may delegate once more, and that grandchild may
 /// not delegate again.
 const DEFAULT_MAX_DEPTH: u32 = 2;
-/// Live Sessions one server instance drives at a time.
-const DEFAULT_MAX_SESSIONS: usize = 8;
+/// Live Sessions one MCP process drives at a time. The budget is per process,
+/// so each agent window gets its own allowance.
+const DEFAULT_MAX_SESSIONS: usize = 16;
 
 fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name)

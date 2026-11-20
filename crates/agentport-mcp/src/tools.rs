@@ -330,6 +330,9 @@ pub struct Toolbox {
     /// `wait_for_task` needs it to tell "finished my turn" apart from "was
     /// already idle before I asked".
     baselines: std::collections::HashMap<String, StatusMark>,
+    /// Sessions this process created. The concurrency budget is per MCP
+    /// process, so another window's server does not consume it.
+    created_here: std::collections::HashSet<String>,
     /// Turns this server already saw settle. A repeated wait must answer from
     /// that fact instead of waiting again, or a caller that polls twice would
     /// burn a full timeout on the second call.
@@ -363,6 +366,7 @@ impl Toolbox {
         Toolbox {
             ops: SessionOps::new(service),
             registry,
+            created_here: std::collections::HashSet::new(),
             baselines: std::collections::HashMap::new(),
             settled: std::collections::HashMap::new(),
             root: config.root,
@@ -592,8 +596,8 @@ impl Toolbox {
             return Err(ToolFailure::new(
                 "too_many_sessions",
                 format!(
-                    "this MCP already drives {live_owned} live Sessions (limit {}); finish or reuse one, \
-                     or terminate one only if it is actually finished or stuck",
+                    "this MCP process already drives {live_owned} live Sessions (limit {}); finish or \
+                     reuse one, or terminate one only if it is actually finished or stuck",
                     self.max_sessions
                 ),
             ));
@@ -689,6 +693,7 @@ impl Toolbox {
             .map_err(ToolFailure::from)?;
 
         let session_id = launch.session_id.clone();
+        self.created_here.insert(session_id.clone());
         if let Err(error) = self.registry.insert(OwnedSession {
             session_id: session_id.clone(),
             created_at: now_rfc3339(),
@@ -700,6 +705,7 @@ impl Toolbox {
         }) {
             // The Session exists and is running: never leave an un-addressable
             // process behind, and never hand back an id the caller cannot use.
+            self.created_here.remove(&session_id);
             let _ = self.ops.stop(&session_id, 1_500);
             return Err(ToolFailure::new(
                 "registry_write_failed",
@@ -1181,12 +1187,17 @@ impl Toolbox {
         ))
     }
 
+    /// Live Sessions this MCP process created and still owns.
+    ///
+    /// The budget is per process (one server per agent window), so a second
+    /// coordinator does not eat into this one's allowance; finished Sessions
+    /// free their slot immediately.
     fn live_owned_count(&mut self) -> TResult<usize> {
         let sessions = self.ops.list_sessions(false)?;
         Ok(sessions
             .iter()
             .filter(|session| {
-                self.registry.contains(&session.id)
+                self.created_here.contains(&session.id)
                     && matches!(session.lifecycle.as_str(), "running" | "creating")
             })
             .count())

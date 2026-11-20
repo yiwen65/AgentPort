@@ -146,8 +146,9 @@ Worktree、或 Agent 进程自己退出。**任务完成不是终止的理由**�
 `state: "exited"`，`read_output` 返回 `ended: true` 并明确提示"正文需从 Agent 原生历史读取"，
 不会报成连接错误，也不会伪造内容。
 
-**递归与并发**：委派深度默认 2 层（`AGENTPORT_MCP_MAX_DEPTH`），单个服务器同时驱动的存活 Session
-默认 8 个（`AGENTPORT_MCP_MAX_SESSIONS`）。深度由 `AGENTPORT_SESSION_ID` + 归属表推导，
+**递归与并发**：委派深度默认 2 层（`AGENTPORT_MCP_MAX_DEPTH`）；**每个 MCP 进程**同时驱动的存活
+Session 默认 **16 个**（`AGENTPORT_MCP_MAX_SESSIONS`）。额度是 per-process 的：两个协调者窗口各有一份，
+互不挤占；只统计该进程自己创建、且仍 `running`/`creating` 的会话，跑完就释放名额。深度由 `AGENTPORT_SESSION_ID` + 归属表推导，
 不需要向子会话注入环境变量。
 
 已知限制：Host 只为非 Shell 的 Agent 注入 `AGENTPORT_SESSION_ID`，所以纯 Shell 的嵌套链几乎测不出
