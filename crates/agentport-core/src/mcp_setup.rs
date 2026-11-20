@@ -67,9 +67,52 @@ enum Mechanism {
         format: ListFormat,
         target: String,
     },
-    /// A documented user-level JSON file with an `mcpServers` object.
-    JsonFile { path: PathBuf },
+    /// A documented user-level JSON file holding a server map.
+    JsonFile {
+        target: JsonFileTarget,
+    },
     Unsupported(String),
+}
+
+/// Which file, which top-level key, and which entry shape an Agent expects.
+///
+/// Every one of these is a documented user-level config; the shapes differ only
+/// in how a stdio server is spelled.
+#[derive(Debug, Clone)]
+pub struct JsonFileTarget {
+    pub path: PathBuf,
+    /// `mcpServers` for most clients, `mcp` for OpenCode, and Amp's dotted
+    /// `amp.mcpServers` key.
+    pub key: &'static str,
+    pub shape: JsonEntryShape,
+    /// A sibling file whose presence means we must not guess (e.g. OpenCode's
+    /// JSONC config, which serde cannot round-trip losslessly).
+    pub blocker: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonEntryShape {
+    /// `{"command": "bin", "args": [...]}` — Claude, Cursor, Kimi, Kiro, Gemini, oh-my-pi.
+    CommandArgs,
+    /// `{"type": "local", "command": [bin, ...], "enabled": true}` — OpenCode.
+    OpenCodeLocal,
+    /// `{"command": "bin", "args": [...], "disabled": false, "autoApprove": []}` — Cline.
+    ClineCommandArgs,
+}
+
+fn json_servers(path: PathBuf) -> JsonFileTarget {
+    JsonFileTarget {
+        path,
+        key: "mcpServers",
+        shape: JsonEntryShape::CommandArgs,
+        blocker: None,
+    }
+}
+
+fn agent_dir(env: &str, default: &str) -> PathBuf {
+    std::env::var_os(env)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(default))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,24 +177,66 @@ fn mechanism(agent: AgentType, install: &AdapterInstall, mcp_bin: &Path) -> Mech
             format: ListFormat::Array,
             target: "grok mcp".into(),
         },
-        // Cursor keeps MCP servers in a plain JSON file; the CLI can list,
-        // enable and disable, but not add.
+        // These clients keep MCP servers in a plain user-level JSON file; each
+        // shape below follows that client's own documentation.
+        //
+        // Cursor's CLI can list/enable/disable but not add.
         AgentType::CursorAgent => Mechanism::JsonFile {
-            path: home_dir().join(".cursor").join("mcp.json"),
+            target: json_servers(home_dir().join(".cursor").join("mcp.json")),
         },
-        AgentType::Kimi => Mechanism::Unsupported(
-            "Kimi Code has no MCP management command; its config.toml is left untouched".into(),
-        ),
-        AgentType::Omp => Mechanism::Unsupported(
-            "oh-my-pi exposes no MCP management command".into(),
-        ),
-        AgentType::Opencode
-        | AgentType::Amp
-        | AgentType::Gemini
-        | AgentType::Cline
-        | AgentType::KiroCli
-        | AgentType::Shell => Mechanism::Unsupported(
-            "AgentPort has no verified MCP registration mechanism for this Agent yet".into(),
+        AgentType::Kimi => Mechanism::JsonFile {
+            target: json_servers(agent_dir("KIMI_CODE_HOME", ".kimi-code").join("mcp.json")),
+        },
+        AgentType::Omp => Mechanism::JsonFile {
+            target: json_servers(
+                agent_dir("PI_CODING_AGENT_DIR", ".omp/agent").join("mcp.json"),
+            ),
+        },
+        AgentType::Gemini => Mechanism::JsonFile {
+            target: json_servers(agent_dir("GEMINI_CLI_HOME", ".gemini").join("settings.json")),
+        },
+        AgentType::KiroCli => Mechanism::JsonFile {
+            target: json_servers(home_dir().join(".kiro").join("settings").join("mcp.json")),
+        },
+        AgentType::Opencode => {
+            let dir = home_dir().join(".config").join("opencode");
+            Mechanism::JsonFile {
+                target: JsonFileTarget {
+                    path: dir.join("opencode.json"),
+                    key: "mcp",
+                    shape: JsonEntryShape::OpenCodeLocal,
+                    // A JSONC config cannot be merged without losing comments.
+                    blocker: Some("opencode.jsonc"),
+                },
+            }
+        }
+        AgentType::Amp => Mechanism::JsonFile {
+            target: JsonFileTarget {
+                path: home_dir().join(".config").join("amp").join("settings.json"),
+                // Amp namespaces the map under a dotted key.
+                key: "amp.mcpServers",
+                shape: JsonEntryShape::CommandArgs,
+                blocker: None,
+            },
+        },
+        AgentType::Cline => Mechanism::JsonFile {
+            target: JsonFileTarget {
+                path: std::env::var_os("CLINE_MCP_SETTINGS_PATH")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| {
+                        home_dir()
+                            .join(".cline")
+                            .join("data")
+                            .join("settings")
+                            .join("cline_mcp_settings.json")
+                    }),
+                key: "mcpServers",
+                shape: JsonEntryShape::ClineCommandArgs,
+                blocker: None,
+            },
+        },
+        AgentType::Shell => Mechanism::Unsupported(
+            "Generic Shell has no MCP client at all".into(),
         ),
     }
 }
@@ -181,33 +266,44 @@ pub fn status(agent: AgentType, install: &AdapterInstall, mcp_bin: &Path) -> Reg
             command,
             detail: reason,
         },
-        Mechanism::JsonFile { path } => match read_json_servers(&path) {
-            Ok(Some(existing)) => RegistrationReport {
-                agent,
-                state: if existing.contains_key(SERVER_NAME) {
-                    RegistrationState::Registered
-                } else {
-                    RegistrationState::Missing
+        Mechanism::JsonFile { target } => {
+            if let Some(blocker) = blocked_by_sibling(&target) {
+                return RegistrationReport {
+                    agent,
+                    state: RegistrationState::Unsupported,
+                    target: target.path.display().to_string(),
+                    command,
+                    detail: blocker,
+                };
+            }
+            match read_json_servers(&target) {
+                Ok(Some(existing)) => RegistrationReport {
+                    agent,
+                    state: if existing.contains_key(SERVER_NAME) {
+                        RegistrationState::Registered
+                    } else {
+                        RegistrationState::Missing
+                    },
+                    target: target.path.display().to_string(),
+                    command,
+                    detail: String::new(),
                 },
-                target: path.display().to_string(),
-                command,
-                detail: String::new(),
-            },
-            Ok(None) => RegistrationReport {
-                agent,
-                state: RegistrationState::Missing,
-                target: path.display().to_string(),
-                command,
-                detail: String::new(),
-            },
-            Err(error) => RegistrationReport {
-                agent,
-                state: RegistrationState::Unknown,
-                target: path.display().to_string(),
-                command,
-                detail: format!("could not read {}: {error}", path.display()),
-            },
-        },
+                Ok(None) => RegistrationReport {
+                    agent,
+                    state: RegistrationState::Missing,
+                    target: target.path.display().to_string(),
+                    command,
+                    detail: String::new(),
+                },
+                Err(error) => RegistrationReport {
+                    agent,
+                    state: RegistrationState::Unknown,
+                    target: target.path.display().to_string(),
+                    command,
+                    detail: format!("could not read {}: {error}", target.path.display()),
+                },
+            }
+        }
         Mechanism::Cli { list, format, target, .. } => {
             let program = list.first().cloned().unwrap_or_default();
             match run(&program, &list[1..], CLI_TIMEOUT) {
@@ -264,11 +360,14 @@ pub fn set(
     }
     match mechanism(agent, install, mcp_bin) {
         Mechanism::Unsupported(reason) => Err(CoreError::Blocked(reason)),
-        Mechanism::JsonFile { path } => {
+        Mechanism::JsonFile { target } => {
+            if let Some(blocker) = blocked_by_sibling(&target) {
+                return Err(CoreError::Blocked(blocker));
+            }
             if enable {
-                add_json_server(&path, mcp_bin)?;
+                add_json_server(&target, mcp_bin)?;
             } else {
-                remove_json_server(&path)?;
+                remove_json_server(&target)?;
             }
             Ok(status(agent, install, mcp_bin))
         }
@@ -437,8 +536,23 @@ fn parse_names(stdout: &str, format: ListFormat) -> Option<Vec<String>> {
 
 type JsonObject = serde_json::Map<String, serde_json::Value>;
 
+/// A sibling config we refuse to rewrite (documented per Agent).
+fn blocked_by_sibling(target: &JsonFileTarget) -> Option<String> {
+    let sibling = target.blocker?;
+    let path = target.path.with_file_name(sibling);
+    path.exists().then(|| {
+        format!(
+            "{} exists next to {}; editing only the JSON file would change which config wins, \
+             so AgentPort leaves both alone",
+            path.display(),
+            target.path.display()
+        )
+    })
+}
+
 /// `Ok(None)` = file does not exist yet.
-fn read_json_servers(path: &Path) -> Result<Option<JsonObject>> {
+fn read_json_servers(target: &JsonFileTarget) -> Result<Option<JsonObject>> {
+    let path = &target.path;
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -458,17 +572,41 @@ fn read_json_servers(path: &Path) -> Result<Option<JsonObject>> {
             path.display()
         ))
     })?;
-    match value.get("mcpServers") {
+    match value.get(target.key) {
         None => Ok(Some(JsonObject::new())),
         Some(serde_json::Value::Object(map)) => Ok(Some(map.clone())),
         Some(_) => Err(CoreError::Validation(format!(
-            "{} has a non-object mcpServers; refusing to rewrite it",
-            path.display()
+            "{} has a non-object {}; refusing to rewrite it",
+            path.display(),
+            target.key
         ))),
     }
 }
 
-fn add_json_server(path: &Path, mcp_bin: &Path) -> Result<()> {
+/// The entry this client should receive for one stdio server.
+fn server_entry(target: &JsonFileTarget, mcp_bin: &Path) -> serde_json::Value {
+    let bin = mcp_bin.to_string_lossy().to_string();
+    match target.shape {
+        JsonEntryShape::CommandArgs => serde_json::json!({
+            "command": bin,
+            "args": ["serve", "--stdio"],
+        }),
+        JsonEntryShape::OpenCodeLocal => serde_json::json!({
+            "type": "local",
+            "command": [bin, "serve", "--stdio"],
+            "enabled": true,
+        }),
+        JsonEntryShape::ClineCommandArgs => serde_json::json!({
+            "command": bin,
+            "args": ["serve", "--stdio"],
+            "disabled": false,
+            "autoApprove": [],
+        }),
+    }
+}
+
+fn add_json_server(target: &JsonFileTarget, mcp_bin: &Path) -> Result<()> {
+    let path = &target.path;
     let mut document = read_document(path)?;
     let Some(root) = document.as_object_mut() else {
         return Err(CoreError::Validation(format!(
@@ -477,12 +615,13 @@ fn add_json_server(path: &Path, mcp_bin: &Path) -> Result<()> {
         )));
     };
     let servers = root
-        .entry("mcpServers".to_string())
+        .entry(target.key.to_string())
         .or_insert_with(|| serde_json::Value::Object(JsonObject::new()));
     let Some(servers) = servers.as_object_mut() else {
         return Err(CoreError::Validation(format!(
-            "{} has a non-object mcpServers",
-            path.display()
+            "{} has a non-object {}",
+            path.display(),
+            target.key
         )));
     };
     if let Some(existing) = servers.get(SERVER_NAME) {
@@ -498,20 +637,15 @@ fn add_json_server(path: &Path, mcp_bin: &Path) -> Result<()> {
             )));
         }
     }
-    servers.insert(
-        SERVER_NAME.to_string(),
-        serde_json::json!({
-            "command": mcp_bin.to_string_lossy(),
-            "args": ["serve", "--stdio"],
-        }),
-    );
+    servers.insert(SERVER_NAME.to_string(), server_entry(target, mcp_bin));
     write_document(path, &document)
 }
 
-fn remove_json_server(path: &Path) -> Result<()> {
+fn remove_json_server(target: &JsonFileTarget) -> Result<()> {
+    let path = &target.path;
     let mut document = read_document(path)?;
     let Some(servers) = document
-        .get_mut("mcpServers")
+        .get_mut(target.key)
         .and_then(|value| value.as_object_mut())
     else {
         return Ok(());
@@ -614,13 +748,17 @@ mod tests {
     }
 
     #[test]
-    fn unverified_agents_are_reported_unsupported_rather_than_guessed() {
-        for agent in [AgentType::Kimi, AgentType::Omp, AgentType::Amp, AgentType::Shell] {
-            let report = status(agent, &install(agent, "/bin/x"), Path::new("/app/agentport-mcp"));
-            assert_eq!(report.state, RegistrationState::Unsupported, "{agent:?}");
-            assert!(!report.detail.is_empty());
-            assert!(!report.is_supported());
-        }
+    fn an_agent_without_an_mcp_client_is_reported_unsupported() {
+        // Generic Shell is the only one left without any MCP surface; it must
+        // say so instead of offering a switch that writes nowhere.
+        let report = status(
+            AgentType::Shell,
+            &install(AgentType::Shell, "/bin/sh"),
+            Path::new("/app/agentport-mcp"),
+        );
+        assert_eq!(report.state, RegistrationState::Unsupported);
+        assert!(!report.detail.is_empty());
+        assert!(!report.is_supported());
     }
 
     #[test]
@@ -653,6 +791,10 @@ mod tests {
         );
     }
 
+    fn target_at(path: &std::path::Path) -> JsonFileTarget {
+        json_servers(path.to_path_buf())
+    }
+
     #[test]
     fn cursor_json_round_trips_without_touching_other_keys() {
         let dir = tempfile::tempdir().unwrap();
@@ -663,14 +805,14 @@ mod tests {
         )
         .unwrap();
         let bin = Path::new("/app/agentport-mcp");
-        add_json_server(&path, bin).unwrap();
+        add_json_server(&target_at(&path), bin).unwrap();
         let document: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(document["theme"], "dark");
         assert_eq!(document["mcpServers"]["other"]["command"], "/bin/other");
         assert_eq!(document["mcpServers"]["agentport"]["args"][0], "serve");
 
-        remove_json_server(&path).unwrap();
+        remove_json_server(&target_at(&path)).unwrap();
         let document: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert!(document["mcpServers"].get("agentport").is_none());
@@ -683,7 +825,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.json");
         fs::write(&path, "{oops").unwrap();
-        let error = add_json_server(&path, Path::new("/app/agentport-mcp")).unwrap_err();
+        let error =
+            add_json_server(&target_at(&path), Path::new("/app/agentport-mcp")).unwrap_err();
         assert!(format!("{error}").contains("not valid JSON"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "{oops");
     }
@@ -693,8 +836,104 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.json");
         fs::write(&path, r#"{"mcpServers":{"agentport":{"command":"/somewhere/else"}}}"#).unwrap();
-        let error = add_json_server(&path, Path::new("/app/agentport-mcp")).unwrap_err();
+        let error =
+            add_json_server(&target_at(&path), Path::new("/app/agentport-mcp")).unwrap_err();
         assert!(matches!(error, CoreError::Conflict(_)));
+    }
+
+    #[test]
+    fn each_client_gets_its_own_entry_shape() {
+        let bin = Path::new("/app/agentport-mcp");
+        let plain = JsonFileTarget {
+            path: PathBuf::from("/tmp/x"),
+            key: "mcpServers",
+            shape: JsonEntryShape::CommandArgs,
+            blocker: None,
+        };
+        assert_eq!(
+            server_entry(&plain, bin),
+            serde_json::json!({"command": "/app/agentport-mcp", "args": ["serve", "--stdio"]})
+        );
+        // OpenCode: `type: local` and a command array.
+        let opencode = JsonFileTarget {
+            shape: JsonEntryShape::OpenCodeLocal,
+            key: "mcp",
+            ..plain.clone()
+        };
+        let entry = server_entry(&opencode, bin);
+        assert_eq!(entry["type"], "local");
+        assert_eq!(entry["command"][0], "/app/agentport-mcp");
+        assert_eq!(entry["enabled"], true);
+        // Cline: disabled/autoApprove are part of its schema.
+        let cline = JsonFileTarget {
+            shape: JsonEntryShape::ClineCommandArgs,
+            ..plain.clone()
+        };
+        let entry = server_entry(&cline, bin);
+        assert_eq!(entry["disabled"], false);
+        assert_eq!(entry["autoApprove"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_second_client_config_keeps_its_own_key_and_neighbours() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{"amp.mcpServers":{"other":{"command":"/bin/other"}},"theme":"dark"}"#,
+        )
+        .unwrap();
+        let amp = JsonFileTarget {
+            path: path.clone(),
+            key: "amp.mcpServers",
+            shape: JsonEntryShape::CommandArgs,
+            blocker: None,
+        };
+        add_json_server(&amp, Path::new("/app/agentport-mcp")).unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // Amp's dotted key is written verbatim; a bare mcpServers is not invented.
+        assert!(document["amp.mcpServers"].get("agentport").is_some());
+        assert!(document.get("mcpServers").is_none());
+        assert_eq!(document["theme"], "dark");
+        assert_eq!(document["amp.mcpServers"]["other"]["command"], "/bin/other");
+    }
+
+    #[test]
+    fn a_jsonc_sibling_blocks_the_write_instead_of_shadowing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = dir.path().join("opencode.json");
+        fs::write(dir.path().join("opencode.jsonc"), "{\n // user config\n}\n").unwrap();
+        let target = JsonFileTarget {
+            path: json.clone(),
+            key: "mcp",
+            shape: JsonEntryShape::OpenCodeLocal,
+            blocker: Some("opencode.jsonc"),
+        };
+        let reason = blocked_by_sibling(&target).unwrap();
+        assert!(reason.contains("opencode.jsonc"));
+        assert!(!json.exists(), "nothing is written when we refuse");
+    }
+
+    #[test]
+    fn added_clients_report_a_configured_path() {
+        for agent in [
+            AgentType::Kimi,
+            AgentType::Omp,
+            AgentType::Gemini,
+            AgentType::Opencode,
+            AgentType::Amp,
+            AgentType::Cline,
+            AgentType::KiroCli,
+        ] {
+            let report = status(agent, &install(agent, "/bin/x"), Path::new("/app/agentport-mcp"));
+            assert!(
+                report.is_supported(),
+                "{agent:?} must be supported now: {}",
+                report.detail
+            );
+            assert!(!report.target.is_empty(), "{agent:?} must name its config file");
+        }
     }
 
     #[test]

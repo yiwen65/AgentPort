@@ -17,8 +17,23 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 注册的命令路径取自**当前运行的这个 App**（`.app/Contents/MacOS/agentport-mcp`），所以升级 App
 后仍然指向同一份。
 
-没有任何已验证机制的 Agent（Kimi Code、oh-my-pi、OpenCode、Amp、Gemini、Cline、Kiro、Generic Shell）
-开关置灰并给出原因 —— 不猜、不改它们的配置文件。
+没有 MCP 客户端可写的 Agent（目前只有 Generic Shell）开关置灰并给出原因 —— 不猜。
+
+其余客户端按各自文档的**用户级配置文件**合并写入（只动名为 `agentport` 的那一条，原子写、解析失败拒改）：
+
+| Agent | 文件 | 顶层键 | 条目形状 |
+| --- | --- | --- | --- |
+| Claude Code / Codex / Pi / easy-pi / Qoder / Grok | 各自的 `mcp add`（见上） | — | — |
+| Cursor CLI | `~/.cursor/mcp.json` | `mcpServers` | `{command, args}` |
+| Kimi Code | `~/.kimi-code/mcp.json`（`KIMI_CODE_HOME`） | `mcpServers` | `{command, args}` |
+| oh-my-pi | `~/.omp/agent/mcp.json`（`PI_CODING_AGENT_DIR`） | `mcpServers` | `{command, args}` |
+| Gemini CLI | `~/.gemini/settings.json`（`GEMINI_CLI_HOME`） | `mcpServers` | `{command, args}` |
+| Kiro CLI | `~/.kiro/settings/mcp.json` | `mcpServers` | `{command, args}` |
+| OpenCode | `~/.config/opencode/opencode.json` | `mcp` | `{type:"local", command:[…], enabled:true}` |
+| Amp | `~/.config/amp/settings.json` | `amp.mcpServers`（带点号） | `{command, args}` |
+| Cline CLI | `~/.cline/data/settings/cline_mcp_settings.json`（`CLINE_MCP_SETTINGS_PATH`） | `mcpServers` | `{command, args, disabled:false, autoApprove:[]}` |
+
+若 OpenCode 用的是 `opencode.jsonc`（带注释，无法无损回写），开关会拒绝并说明原因，不会偷偷改写另一个文件。
 
 也可以手动注册，MCP 客户端以 stdio 方式启动它：
 
