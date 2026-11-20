@@ -89,6 +89,7 @@ import {
   clampPaneSplitRatio,
   isHorizontalPaneSplitDirection,
   layoutContains,
+  movePane,
   orderedLayoutSessionIds,
   paneGroupDeviceAccents,
   visiblePaneLayout,
@@ -1018,6 +1019,22 @@ function isSelfSessionPaneDrag(
   return readSessionPaneDragPayload(dataTransfer)?.sessionId === sessionKey;
 }
 
+function paneDropWouldChangeLayout(
+  targetKey: string,
+  movingKey: string,
+  direction: PaneSplitDirection,
+): boolean {
+  const state = getState();
+  const layout = visiblePaneLayout(
+    state.terminalLayout,
+    activeSessionKey(state),
+  );
+  if (!layoutContains(layout, targetKey) || !layoutContains(layout, movingKey)) {
+    return true;
+  }
+  return movePane(layout, movingKey, targetKey, direction).root !== layout.root;
+}
+
 /**
  * Pane-relative drop indicator.
  *
@@ -1152,9 +1169,21 @@ function SessionPaneLeaf({
           event.clientY >= rect.top &&
           event.clientY <= rect.bottom
         ) {
-          setSessionDragDirection(
-            paneDropDirection(rect, event.clientX, event.clientY),
+          const direction = paneDropDirection(
+            rect,
+            event.clientX,
+            event.clientY,
           );
+          const payload = readSessionPaneDragPayload(event.dataTransfer);
+          if (
+            payload &&
+            !paneDropWouldChangeLayout(sessionKey, payload.sessionId, direction)
+          ) {
+            setSessionDragActive(false);
+            setSessionDragDirection(null);
+            return;
+          }
+          setSessionDragDirection(direction);
         }
       }}
       onDragOver={(event) => {
@@ -1177,9 +1206,21 @@ function SessionPaneLeaf({
           event.clientY >= rect.top &&
           event.clientY <= rect.bottom
         ) {
-          setSessionDragDirection(
-            paneDropDirection(rect, event.clientX, event.clientY),
+          const direction = paneDropDirection(
+            rect,
+            event.clientX,
+            event.clientY,
           );
+          const payload = readSessionPaneDragPayload(event.dataTransfer);
+          if (
+            payload &&
+            !paneDropWouldChangeLayout(sessionKey, payload.sessionId, direction)
+          ) {
+            setSessionDragActive(false);
+            setSessionDragDirection(null);
+            return;
+          }
+          setSessionDragDirection(direction);
         }
       }}
       onDragLeave={(event) => {

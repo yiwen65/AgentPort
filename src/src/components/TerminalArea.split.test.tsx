@@ -694,6 +694,21 @@ describe("TerminalArea recursive panes", () => {
     expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
   });
 
+  it("does not preview an already-equivalent pane placement", () => {
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane, 900, 600);
+
+    fireEvent(pane, paneDragEvent("dragover", {
+      dataTransfer: transfer(rpc.id),
+      clientX: 450,
+      clientY: 550,
+    }));
+
+    expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
+    expect(splitSessionIntoPaneMock).not.toHaveBeenCalled();
+  });
+
   it("does not preview when a Session is dragged over its own pane", () => {
     const { container } = render(<TerminalArea />);
     const pane = paneLeaf(container, ptyB.id);
@@ -750,7 +765,7 @@ describe("TerminalArea recursive panes", () => {
     ] as const;
     for (const { clientX, clientY, direction } of drops) {
       fireEvent(pane, paneDragEvent("dragover", {
-        dataTransfer: transfer(rpc.id),
+        dataTransfer: transfer(ptyOutside.id),
         clientX,
         clientY,
       }));

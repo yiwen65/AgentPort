@@ -186,8 +186,8 @@ describe("pane layout transforms", () => {
     expect(focused.focusedSessionId).toBe("b");
   });
 
-  it("keeps left and up direct placements stable", () => {
-    for (const direction of ["left", "up"] as const) {
+  it("keeps direct placements stable from either drop side", () => {
+    for (const direction of ["left", "right", "up", "down"] as const) {
       const layout = splitPane(
         singletonPaneLayout("target"),
         "target",
@@ -196,9 +196,25 @@ describe("pane layout transforms", () => {
         direction,
       );
       const focused = movePane(layout, "moving", "target", direction, "replacement");
+      const inverseDirection =
+        direction === "left"
+          ? "right"
+          : direction === "right"
+            ? "left"
+            : direction === "up"
+              ? "down"
+              : "up";
+      const inverse = movePane(
+        layout,
+        "target",
+        "moving",
+        inverseDirection,
+        "inverse",
+      );
 
       expect(focused.root).toBe(layout.root);
       expect(focused.focusedSessionId).toBe("moving");
+      expect(inverse.root).toBe(layout.root);
     }
   });
 

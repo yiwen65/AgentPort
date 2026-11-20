@@ -557,8 +557,11 @@ function directPlacementExists(
   const secondSessionId = newPaneFirstForSplitDirection(direction)
     ? targetSessionId
     : movingSessionId;
+  const sameAxis = isHorizontalPaneSplitDirection(direction)
+    ? isHorizontalPaneSplitDirection(node.direction)
+    : !isHorizontalPaneSplitDirection(node.direction);
   if (
-    node.direction === direction &&
+    sameAxis &&
     node.first.type === "leaf" &&
     node.first.sessionId === firstSessionId &&
     node.second.type === "leaf" &&
