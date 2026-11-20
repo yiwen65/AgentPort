@@ -16,7 +16,6 @@ const PANE_KEYS = [
   "dragLabel",
   "dropRight",
   "dropDown",
-  "tooSmall",
   "resizeVertical",
   "resizeHorizontal",
   "resizeHint",
@@ -38,7 +37,7 @@ const EXPECTED_PANE_COPY = {
     dragLabel: "拖动 Session“{{title}}”",
     dropRight: "放到右侧",
     dropDown: "放到下方",
-    tooSmall: "当前空间太小，无法继续分屏",
+
     resizeVertical: "调整垂直分隔线",
     resizeHorizontal: "调整水平分隔线",
     resizeHint: "拖动调整分屏大小；使用方向键微调",
@@ -56,7 +55,7 @@ const EXPECTED_PANE_COPY = {
     dragLabel: "Drag Session “{{title}}”",
     dropRight: "Drop to the right",
     dropDown: "Drop below",
-    tooSmall: "This area is too small to split",
+
     resizeVertical: "Resize the vertical divider",
     resizeHorizontal: "Resize the horizontal divider",
     resizeHint: "Drag to resize panes; use the arrow keys for fine adjustments",

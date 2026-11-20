@@ -1,13 +1,29 @@
 {
   "sidebarGroups": {
-    "groups": "Split groups", "projects": "Projects", "views": "Sidebar views",
-    "unnamed": "Unnamed group", "rename": "Rename group", "name": "Group name", "fold": "Expand or collapse group: {{title}}",
-    "empty": "No split groups yet", "hint": "Drag a Session onto another terminal to create a split group."
+    "groups": "Split groups",
+    "projects": "Projects",
+    "views": "Sidebar views",
+    "unnamed": "Unnamed group",
+    "rename": "Rename group",
+    "name": "Group name",
+    "fold": "Expand or collapse group: {{title}}",
+    "empty": "No split groups yet",
+    "hint": "Drag a Session onto another terminal to create a split group."
   },
   "markdownImage": {
-    "image": "Image", "viewer": "Image viewer", "zoomOut": "Zoom out", "zoomReset": "Reset zoom", "zoomIn": "Zoom in", "previous": "Previous image", "next": "Next image",
-    "close": "Close", "closeViewer": "Close image viewer", "openImage": "View image: {{alt}}",
-    "contextUnavailable": "Image context unavailable", "loading": "Loading image…", "retry": "Retry"
+    "image": "Image",
+    "viewer": "Image viewer",
+    "zoomOut": "Zoom out",
+    "zoomReset": "Reset zoom",
+    "zoomIn": "Zoom in",
+    "previous": "Previous image",
+    "next": "Next image",
+    "close": "Close",
+    "closeViewer": "Close image viewer",
+    "openImage": "View image: {{alt}}",
+    "contextUnavailable": "Image context unavailable",
+    "loading": "Loading image…",
+    "retry": "Retry"
   },
   "boot": {
     "starting": "Starting AgentPort…",
@@ -37,7 +53,6 @@
     "dragLabel": "Drag Session “{{title}}”",
     "dropRight": "Drop to the right",
     "dropDown": "Drop below",
-    "tooSmall": "This area is too small to split",
     "resizeVertical": "Resize the vertical divider",
     "resizeHorizontal": "Resize the horizontal divider",
     "resizeHint": "Drag to resize panes; use the arrow keys for fine adjustments",

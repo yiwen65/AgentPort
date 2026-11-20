@@ -745,13 +745,14 @@ describe("selectSession", () => {
     expect(getState().attachedIds).toEqual([oldSession.id, newSession.id]);
   });
 
-  it("enforces the confirmed split minimum and opens a typed split dialog", async () => {
+  it("opens a typed split dialog at any pane size", async () => {
+    // A split is no longer refused for being small: panes are proportional, and
+    // the minimums only bound dragging a separator afterwards.
     expect(canSplitPaneSize("right", 646, 180)).toBe(true);
-    expect(canSplitPaneSize("right", 645, 500)).toBe(false);
-    expect(canSplitPaneSize("right", 646, 179)).toBe(false);
+    expect(canSplitPaneSize("right", 120, 90)).toBe(true);
     expect(canSplitPaneSize("down", 320, 366)).toBe(true);
-    expect(canSplitPaneSize("down", 800, 365)).toBe(false);
-    expect(canSplitPaneSize("down", 319, 366)).toBe(false);
+    expect(canSplitPaneSize("down", 0, 0)).toBe(false);
+    expect(canSplitPaneSize("down", Number.NaN, 400)).toBe(false);
 
     expect(await openSplitSessionDialog(oldSession.id, "down")).toBe(true);
     expect(getState().dialog).toMatchObject({
@@ -851,21 +852,24 @@ describe("selectSession", () => {
     }
   });
 
-  it("rejects a late split when the pane no longer has the minimum size", () => {
+  it("splits a workspace that is smaller than the old minimum", () => {
     setState({ projects: projectWith(oldSession, newSession) });
     const layoutElement = document.createElement("div");
     layoutElement.className = "pane-layout";
     Object.defineProperty(layoutElement, "getBoundingClientRect", {
       configurable: true,
-      value: () => ({ width: 645, height: 500 }),
+      value: () => ({ width: 400, height: 320 }),
     });
     document.body.append(layoutElement);
 
-    expect(splitSessionIntoPane(oldSession.id, newSession.id, "right")).toBe(false);
-    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([oldSession.id]);
+    expect(splitSessionIntoPane(oldSession.id, newSession.id, "right")).toBe(true);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      oldSession.id,
+      newSession.id,
+    ]);
   });
 
-  it("checks a maximized pane against its restored layout size", () => {
+  it("keeps both split directions available on a small restored layout", () => {
     const terminalLayout = splitPane(
       singletonPaneLayout(oldSession.id),
       oldSession.id,
@@ -893,9 +897,9 @@ describe("selectSession", () => {
     });
     document.body.append(layoutElement, paneElement);
 
-    // The maximized DOM surface is wide enough, but after restore each leaf
-    // gets only 497px, so another right split must be rejected.
-    expect(canSplitSessionPane(oldSession.id, "right")).toBe(false);
+    // After restore each leaf is only ~497px wide, which used to refuse the
+    // split outright. Both directions stay available now.
+    expect(canSplitSessionPane(oldSession.id, "right")).toBe(true);
     expect(canSplitSessionPane(oldSession.id, "down")).toBe(true);
   });
 });

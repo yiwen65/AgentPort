@@ -1133,11 +1133,9 @@ function SessionPaneLeaf({
           event.currentTarget.getBoundingClientRect(),
           event.clientX,
         );
-        if (canSplitSessionPane(sessionKey, direction)) {
-          splitSessionIntoPane(sessionKey, payload.sessionId, direction);
-        } else {
-          toast(t("shell:pane.tooSmall"), "info");
-        }
+        // A narrow pane only yields narrower panes; refusing the drop left the
+        // user with no way to place the Session at all.
+        splitSessionIntoPane(sessionKey, payload.sessionId, direction);
       }}
     >
       {multiPane || parseSessionKey(sessionKey).deviceKey !== "local" ? (

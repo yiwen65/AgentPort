@@ -67,7 +67,6 @@ import {
   layoutContains,
   movePane,
   orderedLayoutSessionIds,
-  paneLayoutFitsSize,
   paneLayoutGroupContaining,
   paneLayoutHasSplit,
   paneSessionSize,
@@ -78,8 +77,6 @@ import {
   splitPane,
   updateSplitRatio,
   visiblePaneLayout,
-  MIN_PANE_HEIGHT,
-  MIN_PANE_WIDTH,
   type PaneLayout,
   type PaneSplitDirection,
 } from "./paneLayout";
@@ -341,15 +338,20 @@ export function toggleActiveAgentsView() {
 
 export const PANE_SEPARATOR_SIZE = 6;
 
+/**
+ * A split is never refused for being "too small".
+ *
+ * Panes are proportional, so a narrow window simply yields narrow panes; the
+ * minimums still bound *dragging* a separator (see `clampPaneSplitRatio`), which
+ * keeps a pane usable once it exists. Refusing the split instead left the user
+ * with no way to open a second Agent in a small window.
+ */
 export function canSplitPaneSize(
-  direction: PaneSplitDirection,
+  _direction: PaneSplitDirection,
   width: number,
   height: number,
 ): boolean {
-  if (width < MIN_PANE_WIDTH || height < MIN_PANE_HEIGHT) return false;
-  return direction === "right"
-    ? width >= MIN_PANE_WIDTH * 2 + PANE_SEPARATOR_SIZE
-    : height >= MIN_PANE_HEIGHT * 2 + PANE_SEPARATOR_SIZE;
+  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
 }
 
 function paneElement(sessionId: string): HTMLElement | null {
@@ -393,16 +395,6 @@ export function canSplitSessionPane(
   return canSplitPaneSize(direction, rect.width, rect.height);
 }
 
-function paneLayoutFitsWorkspace(layout: PaneLayout): boolean {
-  if (!layout.root) return true;
-  const workspaceRect = paneWorkspaceRect();
-  return !workspaceRect || paneLayoutFitsSize(
-    layout.root,
-    workspaceRect.width,
-    workspaceRect.height,
-    PANE_SEPARATOR_SIZE,
-  );
-}
 
 function activeDeviceKey(): string {
   return deviceKeyForContext(getState().activeDevice);
@@ -647,10 +639,6 @@ export async function openSplitSessionDialog(
     activeSessionKey(state),
   );
   if (!target || !layoutContains(displayLayout, targetKey)) return false;
-  if (!canSplitSessionPane(targetKey, direction)) {
-    toast(i18n.t("shell:pane.tooSmall"), "info");
-    return false;
-  }
   // The target pane may belong to another device. Creation follows the
   // active device, so switch first and then re-resolve the target against
   // that device's project tree instead of passing a foreign project id.
@@ -662,10 +650,6 @@ export async function openSplitSessionDialog(
       activeSessionKey(getState()),
     );
     if (!switched || !layoutContains(switchedLayout, targetKey)) return false;
-    if (!canSplitSessionPane(targetKey, direction)) {
-      toast(i18n.t("shell:pane.tooSmall"), "info");
-      return false;
-    }
     selectSession(switched.session.id);
     openDialog({
       kind: "newSession",
@@ -699,10 +683,6 @@ export async function openSplitAgentPicker(
     activeSessionKey(state),
   );
   if (!target || !layoutContains(displayLayout, targetKey)) return false;
-  if (!canSplitSessionPane(targetKey, direction)) {
-    toast(i18n.t("shell:pane.tooSmall"), "info");
-    return false;
-  }
   if (parseSessionKey(targetKey).deviceKey !== activeDeviceKey()) {
     if (!(await focusSessionKeyViaRegistryAsync(targetKey))) return false;
     const switched = findSessionByKey(targetKey);
@@ -711,10 +691,6 @@ export async function openSplitAgentPicker(
       activeSessionKey(getState()),
     );
     if (!switched || !layoutContains(switchedLayout, targetKey)) return false;
-    if (!canSplitSessionPane(targetKey, direction)) {
-      toast(i18n.t("shell:pane.tooSmall"), "info");
-      return false;
-    }
   }
   selectSession(target.session.id);
   openDialog({ kind: "splitAgentPicker", targetSessionId: targetKey, direction });
@@ -744,10 +720,6 @@ export function splitSessionIntoPane(
     : splitPane(displayLayout, targetKey, newKey, direction);
   if (!layoutContains(terminalLayout, newKey)) return false;
   if (!samePaneLayout(terminalLayout, displayLayout)) {
-    if (!paneLayoutFitsWorkspace(terminalLayout)) {
-      toast(i18n.t("shell:pane.tooSmall"), "info");
-      return false;
-    }
     commitPaneLayout(terminalLayout, {
       maximizedSessionId: null,
       acknowledgeFocused: true,

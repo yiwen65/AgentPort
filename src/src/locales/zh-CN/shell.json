@@ -1,13 +1,29 @@
 {
   "sidebarGroups": {
-    "groups": "分屏分组", "projects": "项目", "views": "侧边栏视图",
-    "unnamed": "未命名分组", "rename": "重命名分组", "name": "分组名称", "fold": "展开或收起分组：{{title}}",
-    "empty": "暂无分屏分组", "hint": "将 Session 拖到另一终端上，即可创建分屏分组。"
+    "groups": "分屏分组",
+    "projects": "项目",
+    "views": "侧边栏视图",
+    "unnamed": "未命名分组",
+    "rename": "重命名分组",
+    "name": "分组名称",
+    "fold": "展开或收起分组：{{title}}",
+    "empty": "暂无分屏分组",
+    "hint": "将 Session 拖到另一终端上，即可创建分屏分组。"
   },
   "markdownImage": {
-    "image": "图片", "viewer": "图片查看器", "zoomOut": "缩小", "zoomReset": "重置缩放", "zoomIn": "放大", "previous": "上一张图片", "next": "下一张图片",
-    "close": "关闭", "closeViewer": "关闭图片查看器", "openImage": "查看图片：{{alt}}",
-    "contextUnavailable": "图片阅读上下文不可用", "loading": "正在加载图片…", "retry": "重试"
+    "image": "图片",
+    "viewer": "图片查看器",
+    "zoomOut": "缩小",
+    "zoomReset": "重置缩放",
+    "zoomIn": "放大",
+    "previous": "上一张图片",
+    "next": "下一张图片",
+    "close": "关闭",
+    "closeViewer": "关闭图片查看器",
+    "openImage": "查看图片：{{alt}}",
+    "contextUnavailable": "图片阅读上下文不可用",
+    "loading": "正在加载图片…",
+    "retry": "重试"
   },
   "boot": {
     "starting": "正在启动 AgentPort…",
@@ -37,7 +53,6 @@
     "dragLabel": "拖动 Session“{{title}}”",
     "dropRight": "放到右侧",
     "dropDown": "放到下方",
-    "tooSmall": "当前空间太小，无法继续分屏",
     "resizeVertical": "调整垂直分隔线",
     "resizeHorizontal": "调整水平分隔线",
     "resizeHint": "拖动调整分屏大小；使用方向键微调",
