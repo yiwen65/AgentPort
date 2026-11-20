@@ -685,10 +685,6 @@ async fn establish_relay_with_secret(
     Ok((transport, Box::new(reader), Box::new(writer), snapshot))
 }
 
-fn event_type_for_trace(envelope: &Value) -> Option<&str> {
-    envelope.get("eventType").and_then(Value::as_str)
-}
-
 fn zeroize_value(value: &mut Value) {
     match value {
         Value::String(text) => text.zeroize(),
@@ -731,7 +727,7 @@ async fn reader_loop(
     mut reader: Box<dyn AsyncRead + Send + Unpin>,
     mut pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
 ) {
-    let mut trace_ends: HashMap<String, u64> = HashMap::new();
+
     loop {
         while let Ok(Some(body)) = read_frame(&mut reader).await {
             let envelope = match agentport_remote_protocol::binary_output::decode_envelope(
@@ -791,24 +787,6 @@ async fn reader_loop(
                     }
                 }
                 Some("event") => {
-                    if cfg!(debug_assertions)
-                        && matches!(event_type_for_trace(&envelope), Some("output" | "transient_output"))
-                    {
-                        if let Some(cursor) = envelope.get("cursor").and_then(|v| v.get("offset")).and_then(Value::as_u64) {
-                            let encoded_len = envelope.get("payload").and_then(|v| v.get("dataBase64")).and_then(Value::as_str).map(str::len).unwrap_or(0);
-                            let decoded_bytes = encoded_len.saturating_mul(3) / 4;
-                            let subscription = envelope.get("subscriptionId").and_then(Value::as_str).unwrap_or("");
-                            let bytes = if decoded_bytes > 0 {
-                                decoded_bytes
-                            } else {
-                                trace_ends.get(subscription).map_or(0, |previous| cursor.saturating_sub(*previous) as usize)
-                            };
-                            trace_ends.insert(subscription.to_string(), cursor);
-                            let offset = cursor.saturating_sub(bytes as u64);
-                            let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
-                            let _ = app.emit("agentport-mobile://output-trace", json!({"stage":"mobile_native_decode", "offset":offset, "bytes":bytes, "atMs":at_ms}));
-                        }
-                    }
                     let subscriptions = state
                         .inner
                         .subscriptions
