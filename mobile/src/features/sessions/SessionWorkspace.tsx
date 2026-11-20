@@ -33,6 +33,23 @@ const SESSION_ENDED_GRACE_MS = 1500;
  * terminal resyncs from a snapshot instead of scrolling through stale output.
  */
 const MAX_PENDING_OUTPUT_BYTES = 512 * 1024;
+/** Wheel reports are input steps to the remote fullscreen TUI. Letting the
+ * finger outrun its redraw queue turns scrolling into seconds of lag, so only
+ * a small number may be in flight and newer reports coalesce behind them. */
+const WHEEL_REPORT_PATTERN = /\x1b\[<6[4-7];\d+;\d+[Mm]/g;
+const MAX_WHEEL_IN_FLIGHT = 4;
+const MAX_PENDING_WHEEL_REPORTS = 32;
+const WHEEL_SEND_INTERVAL_MS = 90;
+
+function wheelReports(data: string): string[] {
+  return data.match(WHEEL_REPORT_PATTERN) ?? [];
+}
+
+function isWheelInput(data: string): boolean {
+  const reports = wheelReports(data);
+  return reports.length > 0 && reports.join("") === data;
+}
+
 // Seed the current TUI modes from a small recent tail, then render live output.
 // Replaying megabytes of historical redraws delays a screen the user needs now.
 const MOBILE_ATTACH_REPLAY_TAIL_BYTES = 64 * 1024;
@@ -99,7 +116,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
       clock: () => performance.now(),
       schedule: (callback, ms) => window.setTimeout(callback, ms),
       cancel: handle => window.clearTimeout(handle as number),
-      emit: diag,
+      emit: diagTrace,
       maxEvents: 4096,
     });
     diagnosticsRef.current = collector;
@@ -144,9 +161,33 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
   const pendingOutputBytes = useRef(0);
   const pendingOutputStartOffset = useRef<number>();
   const outputWriteInFlight = useRef(false);
+  const wheelInFlight = useRef(0);
+  const pendingWheel = useRef("");
+  const wheelTimer = useRef<number>();
+  const sendInputRef = useRef<(data: string, forceWheel?: boolean) => void>(() => undefined);
+  const flushWheelRef = useRef<() => void>(() => undefined);
   // Assigned once resetRunOutput exists; called when the render backlog is shed.
   const shedBacklogRef = useRef<(bytes: number) => void>(() => undefined);
   const [replayPending, setReplayPending] = useState(shouldAttach);
+  useEffect(() => {
+    if (!SCROLL_DIAGNOSTICS_ENABLED || !active) return;
+    const sessionId = open.session.id;
+    const heartbeat = window.setInterval(() => {
+      diag("js-heartbeat", {
+        sessionId,
+        connectionLabel: connectionLabelRef.current,
+        replayPending,
+        pendingBytes: pendingOutputBytes.current,
+        writeInFlight: outputWriteInFlight.current,
+      });
+    }, 5_000);
+    const visibility = () => diag("js-visibility", { sessionId, state: document.visibilityState });
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      window.clearInterval(heartbeat);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, [active, open.session.id, replayPending]);
   const [recoveryVeil, setRecoveryVeil] = useState(false);
   const replayGeneration = useRef(0);
   const resizeOwnershipEnabled = useRef(true);
@@ -287,6 +328,8 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
   useEffect(() => () => {
     if (outputFrame.current !== undefined) window.cancelAnimationFrame(outputFrame.current);
     outputFrame.current = undefined;
+    if (wheelTimer.current !== undefined) window.clearTimeout(wheelTimer.current);
+    wheelTimer.current = undefined;
     // Child release flushes these bytes before capturing the matching cursor.
     replayGeneration.current += 1;
   }, []);
@@ -343,6 +386,10 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
     pendingOutputChunks.current = [];
     pendingOutputBytes.current = 0;
     pendingOutputStartOffset.current = undefined;
+    wheelInFlight.current = 0;
+    pendingWheel.current = "";
+    if (wheelTimer.current !== undefined) window.clearTimeout(wheelTimer.current);
+    wheelTimer.current = undefined;
     terminal.current?.reset();
     setReplayPending(true);
   }, [screenKey]);
@@ -629,6 +676,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
         }
         earlyEvents.length = 0;
       } catch (requestError) {
+        diag("attach-error", { sessionId: open.session.id, reason: "attach", message: errorText(requestError) });
         if (ownedAttachment) {
           diag("detach", { sessionId: open.session.id, reason: "attach-error", attachmentId: ownedAttachment });
           void client.request(open.hostProfileId, "session.detach", { attachmentId: ownedAttachment }).catch(() => undefined);
@@ -640,6 +688,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
         }
       }
     }).catch((subscribeError) => {
+      diag("attach-error", { sessionId: open.session.id, reason: "subscribe", message: errorText(subscribeError) });
       if (!cancelled && generation === replayGeneration.current) {
         setConnectionLabel("failed");
         setError(errorText(subscribeError));
@@ -734,9 +783,26 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
     });
   }, [client, open.hostProfileId, open.session.id]);
 
-  const sendInput = useCallback((data: string) => {
+  const scheduleWheelFlush = useCallback(() => {
+    if (wheelTimer.current === undefined) {
+      wheelTimer.current = window.setTimeout(() => flushWheelRef.current(), WHEEL_SEND_INTERVAL_MS);
+    }
+  }, []);
+
+  const sendInput = useCallback((data: string, forceWheel = false) => {
     if (busyAction === "stop" || !attachmentId || attachmentRef.current !== attachmentId || connectionLabel !== "live") return;
-    const firstSubmittedInput = captureFirstSubmittedInput(firstInput.current, data);
+    const wheel = isWheelInput(data);
+    // A scroll during attach/replay belongs to the loading screen; queueing it
+    // only delays the remote TUI once it becomes live.
+    if (wheel && replayPending) return;
+    if (wheel && !forceWheel) {
+      const reports = [...wheelReports(pendingWheel.current), ...wheelReports(data)];
+      pendingWheel.current = reports.slice(-MAX_PENDING_WHEEL_REPORTS).join("");
+      scheduleWheelFlush();
+      return;
+    }
+    if (wheel) wheelInFlight.current += 1;
+    const firstSubmittedInput = wheel ? "" : captureFirstSubmittedInput(firstInput.current, data);
     const diagnosticSequence = activeRef.current && diagnosticsRef.current?.running ? ++diagnosticInputSequence.current : 0;
     if (diagnosticSequence) diagnosticsRef.current?.mark("inputCorrelation", diagnosticSequence);
     if (activeRef.current) diagnosticsRef.current?.mark("input", data.length);
@@ -773,9 +839,27 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
         ownBatches.current.delete(batchId);
         if (firstSubmittedInput) firstInput.current.submitted = false;
         setError(errorText(requestError));
-      }).finally(releaseSubmission);
+      }).finally(() => {
+        releaseSubmission();
+        if (wheel) {
+          wheelInFlight.current = Math.max(0, wheelInFlight.current - 1);
+          if (pendingWheel.current) scheduleWheelFlush();
+        }
+      });
     }));
-  }, [attachmentId, autoTitleFromFirstInput, client, open.hostProfileId, t, connectionLabel, busyAction]);
+  }, [attachmentId, autoTitleFromFirstInput, client, open.hostProfileId, t, connectionLabel, busyAction, replayPending, scheduleWheelFlush]);
+  sendInputRef.current = sendInput;
+  flushWheelRef.current = () => {
+    wheelTimer.current = undefined;
+    if (!pendingWheel.current) return;
+    if (wheelInFlight.current >= MAX_WHEEL_IN_FLIGHT) {
+      scheduleWheelFlush();
+      return;
+    }
+    const data = pendingWheel.current;
+    pendingWheel.current = "";
+    sendInputRef.current(data, true);
+  };
 
   // This is the single mobile -> Bridge resize seam. Host-side CAS ownership
   // keeps xterm/viewport observation separate from cross-client authority.

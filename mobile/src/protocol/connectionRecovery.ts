@@ -1,8 +1,11 @@
+import { diag } from "../platform/diag";
 import type { RemoteClient } from "./remoteClient";
 
 const recoveries = new WeakMap<RemoteClient, Map<string, Promise<void>>>();
 const probes = new WeakMap<RemoteClient, Map<string, Promise<boolean>>>();
-export const FOREGROUND_PROBE_TIMEOUT_MS = 1500;
+/** A busy Bridge handles attach/git/output sequentially, so a foreground probe
+ * queued behind that work is not evidence of a dead iOS transport. */
+export const FOREGROUND_PROBE_TIMEOUT_MS = 8000;
 
 /** A cheap, read-only Bridge round trip, not a cached native connection flag.
  * A reply proves the existing reader/writer is usable after iOS suspension. */
@@ -12,11 +15,21 @@ export function checkConnection(client: RemoteClient, profileId: string): Promis
   const existing = pending.get(profileId);
   if (existing) return existing;
   const controller = new AbortController();
+  const started = performance.now();
+  let timedOut = false;
   let timer: ReturnType<typeof setTimeout>;
   const probe = Promise.race([
     Promise.resolve().then(() => client.request(profileId, "agent.preferences", {}, { signal: controller.signal })).then(() => true, () => false),
-    new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), FOREGROUND_PROBE_TIMEOUT_MS); }),
-  ]).finally(() => {
+    new Promise<false>(resolve => { timer = setTimeout(() => { timedOut = true; resolve(false); }, FOREGROUND_PROBE_TIMEOUT_MS); }),
+  ]).then(healthy => {
+    diag("foreground-probe", {
+      profileId,
+      healthy,
+      timedOut,
+      ms: Math.round(performance.now() - started),
+    });
+    return healthy;
+  }).finally(() => {
     clearTimeout(timer);
     controller.abort();
     if (pending.get(profileId) === probe) pending.delete(profileId);

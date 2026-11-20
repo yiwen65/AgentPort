@@ -38,9 +38,10 @@ fn mobile_scaffold_status() -> ScaffoldStatus {
 /// transport transitions, effect re-runs). The frontend only writes when a
 /// stream event actually changes, so this stays quiet in steady state. The file
 /// is capped and rotated so a long-lived session cannot grow it without bound.
-#[tauri::command]
-fn write_diag_lines(app: &tauri::AppHandle, lines: impl IntoIterator<Item = String>) -> Result<(), String> {
+pub(crate) fn write_diag_lines<R: tauri::Runtime>(app: &tauri::AppHandle<R>, lines: impl IntoIterator<Item = String>) -> Result<(), String> {
     const MAX_BYTES: u64 = 512 * 1024;
+    static DIAG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = DIAG_WRITE_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("diag.log");

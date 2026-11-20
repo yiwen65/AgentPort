@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{oneshot, Mutex as AsyncMutex, Notify};
@@ -101,6 +101,7 @@ struct Connection {
     snapshot: ConnectionSnapshot,
     writer: Arc<AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>>,
     pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
+    last_frame: Arc<Mutex<Instant>>,
     transport: Transport,
 }
 
@@ -209,6 +210,7 @@ impl RemoteConnections {
             generation: "g".into(), snapshot: ConnectionSnapshot { profile_id: "p".into(), protocol_major: 1,
                 protocol_minor: 0, agentport_version: "test".into(), platform: "test".into(), capabilities: vec![] },
             writer: Arc::new(AsyncMutex::new(Box::new(writer))), pending,
+            last_frame: Arc::new(Mutex::new(Instant::now())),
             transport: Transport::Relay(RelayLease(task.abort_handle())),
         });
     }
@@ -240,7 +242,7 @@ impl RemoteConnections {
         let outcome = timed_request(&writer, &mut frame, receiver, false, Duration::from_secs(30)).await;
         zeroize_value(&mut frame);
         pending.lock().ok().map(|mut requests| requests.remove(&request_id));
-        if outcome.as_ref().is_err_and(|error| matches!(error.code.as_str(), "request_timeout" | "connection_write_failed")) {
+        if outcome.as_ref().is_err_and(|error| error.code == "connection_write_failed") {
             retire_connection(app, self, profile_id, &pending).await;
         }
         if !self.inner.connections.lock().await.get(profile_id).is_some_and(|connection| connection.generation == generation) {
@@ -719,6 +721,14 @@ fn fail_pending(pending: &Arc<Mutex<HashMap<String, PendingRequest>>>) {
     }
 }
 
+#[cfg(debug_assertions)]
+fn diag_connection<R: Runtime>(app: &AppHandle<R>, event: &str, detail: impl std::fmt::Display) {
+    let _ = crate::write_diag_lines(app, [format!("{event} {detail}")]);
+}
+
+#[cfg(not(debug_assertions))]
+fn diag_connection<R: Runtime>(_: &AppHandle<R>, _: &str, _: impl std::fmt::Display) {}
+
 async fn reader_loop(
     app: AppHandle,
     state: RemoteConnections,
@@ -726,22 +736,31 @@ async fn reader_loop(
     mut generation: String,
     mut reader: Box<dyn AsyncRead + Send + Unpin>,
     mut pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
+    mut last_frame: Arc<Mutex<Instant>>,
 ) {
 
     loop {
-        while let Ok(Some(body)) = read_frame(&mut reader).await {
+        let close_reason = loop {
+            let body = match read_frame(&mut reader).await {
+                Ok(Some(body)) => body,
+                Ok(None) => break "eof".to_string(),
+                Err(error) => break format!("read_error: {error}"),
+            };
+            if let Ok(mut at) = last_frame.lock() {
+                *at = Instant::now();
+            }
             let envelope = match agentport_remote_protocol::binary_output::decode_envelope(
                 body.as_slice(),
             ) {
                 Ok(Some(envelope)) => match serde_json::to_value(envelope) {
                     Ok(value) => value,
-                    Err(_) => break,
+                    Err(error) => break format!("envelope_serialize_error: {error}"),
                 },
                 Ok(None) => match serde_json::from_slice::<Value>(body.as_slice()) {
                     Ok(value) => value,
-                    Err(_) => break,
+                    Err(error) => break format!("json_error: {error}"),
                 },
-                Err(_) => break,
+                Err(error) => break format!("binary_decode_error: {error}"),
             };
             match envelope.get("type").and_then(Value::as_str) {
                 Some("accepted") => {
@@ -809,9 +828,15 @@ async fn reader_loop(
                         }
                     }
                 }
-                _ => break,
+                Some(other) => break format!("unknown_frame_type: {other}"),
+                None => break "missing_frame_type".to_string(),
             }
-        }
+        };
+        diag_connection(
+            &app,
+            "remote_reader_closed",
+            format!("profile={profile_id} reason={close_reason}"),
+        );
         fail_pending(&pending);
         {
             let mut connections = state.inner.connections.lock().await;
@@ -855,9 +880,11 @@ async fn reader_loop(
                 return;
             }
             let Ok(profile) = hosts::get_profile(&app, &profile_id) else {
+                diag_connection(&app, "remote_reconnect_stopped", format!("profile={profile_id} reason=profile_unavailable"));
                 break;
             };
             if !profile.enabled {
+                diag_connection(&app, "remote_reconnect_stopped", format!("profile={profile_id} reason=profile_disabled"));
                 break;
             }
             match tokio::time::timeout(Duration::from_secs(30), establish(&app, &profile)).await {
@@ -865,14 +892,33 @@ async fn reader_loop(
                     reconnected = Some(established);
                     break;
                 }
-                Ok(Err(error)) if !retryable_connect_error(&error) => break,
-                _ => {}
+                Ok(Err(error)) => {
+                    diag_connection(
+                        &app,
+                        "remote_reconnect_error",
+                        format!(
+                            "profile={profile_id} attempt={attempt} code={} message={}",
+                            error.code, error.message
+                        ),
+                    );
+                    if !retryable_connect_error(&error) {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    diag_connection(
+                        &app,
+                        "remote_reconnect_timeout",
+                        format!("profile={profile_id} attempt={attempt}"),
+                    );
+                }
             }
         }
         if !state.owns_attempt(&profile_id, &next_token) {
             return;
         }
         let Some((transport, next_reader, writer, snapshot)) = reconnected else {
+            diag_connection(&app, "remote_reconnect_failed", format!("profile={profile_id} attempts={attempt}"));
             if let Ok(mut attempts) = state.inner.connecting_profiles.lock() {
                 if attempts.get(&profile_id).is_some_and(|attempt| attempt.token == next_token) {
                     attempts.remove(&profile_id);
@@ -888,6 +934,7 @@ async fn reader_loop(
             return;
         }
         if connections.len() >= MAX_ONLINE_HOSTS {
+            diag_connection(&app, "remote_connect_rejected", format!("profile={profile_id} reason=online_host_limit"));
             if let Ok(mut attempts) = state.inner.connecting_profiles.lock() {
                 if attempts.get(&profile_id).is_some_and(|attempt| attempt.token == next_token) {
                     attempts.remove(&profile_id);
@@ -896,6 +943,7 @@ async fn reader_loop(
             }
             return;
         }
+        let next_last_frame = Arc::new(Mutex::new(Instant::now()));
         connections.insert(
             profile_id.clone(),
             Connection {
@@ -903,6 +951,7 @@ async fn reader_loop(
                 snapshot,
                 writer: Arc::new(AsyncMutex::new(writer)),
                 pending: Arc::clone(&next_pending),
+                last_frame: Arc::clone(&next_last_frame),
                 transport,
             },
         );
@@ -917,6 +966,7 @@ async fn reader_loop(
         generation = next_generation;
         reader = next_reader;
         pending = next_pending;
+        last_frame = next_last_frame;
     }
 }
 
@@ -1007,10 +1057,16 @@ pub async fn mobile_connect_host(
         .ok()
         .map(|mut attempts| attempts.remove(&profile_id));
     let (transport, reader, writer, snapshot) = established.map_err(|error| {
+        diag_connection(
+            &app,
+            "remote_connect_error",
+            format!("profile={profile_id} code={} message={}", error.code, error.message),
+        );
         let _ = emit_connection_state(&app, &profile_id, "failed");
         error
     })?;
     let pending = Arc::new(Mutex::new(HashMap::new()));
+    let last_frame = Arc::new(Mutex::new(Instant::now()));
     connections.insert(
         profile_id.clone(),
         Connection {
@@ -1018,6 +1074,7 @@ pub async fn mobile_connect_host(
             snapshot: snapshot.clone(),
             writer: Arc::new(AsyncMutex::new(writer)),
             pending: Arc::clone(&pending),
+            last_frame: Arc::clone(&last_frame),
             transport,
         },
     );
@@ -1030,6 +1087,7 @@ pub async fn mobile_connect_host(
         generation,
         reader,
         pending,
+        last_frame,
     ));
     Ok(snapshot)
 }
@@ -1086,7 +1144,7 @@ pub async fn mobile_remote_submit_input(
         .to_string();
     let request_id = format!("request_{}", uuid::Uuid::new_v4().simple());
     let (sender, receiver) = oneshot::channel();
-    let (writer, pending) = {
+    let (writer, pending, last_frame) = {
         let connections = state.inner.connections.lock().await;
         let connection =
             connections
@@ -1099,6 +1157,7 @@ pub async fn mobile_remote_submit_input(
         (
             Arc::clone(&connection.writer),
             Arc::clone(&connection.pending),
+            Arc::clone(&connection.last_frame),
         )
     };
     {
@@ -1145,8 +1204,20 @@ pub async fn mobile_remote_submit_input(
         let outcome = match tokio::time::timeout(Duration::from_secs(15), receiver).await {
             Ok(Ok(result)) => result,
             result => {
+                diag_connection(
+                    &app,
+                    "remote_input_timeout",
+                    format!("profile={} batch={batch_id} disconnected={}", command.profile_id, result.is_err()),
+                );
                 pending.lock().ok().map(|mut requests| requests.remove(&request_id));
-                if result.is_err() { retire_connection(&app, &state, &command.profile_id, &pending).await; }
+                if result.is_err()
+                    && last_frame
+                        .lock()
+                        .map(|at| at.elapsed() >= Duration::from_secs(20))
+                        .unwrap_or(true)
+                {
+                    retire_connection(&app, &state, &command.profile_id, &pending).await;
+                }
                 Err(RemoteCommandError {
                     code: "connection_unknown".into(),
                     message: "The input result was not received and was not replayed".into(),
@@ -1179,11 +1250,15 @@ pub async fn mobile_remote_request(
 ) -> Result<Value, RemoteCommandError> {
     let request_id = format!("request_{}", uuid::Uuid::new_v4().simple());
     let is_read = classify_method(&command.method) == RetryClass::Read;
-    let deadline = if is_read || matches!(command.method.as_str(), "session.attach" | "session.detach" | "session.control") {
+    let deadline = if command.method == "session.attach" {
+        // A serialized Bridge can queue the attach behind a screen snapshot or
+        // output backlog; a 15s timeout used to abort a still-progressing attach.
+        Duration::from_secs(30)
+    } else if is_read || matches!(command.method.as_str(), "session.detach" | "session.control") {
         Duration::from_secs(15)
     } else { Duration::from_secs(120) };
     let (sender, receiver) = oneshot::channel();
-    let (writer, pending) = {
+    let (writer, pending, last_frame) = {
         let connections = state.inner.connections.lock().await;
         let connection =
             connections
@@ -1196,6 +1271,7 @@ pub async fn mobile_remote_request(
         (
             Arc::clone(&connection.writer),
             Arc::clone(&connection.pending),
+            Arc::clone(&connection.last_frame),
         )
     };
     pending
@@ -1216,10 +1292,28 @@ pub async fn mobile_remote_request(
     let mut frame = json!({"type": "request", "requestId": request_id.clone(), "method": command.method, "params": command.params, "precondition": command.precondition});
     let outcome = timed_request(&writer, &mut frame, receiver, is_read, deadline).await;
     zeroize_value(&mut frame);
-    if outcome.is_err() {
+    if let Err(error) = &outcome {
+        diag_connection(
+            &app,
+            "remote_request_error",
+            format!(
+                "profile={} method={} code={} status={}",
+                command.profile_id, command.method, error.code, error.status
+            ),
+        );
         pending.lock().ok().map(|mut requests| requests.remove(&request_id));
     }
-    if outcome.as_ref().is_err_and(|error| matches!(error.code.as_str(), "request_timeout" | "connection_write_failed")) {
+    // A slow Bridge can time out a queued request while its reader is still
+    // live. Retire only when the write itself failed or the transport has been
+    // silent long enough that a timeout means a wedged (half-open) session,
+    // not a busy Bridge; the reader loop handles a cleanly closed transport.
+    let silent = last_frame
+        .lock()
+        .map(|at| at.elapsed() >= Duration::from_secs(20))
+        .unwrap_or(true);
+    if outcome.as_ref().is_err_and(|error| {
+        error.code == "connection_write_failed" || (error.code == "request_timeout" && silent)
+    }) {
         retire_connection(&app, &state, &command.profile_id, &pending).await;
     }
     outcome
@@ -1271,6 +1365,7 @@ async fn retire_connection<R: Runtime>(
         let mut connections = state.inner.connections.lock().await;
         if !connections.get(profile_id).is_some_and(|value| Arc::ptr_eq(&value.pending, pending)) { return; }
         let old = connections.remove(profile_id);
+        diag_connection(app, "remote_connection_retired", format!("profile={profile_id}"));
         let _ = emit_connection_state(app, profile_id, "failed");
         old
     };
@@ -1408,7 +1503,9 @@ mod tests {
             snapshot: ConnectionSnapshot { profile_id: "host".into(), protocol_major: 1,
                 protocol_minor: 0, agentport_version: "test".into(), platform: "test".into(), capabilities: vec![] },
             writer: Arc::new(AsyncMutex::new(Box::new(tokio::io::sink()))),
-            pending: pending.clone(), transport: Transport::Relay(RelayLease(transport.abort_handle())),
+            pending: pending.clone(),
+            last_frame: Arc::new(Mutex::new(Instant::now())),
+            transport: Transport::Relay(RelayLease(transport.abort_handle())),
         });
         retire_connection(app.handle(), &state, "host", &obsolete).await;
         assert!(state.inner.connections.lock().await.contains_key("host"));
