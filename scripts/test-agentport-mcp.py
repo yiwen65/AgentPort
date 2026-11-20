@@ -164,6 +164,10 @@ def main() -> int:
         check(not is_error, f"session created: {created.get('sessionId')}")
         session_id = created["sessionId"]
         check(created["promptSent"], "first prompt sent after the ready gate")
+        check(
+            created.get("pane", {}).get("kind") == "split_pane",
+            "delegation places the Session in a new pane by default",
+        )
         # Delegation is unattended: the default must be the Agent's own
         # full-permission mode, not the CLI's interactive prompts.
         check(
@@ -283,6 +287,19 @@ def main() -> int:
         check(is_error and bad["error"]["code"] == "invalid_permission", "unknown permission rejected")
 
         print("pane intents")
+        before = len(
+            [line for line in (data_dir / "mcp" / "ui-commands.jsonl").read_text().splitlines() if line.strip()]
+        )
+        quiet, is_error = client.call(
+            "create_session",
+            {"agent": args.agent, "projectId": project_id, "title": "no pane", "pane": "none"},
+        )
+        check(not is_error and "pane" not in quiet, "pane=none queues nothing")
+        client.call("terminate_session", {"sessionId": quiet["sessionId"]})
+        after = len(
+            [line for line in (data_dir / "mcp" / "ui-commands.jsonl").read_text().splitlines() if line.strip()]
+        )
+        check(after == before, "and writes no command")
         pane, is_error = client.call("open_pane", {"sessionId": session_id})
         check(not is_error and pane["queued"], "open_pane queued")
         queue = data_dir / "mcp" / "ui-commands.jsonl"

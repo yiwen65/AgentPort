@@ -60,7 +60,8 @@ pub const TOOLS: &[ToolDef] = &[
         description: "Create a Session for the given Agent in a project and, optionally, send the \
                       first prompt once the CLI is ready. The delegated Session runs in the \
                       Agent's own full-permission mode by default (no approval prompts, no \
-                      sandbox bypass prompt); pass permission=native to keep the CLI's prompts. \
+                      sandbox bypass prompt); pass permission=native to keep the CLI's prompts. By \
+                      default it also splits a new pane for the Session so the user can watch it. \
                       Returns the Session id. Sessions are owned by this MCP server: only they \
                       can be driven by the other tools.",
         schema: create_session_schema,
@@ -181,6 +182,12 @@ fn create_session_schema() -> Value {
                 "description": "bypass (default) launches the Agent with its own full-permission flag so a delegated task never stops to ask; auto relaxes approvals less aggressively; native keeps the CLI's own prompts but will block on them when nobody is watching."
             },
             "worktreeId": { "type": "string" },
+            "pane": {
+                "type": "string",
+                "enum": ["split-right", "split-down", "open", "none"],
+                "default": "split-right",
+                "description": "Where the new Session appears in the desktop layout: split-right (default) opens a new pane beside the focused one, split-down below it, open follows the ordinary open/focus rules, none leaves the layout alone. The layout is owned by the renderer, so this is a queued intent."
+            },
             "promptTimeoutMs": {
                 "type": "integer",
                 "minimum": 1000,
@@ -644,6 +651,21 @@ impl Toolbox {
         let prompt_timeout = optional_u64(args, "promptTimeoutMs")
             .unwrap_or(self.ready_timeout_ms)
             .clamp(1_000, 120_000);
+        // Delegation places the new Session in its own pane by default: a
+        // coordinator that has to call split_pane separately is one call more
+        // expensive and forgets the pane the first time it matters.
+        let pane = optional_str(args, "pane").unwrap_or_else(|| "split-right".into());
+        let pane_direction = match pane.as_str() {
+            "split-right" => Some("right"),
+            "split-down" => Some("down"),
+            "open" | "none" => None,
+            other => {
+                return Err(ToolFailure::new(
+                    "invalid_arguments",
+                    format!("pane must be split-right, split-down, open or none (got {other})"),
+                ))
+            }
+        };
 
         let launch = self
             .ops
@@ -770,6 +792,24 @@ impl Toolbox {
         if let Ok(summary) = self.ops.summary(&session_id) {
             result["title"] = json!(summary.title);
             result["cwd"] = json!(summary.cwd);
+        }
+
+        // Queue the placement last: the Session exists and is owned by now, so
+        // the renderer can resolve it when it drains the queue.
+        match pane.as_str() {
+            "none" => {}
+            "open" => {
+                result["pane"] = self.queue_pane(ui::PaneIntent::open(&session_id, true))?;
+            }
+            _ => {
+                result["pane"] = self.queue_pane(ui::PaneIntent {
+                    kind: "split_pane",
+                    session_id: &session_id,
+                    direction: pane_direction,
+                    target_session_id: None,
+                    focus: true,
+                })?;
+            }
         }
 
         Ok(result)

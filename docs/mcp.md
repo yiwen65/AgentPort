@@ -61,7 +61,7 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `list_agents` | 列出可用的 CLI Agent；`probe: true` 会重新探测（较慢） |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等） |
 | `list_sessions` / `session_status` | 只读观察；状态带 source / confidence / evidence |
-| `create_session` | 建 Session；带 `prompt` 时在后端等 CLI ready 再发 |
+| `create_session` | 建 Session；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=split-right`**，顺带给它开一个新窗格 |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
 | `wait_for_task` | 等当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 + **`reply`（本轮助手的回答原文）** |
 | `read_output` | 按 `source` 读取：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）+ 行数与 `truncated`/`limited` 标注 |
@@ -155,6 +155,10 @@ AgentPort 界面本身是"可重连客户端"，它并没有轮询本机数据�
 状态、未读、通知随之而来）并广播一次 `projects-changed`。分屏/聚焦/关窗格走的是同一套机制里的
 命令行队列（`<数据目录>/mcp/ui-commands.jsonl`），由渲染层用自己的 action 应用 ——
 分屏布局的权威始终在前端，MCP 只能"请求"，所以回执说的是 `queued`，不是"窗格已存在"。
+
+**委派默认分屏**：`create_session` 的 `pane` 参数默认 `split-right`（另有 `split-down` / `open` / `none`），
+所以一次委派就会把新会话放进独立窗格，不需要再单独调 `split_pane`；回执里的 `pane` 带队列命令 id。
+要沿用旧的"只在侧栏出现、不动布局"行为就传 `pane: "none"`。
 
 语义细节：已经上屏的 Session 再请求 `split_pane` 只会聚焦、不会重复开窗格；窗格太小放不下
 （320×180 门限）或找不到参照窗格时，退化为"就在当前视图显示它"，不会留下空白工作区；
