@@ -2379,6 +2379,19 @@ fn append_live_output(data: Vec<u8>, shared: &Shared) {
     );
 }
 
+enum PtyRead {
+    Data(Vec<u8>),
+    Eof,
+    Fault(String),
+}
+
+fn append_batched_output(batcher: &mut OutputBatcher, shared: &Shared, data: Vec<u8>) {
+    let now = Instant::now();
+    for batch in batcher.push(&data, now) {
+        append_live_output(batch, shared);
+    }
+}
+
 fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
     redactor: Option<Redactor>,
@@ -2394,36 +2407,48 @@ fn spawn_pty_reader(
             .then(|| shared.cfg.agent_session_id_hint.clone())
             .flatten()
             .map(PiPtyStartupNoticeFilter::new);
+        let mut batcher = OutputBatcher::new();
         // Match the protocol's 256 KiB output batch ceiling: fewer JSON/base64
         // frames and less per-frame tail latency for sustained PTY output.
-        let mut buf = [0u8; 256 * 1024];
-        let mut batcher = OutputBatcher::new(Instant::now());
-        let mut emit_output = |data: Vec<u8>| {
-            let now = Instant::now();
-            for batch in batcher.push(&data, now) {
-                append_live_output(batch, &shared);
+        // A blocking read cannot observe the batcher's idle deadline, so raw
+        // reads run on their own thread and this loop owns the timeout.
+        let (raw_tx, raw_rx) = mpsc::sync_channel::<PtyRead>(4);
+        let reader_shared = shared.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 256 * 1024];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        let _ = raw_tx.send(PtyRead::Eof);
+                        break;
+                    }
+                    Ok(n) => {
+                        *reader_shared.last_output_at.lock().unwrap() = Instant::now();
+                        if raw_tx.send(PtyRead::Data(buf[..n].to_vec())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = raw_tx.send(PtyRead::Fault(error.to_string()));
+                        break;
+                    }
+                }
             }
-        };
+        });
         let mut pty_fault = None;
         loop {
-            match reader.read(&mut buf) {
-                Ok(0) => {
-                    info!("pty EOF");
-                    break;
-                }
-                Ok(n) => {
-                    let chunk = &buf[..n];
-                    *shared.last_output_at.lock().unwrap() = Instant::now();
+            match raw_rx.recv_timeout(output_batcher::IDLE_WAIT) {
+                Ok(PtyRead::Data(chunk)) => {
                     let chunk = match &mut pi_startup_notice_filter {
-                        Some(filter) => filter.feed(chunk),
-                        None => chunk.to_vec(),
+                        Some(filter) => filter.feed(&chunk),
+                        None => chunk,
                     };
                     let data = match &mut redactor {
                         Some(r) => r.feed(&chunk),
                         None => chunk.clone(),
                     };
                     if !data.is_empty() {
-                        emit_output(data);
+                        append_batched_output(&mut batcher, &shared, data);
                     }
                     // Retain the bounded tail only for native session identity.
                     // Status patterns use the parsed live screen on the control
@@ -2436,15 +2461,25 @@ fn spawn_pty_reader(
                         }
                     }
                 }
-                Err(e) => {
+                Ok(PtyRead::Eof) => {
+                    info!("pty EOF");
+                    break;
+                }
+                Ok(PtyRead::Fault(message)) => {
                     // EIO often follows all slave fds closing, but it is not
                     // proof that the child has exited. Preserve the distinct
                     // failure fact for the control loop so it can verify and
                     // clean up a still-live process group.
-                    warn!("pty read failed: {e}");
-                    pty_fault = Some(e.to_string());
+                    warn!("pty read failed: {message}");
+                    pty_fault = Some(message);
                     break;
                 }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    for batch in batcher.flush_idle(Instant::now()) {
+                        append_live_output(batch, &shared);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
         if let Some(filter) = &mut pi_startup_notice_filter {
@@ -2455,7 +2490,7 @@ fn spawn_pty_reader(
                     None => chunk,
                 };
                 if !data.is_empty() {
-                    emit_output(data);
+                    append_batched_output(&mut batcher, &shared, data);
                 }
             }
         }
@@ -2464,7 +2499,7 @@ fn spawn_pty_reader(
         if let Some(r) = &mut redactor {
             let tail = r.finish();
             if !tail.is_empty() {
-                emit_output(tail);
+                append_batched_output(&mut batcher, &shared, tail);
             }
             info!(redaction_hits = r.hits(), "redactor finished");
         }
