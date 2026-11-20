@@ -19,8 +19,9 @@ describe("pane drop indicator rendering", () => {
     expect(rule("\\.pane-drop-overlay")).toContain("pointer-events: none");
   });
 
-  it("keeps both drop direction labels available", () => {
-    expect(rule("\\.pane-drop-zone\\.right")).not.toBe("");
-    expect(rule("\\.pane-drop-zone\\.down")).not.toBe("");
+  it("keeps all four drop direction labels available", () => {
+    for (const direction of ["left", "right", "up", "down"]) {
+      expect(rule(`\\.pane-drop-zone\\.${direction}`)).not.toBe("");
+    }
   });
 });

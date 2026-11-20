@@ -3536,10 +3536,12 @@ body.is-project-dragging .tree-row.project {
   overflow: hidden;
 }
 
+.pane-split.left,
 .pane-split.right {
   flex-direction: row;
 }
 
+.pane-split.up,
 .pane-split.down {
   flex-direction: column;
 }
@@ -3713,11 +3715,13 @@ body.is-project-dragging .tree-row.project {
   outline: none;
 }
 
+.pane-divider.left,
 .pane-divider.right {
   width: 6px;
   cursor: col-resize;
 }
 
+.pane-divider.up,
 .pane-divider.down {
   height: 6px;
   cursor: row-resize;
@@ -3730,6 +3734,7 @@ body.is-project-dragging .tree-row.project {
   transition: background 0.12s ease, box-shadow 0.12s ease;
 }
 
+.pane-divider.left::after,
 .pane-divider.right::after {
   top: 0;
   bottom: 0;
@@ -3737,6 +3742,7 @@ body.is-project-dragging .tree-row.project {
   width: 1px;
 }
 
+.pane-divider.up::after,
 .pane-divider.down::after {
   right: 0;
   bottom: 2px;
@@ -3760,7 +3766,8 @@ body.is-resizing-pane {
   z-index: 30;
   inset: 31px 0 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1.4fr 1fr;
+  grid-template-rows: 1fr 1.4fr 1fr;
   gap: 8px;
   padding: 12px;
   /* Pure indicator: the pane leaf owns the drop, so mounting this must not
@@ -3786,12 +3793,28 @@ body.is-resizing-pane {
   font-weight: 650;
 }
 
-.pane-drop-zone.right {
-  border-left-style: solid;
+.pane-drop-zone.up {
+  grid-column: 2;
+  grid-row: 1;
+  border-bottom-style: solid;
 }
 
 .pane-drop-zone.down {
-  border-bottom-style: solid;
+  grid-column: 2;
+  grid-row: 3;
+  border-top-style: solid;
+}
+
+.pane-drop-zone.left {
+  grid-column: 1;
+  grid-row: 2;
+  border-right-style: solid;
+}
+
+.pane-drop-zone.right {
+  grid-column: 3;
+  grid-row: 2;
+  border-left-style: solid;
 }
 
 .pane-drop-zone.disabled {

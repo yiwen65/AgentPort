@@ -113,6 +113,31 @@ describe("pane layout transforms", () => {
     expect(orderedLayoutSessionIds(split)).toEqual(["a", "b"]);
   });
 
+  it("places a dragged Session on each requested side", () => {
+    for (const [direction, newPaneFirst] of [
+      ["left", true],
+      ["right", false],
+      ["up", true],
+      ["down", false],
+    ] as const) {
+      const split = splitPane(
+        singletonPaneLayout("target"),
+        "target",
+        "dragged",
+        direction,
+        direction,
+      );
+      const root = rootSplit(split);
+      expect(root.direction).toBe(direction);
+      expect(root.first).toEqual(
+        paneLeaf(newPaneFirst ? "dragged" : "target"),
+      );
+      expect(root.second).toEqual(
+        paneLeaf(newPaneFirst ? "target" : "dragged"),
+      );
+    }
+  });
+
   it("preserves existing split ids across nested splits", () => {
     const first = splitPane(
       singletonPaneLayout("a"),
@@ -159,6 +184,22 @@ describe("pane layout transforms", () => {
     expect(focused.root).toBe(layout.root);
     expect(collectSplitIds(focused.root)).toEqual(["stable"]);
     expect(focused.focusedSessionId).toBe("b");
+  });
+
+  it("keeps left and up direct placements stable", () => {
+    for (const direction of ["left", "up"] as const) {
+      const layout = splitPane(
+        singletonPaneLayout("target"),
+        "target",
+        "moving",
+        direction,
+        direction,
+      );
+      const focused = movePane(layout, "moving", "target", direction, "replacement");
+
+      expect(focused.root).toBe(layout.root);
+      expect(focused.focusedSessionId).toBe("moving");
+    }
   });
 
   it("focuses the closest edge of the sibling promoted by removal", () => {
@@ -331,6 +372,23 @@ describe("pane layout sanitization", () => {
       ratio: 0.5,
     });
     expect(sanitized.focusedSessionId).toBe("b");
+  });
+
+  it("preserves all four directions when sanitizing persisted layouts", () => {
+    for (const direction of ["left", "right", "up", "down"] as const) {
+      const layout = sanitizePaneLayout({
+        root: {
+          type: "split",
+          id: direction,
+          direction,
+          ratio: 0.5,
+          first: paneLeaf("a"),
+          second: paneLeaf("b"),
+        },
+        focusedSessionId: "b",
+      });
+      expect(rootSplit(layout).direction).toBe(direction);
+    }
   });
 
   it("bounds hostile depth and cycles without losing every valid sibling", () => {

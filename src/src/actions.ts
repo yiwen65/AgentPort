@@ -64,6 +64,8 @@ import { applyTerminalThemeCss } from "./terminalThemes";
 import {
   assignPaneGroupAccent,
   focusPane,
+  isHorizontalPaneSplitDirection,
+  isPaneSplitDirection,
   layoutContains,
   movePane,
   orderedLayoutSessionIds,
@@ -817,7 +819,9 @@ export function splitSessionForExternalAgent(
   // The requested axis may not fit (a 575px pane cannot halve into two 320px
   // panes). Try the other axis before giving up: "give it a pane" is the intent,
   // and a downward pane usually fits where a sideways one does not.
-  const other: PaneSplitDirection = direction === "right" ? "down" : "right";
+  const other: PaneSplitDirection = isHorizontalPaneSplitDirection(direction)
+    ? "down"
+    : "right";
   const chosen = canSplitSessionPane(targetKey, direction)
     ? direction
     : canSplitSessionPane(targetKey, other)
@@ -858,7 +862,7 @@ export function applyExternalPaneCommand(command: ExternalPaneCommand): boolean 
     case "split_pane":
       return splitSessionForExternalAgent(
         command.sessionId,
-        command.direction === "down" ? "down" : "right",
+        isPaneSplitDirection(command.direction) ? command.direction : "right",
         command.targetSessionId ?? null,
         command.focus !== false,
       );

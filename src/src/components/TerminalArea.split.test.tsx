@@ -607,22 +607,33 @@ describe("TerminalArea recursive panes", () => {
     expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
   });
 
-  it("splits by drop position when a Session lands on the pane surface", () => {
+  it("splits by the nearest drop edge when a Session lands on the pane surface", () => {
     // The drop arrives on the terminal surface, not on the indicator, because
     // the indicator is inert (`pointer-events: none`) and the pane leaf owns
     // the stable drop surface on every platform.
     const { container } = render(<TerminalArea />);
     const pane = paneLeaf(container, ptyB.id);
-    stubPaneRect(pane);
+    stubPaneRect(pane, 900, 600);
 
-    const dataTransfer = transfer(rpc.id);
-    expect(dataTransfer.types).toContain(SESSION_PANE_DND_MIME);
-
-    fireEvent(pane, paneDragEvent("drop", { dataTransfer, clientX: 100, clientY: 300 }));
-    expect(splitSessionIntoPaneMock).toHaveBeenCalledWith(ptyB.id, rpc.id, "right");
-
-    fireEvent(pane, paneDragEvent("drop", { dataTransfer: transfer(rpc.id), clientX: 800, clientY: 300 }));
-    expect(splitSessionIntoPaneMock).toHaveBeenLastCalledWith(ptyB.id, rpc.id, "down");
+    expect(transfer(rpc.id).types).toContain(SESSION_PANE_DND_MIME);
+    const drops = [
+      { clientX: 450, clientY: 50, direction: "up" },
+      { clientX: 450, clientY: 550, direction: "down" },
+      { clientX: 50, clientY: 300, direction: "left" },
+      { clientX: 850, clientY: 300, direction: "right" },
+    ] as const;
+    for (const { clientX, clientY, direction } of drops) {
+      fireEvent(pane, paneDragEvent("drop", {
+        dataTransfer: transfer(rpc.id),
+        clientX,
+        clientY,
+      }));
+      expect(splitSessionIntoPaneMock).toHaveBeenLastCalledWith(
+        ptyB.id,
+        rpc.id,
+        direction,
+      );
+    }
   });
 
   it("clears the indicator when the drag gesture ends without a drop", () => {
@@ -657,19 +668,17 @@ describe("TerminalArea recursive panes", () => {
     expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
   });
 
-  it("renders both Session drop directions as an inert overlay", () => {
+  it("renders all four Session drop directions as an inert overlay", () => {
     const { container, getByText } = render(<TerminalArea />);
     const pane = paneLeaf(container, ptyB.id);
     stubPaneRect(pane);
 
     fireEvent.dragEnter(pane, { dataTransfer: transfer(rpc.id) });
-    const right = getByText("放到右侧").closest<HTMLElement>(".pane-drop-zone");
-    const down = getByText("放到下方").closest<HTMLElement>(".pane-drop-zone");
-
-    expect(right).not.toBeNull();
-    expect(down).not.toBeNull();
-    expect(right?.getAttribute("aria-disabled")).toBe("false");
-    expect(down?.getAttribute("aria-disabled")).toBe("false");
+    for (const label of ["放到左侧", "放到右侧", "放到上方", "放到下方"]) {
+      const zone = getByText(label).closest<HTMLElement>(".pane-drop-zone");
+      expect(zone).not.toBeNull();
+      expect(zone?.getAttribute("aria-disabled")).toBe("false");
+    }
   });
 
   it("exposes keyboard-operable split separators", () => {

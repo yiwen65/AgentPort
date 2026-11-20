@@ -36,7 +36,21 @@ export function hasPersistedTerminalLayout(): boolean {
   }
 }
 
-export type PaneSplitDirection = "right" | "down";
+export type PaneSplitDirection = "left" | "right" | "up" | "down";
+
+export function isPaneSplitDirection(value: unknown): value is PaneSplitDirection {
+  return value === "left" || value === "right" || value === "up" || value === "down";
+}
+
+export function isHorizontalPaneSplitDirection(
+  direction: PaneSplitDirection,
+): boolean {
+  return direction === "left" || direction === "right";
+}
+
+function newPaneFirstForSplitDirection(direction: PaneSplitDirection): boolean {
+  return direction === "left" || direction === "up";
+}
 
 export interface PaneLeaf {
   type: "leaf";
@@ -243,7 +257,7 @@ export function paneMinimumSize(
   const first = paneMinimumSize(node.first, separator, depth + 1);
   const second = paneMinimumSize(node.second, separator, depth + 1);
   const ratio = isValidRatio(node.ratio) ? node.ratio : DEFAULT_SPLIT_RATIO;
-  return node.direction === "right"
+  return isHorizontalPaneSplitDirection(node.direction)
     ? {
         width: separator + Math.max(
           first.width / ratio,
@@ -280,7 +294,7 @@ export function paneSessionSize(
 
   const separator = safeSeparatorSize(separatorSize);
   const ratio = isValidRatio(node.ratio) ? node.ratio : DEFAULT_SPLIT_RATIO;
-  if (node.direction === "right") {
+  if (isHorizontalPaneSplitDirection(node.direction)) {
     const available = Math.max(0, boundedWidth - separator);
     const firstWidth = available * ratio;
     return (
@@ -343,7 +357,7 @@ export function paneLayoutFitsSize(
 
   const separator = safeSeparatorSize(separatorSize);
   const ratio = isValidRatio(node.ratio) ? node.ratio : DEFAULT_SPLIT_RATIO;
-  if (node.direction === "right") {
+  if (isHorizontalPaneSplitDirection(node.direction)) {
     const available = Math.max(0, boundedWidth - separator);
     const firstWidth = available * ratio;
     return paneLayoutFitsSize(
@@ -392,8 +406,12 @@ export function clampPaneSplitRatio(
   );
   const firstSize = paneMinimumSize(split.first, separator);
   const secondSize = paneMinimumSize(split.second, separator);
-  const firstMinimum = split.direction === "right" ? firstSize.width : firstSize.height;
-  const secondMinimum = split.direction === "right" ? secondSize.width : secondSize.height;
+  const firstMinimum = isHorizontalPaneSplitDirection(split.direction)
+    ? firstSize.width
+    : firstSize.height;
+  const secondMinimum = isHorizontalPaneSplitDirection(split.direction)
+    ? secondSize.width
+    : secondSize.height;
   const totalMinimum = firstMinimum + secondMinimum;
 
   if (available < totalMinimum || available === 0) {
@@ -464,13 +482,14 @@ function splitNodeAt(
 ): PaneLayoutNode {
   if (node.type === "leaf") {
     if (node.sessionId !== targetSessionId || depth >= MAX_PANE_LAYOUT_DEPTH) return node;
+    const newPane = paneLeaf(newSessionId);
     return {
       type: "split",
       id: splitId,
       direction,
       ratio: DEFAULT_SPLIT_RATIO,
-      first: node,
-      second: paneLeaf(newSessionId),
+      first: newPaneFirstForSplitDirection(direction) ? newPane : node,
+      second: newPaneFirstForSplitDirection(direction) ? node : newPane,
     };
   }
   if (depth >= MAX_PANE_LAYOUT_DEPTH) return node;
@@ -494,7 +513,7 @@ function splitNodeAt(
   return second === node.second ? node : { ...node, second };
 }
 
-/** Add a new Session immediately right of or below a target leaf. */
+/** Add a new Session beside a target leaf in the requested direction. */
 export function splitPane(
   layout: PaneLayout,
   targetSessionId: string,
@@ -532,12 +551,18 @@ function directPlacementExists(
   depth = 0,
 ): boolean {
   if (node.type === "leaf" || depth >= MAX_PANE_LAYOUT_DEPTH) return false;
+  const firstSessionId = newPaneFirstForSplitDirection(direction)
+    ? movingSessionId
+    : targetSessionId;
+  const secondSessionId = newPaneFirstForSplitDirection(direction)
+    ? targetSessionId
+    : movingSessionId;
   if (
     node.direction === direction &&
     node.first.type === "leaf" &&
-    node.first.sessionId === targetSessionId &&
+    node.first.sessionId === firstSessionId &&
     node.second.type === "leaf" &&
-    node.second.sessionId === movingSessionId
+    node.second.sessionId === secondSessionId
   ) {
     return true;
   }
@@ -753,7 +778,7 @@ function sanitizeNode(
   return {
     type: "split",
     id: recoveredSplitId(value.id, context),
-    direction: value.direction === "down" ? "down" : "right",
+    direction: isPaneSplitDirection(value.direction) ? value.direction : "right",
     ratio: isValidRatio(value.ratio) ? value.ratio : DEFAULT_SPLIT_RATIO,
     first,
     second,

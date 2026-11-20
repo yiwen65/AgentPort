@@ -87,6 +87,7 @@ import {
 } from "../actions";
 import {
   clampPaneSplitRatio,
+  isHorizontalPaneSplitDirection,
   layoutContains,
   orderedLayoutSessionIds,
   paneGroupDeviceAccents,
@@ -977,15 +978,23 @@ function paneContextItems(
   return items;
 }
 
-/**
- * Split direction for a Session dropped on a pane, from the drop position.
- *
- * The overlay paints `right` and `down` as two side-by-side columns (see
- * `.pane-drop-overlay`), so the left half splits the dragged Session to the
- * right of this pane and the right half splits it below.
- */
-function paneDropDirection(rect: DOMRect, clientX: number): PaneSplitDirection {
-  return clientX - rect.left < rect.width / 2 ? "right" : "down";
+/** Resolve the nearest edge, matching Orca's four-sided pane drop behavior. */
+function paneDropDirection(
+  rect: DOMRect,
+  clientX: number,
+  clientY: number,
+): PaneSplitDirection {
+  const width = Math.max(1, rect.width);
+  const height = Math.max(1, rect.height);
+  const distances: Array<[PaneSplitDirection, number]> = [
+    ["up", (clientY - rect.top) / height],
+    ["down", (rect.top + height - clientY) / height],
+    ["left", (clientX - rect.left) / width],
+    ["right", (rect.left + width - clientX) / width],
+  ];
+  return distances.reduce((nearest, candidate) =>
+    candidate[1] < nearest[1] ? candidate : nearest,
+  )[0];
 }
 
 /**
@@ -994,27 +1003,35 @@ function paneDropDirection(rect: DOMRect, clientX: number): PaneSplitDirection {
  * The overlay is deliberately inert (`pointer-events: none`): it used to own
  * the drop targets, but mounting it under the pointer changed WebKit's drag
  * target mid-gesture, which made GTK fire dragleave for the element that was
- * covered (with a null `relatedTarget`) and strobed the overlay on/off until
- * the pointer left. The split is now decided by the pane leaf that owns the
- * stable drop surface, and this only shows where the Session will land.
+ * covered (with a null `relatedTarget`) and strobed the overlay on/off until the
+ * pointer left. The split is now decided by the pane leaf that owns the stable
+ * drop surface, and this only shows where the Session will land.
  */
 function PaneDropOverlay({ ses }: { ses: SessionView }) {
   const { t } = useTranslation("shell");
   const zone = (direction: PaneSplitDirection) => {
     const allowed = canSplitSessionPane(ses.id, direction);
+    const copyKey = {
+      left: "pane.dropLeft",
+      right: "pane.dropRight",
+      up: "pane.dropUp",
+      down: "pane.dropDown",
+    } as const;
     return (
       <div
         className={`pane-drop-zone ${direction}${allowed ? "" : " disabled"}`}
         aria-disabled={!allowed}
       >
-        <span>{t(direction === "right" ? "pane.dropRight" : "pane.dropDown")}</span>
+        <span>{t(copyKey[direction])}</span>
       </div>
     );
   };
   return (
     <div className="pane-drop-overlay" role="presentation">
-      {zone("right")}
+      {zone("up")}
       {zone("down")}
+      {zone("left")}
+      {zone("right")}
     </div>
   );
 }
@@ -1132,6 +1149,7 @@ function SessionPaneLeaf({
         const direction = paneDropDirection(
           event.currentTarget.getBoundingClientRect(),
           event.clientX,
+          event.clientY,
         );
         // A narrow pane only yields narrower panes; refusing the drop left the
         // user with no way to place the Session at all.
@@ -1177,10 +1195,14 @@ function clampSplitRatio(
   clientX: number,
   clientY: number,
 ): number {
-  const axisLength = split.direction === "right" ? rect.width : rect.height;
+  const axisLength = isHorizontalPaneSplitDirection(split.direction)
+    ? rect.width
+    : rect.height;
   const available = Math.max(1, axisLength - PANE_SEPARATOR_SIZE);
   const offset =
-    (split.direction === "right" ? clientX - rect.left : clientY - rect.top) -
+    (isHorizontalPaneSplitDirection(split.direction)
+      ? clientX - rect.left
+      : clientY - rect.top) -
     PANE_SEPARATOR_SIZE / 2;
   return clampPaneSplitRatio(
     split,
@@ -1221,7 +1243,9 @@ function PaneDivider({ split }: { split: PaneSplit }) {
   };
   const keyboardRatio = (delta: number, parent: HTMLElement | null) => {
     const rect = parent?.getBoundingClientRect();
-    const axisLength = split.direction === "right" ? rect?.width : rect?.height;
+    const axisLength = isHorizontalPaneSplitDirection(split.direction)
+      ? rect?.width
+      : rect?.height;
     const length = axisLength ?? 1000;
     const available = Math.max(1, length - PANE_SEPARATOR_SIZE);
     setPaneSplitRatio(
@@ -1240,11 +1264,13 @@ function PaneDivider({ split }: { split: PaneSplit }) {
       className={`pane-divider ${split.direction}`}
       role="separator"
       aria-label={t(
-        split.direction === "right"
+        isHorizontalPaneSplitDirection(split.direction)
           ? "pane.resizeVertical"
           : "pane.resizeHorizontal",
       )}
-      aria-orientation={split.direction === "right" ? "vertical" : "horizontal"}
+      aria-orientation={
+        isHorizontalPaneSplitDirection(split.direction) ? "vertical" : "horizontal"
+      }
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(split.ratio * 100)}
@@ -1267,9 +1293,13 @@ function PaneDivider({ split }: { split: PaneSplit }) {
       onKeyDown={(event) => {
         const step = event.shiftKey ? 40 : 16;
         const decrease =
-          split.direction === "right" ? event.key === "ArrowLeft" : event.key === "ArrowUp";
+          isHorizontalPaneSplitDirection(split.direction)
+            ? event.key === "ArrowLeft"
+            : event.key === "ArrowUp";
         const increase =
-          split.direction === "right" ? event.key === "ArrowRight" : event.key === "ArrowDown";
+          isHorizontalPaneSplitDirection(split.direction)
+            ? event.key === "ArrowRight"
+            : event.key === "ArrowDown";
         if (decrease || increase) {
           event.preventDefault();
           keyboardRatio(decrease ? -step : step, event.currentTarget.parentElement);
