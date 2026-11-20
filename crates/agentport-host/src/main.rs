@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
+use output_batcher::OutputBatcher;
 
 use agentport_core::adapters::adapter_for;
 use agentport_core::models::{AgentState, AgentTransport, AgentType, LogCursor, StatusEvent};
@@ -60,6 +61,7 @@ use nix::unistd::Pid;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tracing::{error, info, warn};
 
+mod output_batcher;
 mod semantic_events;
 mod server;
 mod terminal_screen;
@@ -2354,6 +2356,10 @@ fn is_pi_initial_session_notice_line(line: &[u8], native_session_id: &str) -> bo
 fn append_live_output(data: Vec<u8>, shared: &Shared) {
     let _output_guard = shared.output_serial.lock().unwrap();
     let offset = shared.output_tail.lock().unwrap().append(&data);
+    if cfg!(debug_assertions) {
+        let at_ms = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
+        eprintln!("output_trace stage=host_append offset={offset} bytes={} at_ms={at_ms}", data.len());
+    }
     let end = offset.saturating_add(data.len() as u64);
     shared.log_bytes.store(end, Ordering::Relaxed);
     *shared.log_position.lock().unwrap() = (0, end);
@@ -2391,6 +2397,13 @@ fn spawn_pty_reader(
         // Match the protocol's 256 KiB output batch ceiling: fewer JSON/base64
         // frames and less per-frame tail latency for sustained PTY output.
         let mut buf = [0u8; 256 * 1024];
+        let mut batcher = OutputBatcher::new(Instant::now());
+        let mut emit_output = |data: Vec<u8>| {
+            let now = Instant::now();
+            for batch in batcher.push(&data, now) {
+                append_live_output(batch, &shared);
+            }
+        };
         let mut pty_fault = None;
         loop {
             match reader.read(&mut buf) {
@@ -2410,7 +2423,7 @@ fn spawn_pty_reader(
                         None => chunk.clone(),
                     };
                     if !data.is_empty() {
-                        append_live_output(data, &shared);
+                        emit_output(data);
                     }
                     // Retain the bounded tail only for native session identity.
                     // Status patterns use the parsed live screen on the control
@@ -2442,7 +2455,7 @@ fn spawn_pty_reader(
                     None => chunk,
                 };
                 if !data.is_empty() {
-                    append_live_output(data, &shared);
+                    emit_output(data);
                 }
             }
         }
@@ -2451,9 +2464,12 @@ fn spawn_pty_reader(
         if let Some(r) = &mut redactor {
             let tail = r.finish();
             if !tail.is_empty() {
-                append_live_output(tail, &shared);
+                emit_output(tail);
             }
             info!(redaction_hits = r.hits(), "redactor finished");
+        }
+        for batch in batcher.flush(Instant::now()) {
+            append_live_output(batch, &shared);
         }
         let terminal = match pty_fault {
             Some(message) => HostMsg::PtyFault { message },

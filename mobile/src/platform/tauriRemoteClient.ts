@@ -30,6 +30,7 @@ export class TauriRemoteClient implements RemoteClient {
     reject: (error: unknown) => void;
   }>();
   private inputListener?: Promise<UnlistenFn>;
+  private outputTraceListener?: Promise<UnlistenFn>;
   private connectionListener?: Promise<UnlistenFn>;
   private readonly connectionObservers = new Set<(event: RemoteConnectionStateEvent) => void>();
   private readonly connectionEvents = new Map<string, RemoteConnectionStateEvent>();
@@ -42,6 +43,15 @@ export class TauriRemoteClient implements RemoteClient {
       },
     ).catch(error => { this.connectionListener = undefined; throw error; });
     return this.connectionListener;
+  }
+
+  private ensureOutputTraceListener(): Promise<UnlistenFn> {
+    if (import.meta.env?.VITE_SCROLL_DIAGNOSTICS !== "1") return Promise.resolve(() => undefined);
+    this.outputTraceListener ??= listen<{ stage: string; offset: number; atMs: number }>(
+      "agentport-mobile://output-trace",
+      ({ payload }) => { void invoke("mobile_diag_log", { line: `output_trace ${JSON.stringify(payload)}` }).catch(() => undefined); },
+    );
+    return this.outputTraceListener;
   }
 
   private ensureInputListener(): Promise<UnlistenFn> {
@@ -171,6 +181,7 @@ export class TauriRemoteClient implements RemoteClient {
     topics: string[],
     listener: (event: RemoteEvent<T>) => void,
   ): Promise<Unsubscribe> {
+    await this.ensureOutputTraceListener();
     const subscriptionId = await invoke<string>("mobile_subscribe", { profileId, topics });
     const eventName = `agentport-mobile://remote/${subscriptionId}`;
     const unlisten: UnlistenFn = await listen<RemoteEvent<T>>(eventName, ({ payload }) => {

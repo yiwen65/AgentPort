@@ -142,6 +142,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
   const outputFrame = useRef<number>();
   const pendingOutputChunks = useRef<Uint8Array[]>([]);
   const pendingOutputBytes = useRef(0);
+  const pendingOutputStartOffset = useRef<number>();
   const outputWriteInFlight = useRef(false);
   // Assigned once resetRunOutput exists; called when the render backlog is shed.
   const shedBacklogRef = useRef<(bytes: number) => void>(() => undefined);
@@ -236,9 +237,14 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
     if (!handle) return;
     pendingOutputChunks.current = [];
     const totalBytes = pendingOutputBytes.current;
+    const startOffset = pendingOutputStartOffset.current;
     pendingOutputBytes.current = 0;
+    pendingOutputStartOffset.current = undefined;
     outputWriteInFlight.current = true;
     handle.write(mergeChunks(chunks, totalBytes), () => {
+      if (SCROLL_DIAGNOSTICS_ENABLED && startOffset !== undefined) {
+        diag("output_trace", { stage: "js_parsed", offset: startOffset, bytes: totalBytes });
+      }
       outputWriteInFlight.current = false;
       if (pendingOutputChunks.current.length > 0) {
         // A DEC 2026 fullscreen redraw can span several output chunks. Waiting
@@ -256,7 +262,8 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
     });
   }, [mergeChunks]);
 
-  const scheduleTerminalOutput = useCallback((chunk: Uint8Array) => {
+  const scheduleTerminalOutput = useCallback((chunk: Uint8Array, offset?: number) => {
+    if (pendingOutputStartOffset.current === undefined && offset !== undefined) pendingOutputStartOffset.current = offset;
     pendingOutputChunks.current.push(chunk);
     pendingOutputBytes.current += chunk.byteLength;
     if (pendingOutputBytes.current > MAX_PENDING_OUTPUT_BYTES) {
@@ -265,6 +272,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
       // will never read.
       pendingOutputChunks.current = [];
       pendingOutputBytes.current = 0;
+      pendingOutputStartOffset.current = undefined;
       if (outputFrame.current !== undefined) {
         window.cancelAnimationFrame(outputFrame.current);
         outputFrame.current = undefined;
@@ -334,6 +342,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
     outputFrame.current = undefined;
     pendingOutputChunks.current = [];
     pendingOutputBytes.current = 0;
+    pendingOutputStartOffset.current = undefined;
     terminal.current?.reset();
     setReplayPending(true);
   }, [screenKey]);
@@ -428,10 +437,19 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
         return;
       }
       diagnosticsRef.current?.mark("outputReceived", outputBase64.length);
+      const decoded = decodeBase64Bytes(outputBase64);
+      if (SCROLL_DIAGNOSTICS_ENABLED) {
+        const endOffset = event.cursor && typeof event.cursor === "object" && "offset" in event.cursor
+          ? Number((event.cursor as { offset?: unknown }).offset) : -1;
+        const offset = Number.isFinite(endOffset) ? endOffset - decoded.byteLength : -1;
+        diag("output_trace", { stage: "js_callback", offset, bytes: decoded.byteLength });
+      }
       // xterm already owns the bounded scrollback. Coalesce bursts to one
       // renderer write per frame so mobile touch scrolling is not competing
       // with hundreds of small xterm parse/render tasks.
-      scheduleTerminalOutput(decodeBase64Bytes(outputBase64));
+      const eventOffset = event.cursor && typeof event.cursor === "object" && "offset" in event.cursor
+        ? Number((event.cursor as { offset?: unknown }).offset) : undefined;
+      scheduleTerminalOutput(decoded, Number.isFinite(eventOffset) ? (eventOffset as number) - decoded.byteLength : undefined);
     } else if (event.eventType === "replay_done") {
       finishReplay();
     } else if (event.eventType === "resync_required") {

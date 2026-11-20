@@ -4777,8 +4777,12 @@ fn host_event(
     }
     let event_type = match &frame {
         HostFrame::Output {
-            data, cursor: next, ..
+            data, offset, cursor: next, ..
         } => {
+            if cfg!(debug_assertions) {
+                let at_ms = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
+                eprintln!("output_trace stage=service_host_event offset={} bytes={} at_ms={at_ms}", offset, data.len());
+            }
             // Host Output cursor names the chunk start; the remote cursor names
             // bytes consumed after this event, making consecutive replay/live
             // events monotonic.

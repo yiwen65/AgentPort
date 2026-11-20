@@ -970,6 +970,17 @@ fn spawn_dispatcher_with_output(
                 match subscription.recv_timeout(DISPATCH_CANCEL_TICK) {
                     Ok(event) => {
                         let envelope = event_envelope(&attachment_id, event);
+                        if cfg!(debug_assertions) {
+                            if let ServerEnvelope::Event(event) = &envelope {
+                                if event.event_type == "output" || event.event_type == "transient_output" {
+                                    let encoded_len = event.payload.get("dataBase64").and_then(Value::as_str).map(str::len).unwrap_or(0);
+                                    let bytes = encoded_len.saturating_mul(3) / 4;
+                                    let offset = event.cursor.offset.saturating_sub(bytes as u64);
+                                    let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
+                                    eprintln!("output_trace stage=bridge_enqueue offset={offset} bytes={bytes} at_ms={at_ms}");
+                                }
+                            }
+                        }
                         let mut pending =
                             match agentport_remote_protocol::binary_output::encode_envelope(
                                 &envelope,
