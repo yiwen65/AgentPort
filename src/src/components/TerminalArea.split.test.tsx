@@ -694,6 +694,27 @@ describe("TerminalArea recursive panes", () => {
     expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
   });
 
+  it("does not preview when a Session is dragged over its own pane", () => {
+    const { container } = render(<TerminalArea />);
+    const pane = paneLeaf(container, ptyB.id);
+    stubPaneRect(pane, 900, 600);
+
+    const dataTransfer = transfer(ptyB.id);
+    fireEvent(pane, paneDragEvent("dragenter", {
+      dataTransfer,
+      clientX: 50,
+      clientY: 300,
+    }));
+    fireEvent(pane, paneDragEvent("dragover", {
+      dataTransfer,
+      clientX: 850,
+      clientY: 300,
+    }));
+
+    expect(pane.querySelector(".pane-drop-overlay")).toBeNull();
+    expect(splitSessionIntoPaneMock).not.toHaveBeenCalled();
+  });
+
   it("previews the partition under the pointer", () => {
     const { container } = render(<TerminalArea />);
     const pane = paneLeaf(container, ptyB.id);

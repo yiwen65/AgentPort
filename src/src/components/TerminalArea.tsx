@@ -1011,6 +1011,13 @@ function paneDropDirection(
   )[0];
 }
 
+function isSelfSessionPaneDrag(
+  dataTransfer: DataTransfer,
+  sessionKey: string,
+): boolean {
+  return readSessionPaneDragPayload(dataTransfer)?.sessionId === sessionKey;
+}
+
 /**
  * Pane-relative drop indicator.
  *
@@ -1128,6 +1135,12 @@ function SessionPaneLeaf({
       }}
       onDragEnter={(event) => {
         if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
+        if (isSelfSessionPaneDrag(event.dataTransfer, sessionKey)) {
+          event.preventDefault();
+          setSessionDragActive(false);
+          setSessionDragDirection(null);
+          return;
+        }
         event.preventDefault();
         setSessionDragActive(true);
         const rect = event.currentTarget.getBoundingClientRect();
@@ -1146,6 +1159,12 @@ function SessionPaneLeaf({
       }}
       onDragOver={(event) => {
         if (!hasSessionPaneDragPayload(event.dataTransfer)) return;
+        if (isSelfSessionPaneDrag(event.dataTransfer, sessionKey)) {
+          event.preventDefault();
+          setSessionDragActive(false);
+          setSessionDragDirection(null);
+          return;
+        }
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
         setSessionDragActive(true);
@@ -1188,7 +1207,7 @@ function SessionPaneLeaf({
         setSessionDragActive(false);
         setSessionDragDirection(null);
         const payload = readSessionPaneDragPayload(event.dataTransfer);
-        if (!payload) return;
+        if (!payload || payload.sessionId === sessionKey) return;
         const direction = paneDropDirection(
           event.currentTarget.getBoundingClientRect(),
           event.clientX,
