@@ -31,6 +31,9 @@ pub struct UiCommand<'a> {
     /// Split beside this Session instead of the focused pane.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_session_id: Option<&'a str>,
+    /// Several Sessions to place in one renderer transaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_ids: Option<Vec<String>>,
     pub focus: bool,
     pub created_at: String,
     pub source: &'a str,
@@ -44,6 +47,7 @@ pub struct PaneIntent<'a> {
     pub session_id: &'a str,
     pub direction: Option<&'a str>,
     pub target_session_id: Option<&'a str>,
+    pub session_ids: Option<Vec<String>>,
     pub focus: bool,
 }
 
@@ -54,6 +58,7 @@ impl<'a> PaneIntent<'a> {
             session_id,
             direction: None,
             target_session_id: None,
+            session_ids: None,
             focus,
         }
     }
@@ -61,6 +66,33 @@ impl<'a> PaneIntent<'a> {
 
 pub fn queue_path(root: &Path) -> PathBuf {
     root.join(MCP_DIR).join(QUEUE_FILE)
+}
+
+/// Append one batch placement command. Returns the command id so a caller can correlate it.
+pub fn enqueue_batch(
+    root: &Path,
+    session_ids: Vec<String>,
+    focus: bool,
+    now: &str,
+) -> io::Result<String> {
+    let Some(first) = session_ids.first().cloned() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "batch pane requires a Session",
+        ));
+    };
+    enqueue(
+        root,
+        PaneIntent {
+            kind: "batch_pane",
+            session_id: &first,
+            direction: None,
+            target_session_id: None,
+            session_ids: Some(session_ids),
+            focus,
+        },
+        now,
+    )
 }
 
 /// Append one command. Returns the command id so a caller can correlate it.
@@ -88,6 +120,7 @@ pub fn enqueue(root: &Path, intent: PaneIntent<'_>, now: &str) -> io::Result<Str
         session_id: intent.session_id,
         direction: intent.direction,
         target_session_id: intent.target_session_id,
+        session_ids: intent.session_ids,
         focus: intent.focus,
         created_at: now.to_string(),
         source: "mcp",
@@ -111,8 +144,18 @@ mod tests {
     #[test]
     fn commands_append_as_json_lines() {
         let dir = tempfile::tempdir().unwrap();
-        enqueue(dir.path(), PaneIntent::open("ses_1", true), "2026-11-20T00:00:00Z").unwrap();
-        enqueue(dir.path(), PaneIntent::open("ses_2", false), "2026-11-20T00:00:01Z").unwrap();
+        enqueue(
+            dir.path(),
+            PaneIntent::open("ses_1", true),
+            "2026-11-20T00:00:00Z",
+        )
+        .unwrap();
+        enqueue(
+            dir.path(),
+            PaneIntent::open("ses_2", false),
+            "2026-11-20T00:00:01Z",
+        )
+        .unwrap();
         let body = fs::read_to_string(queue_path(dir.path())).unwrap();
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2);
@@ -136,16 +179,40 @@ mod tests {
                 session_id: "ses_new",
                 direction: Some("down"),
                 target_session_id: Some("ses_anchor"),
+                session_ids: None,
                 focus: false,
             },
             "2026-11-20T00:00:02Z",
         )
         .unwrap();
         let body = fs::read_to_string(queue_path(dir.path())).unwrap();
-        let command: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        let command: serde_json::Value =
+            serde_json::from_str(body.lines().next().unwrap()).unwrap();
         assert_eq!(command["kind"], "split_pane");
         assert_eq!(command["direction"], "down");
         assert_eq!(command["targetSessionId"], "ses_anchor");
         assert_eq!(command["focus"], false);
+    }
+
+    #[test]
+    fn batch_commands_carry_all_sessions_once() {
+        let dir = tempfile::tempdir().unwrap();
+        enqueue_batch(
+            dir.path(),
+            vec!["ses_1".into(), "ses_2".into(), "ses_3".into()],
+            true,
+            "2026-11-20T00:00:03Z",
+        )
+        .unwrap();
+        let body = fs::read_to_string(queue_path(dir.path())).unwrap();
+        let command: serde_json::Value =
+            serde_json::from_str(body.lines().next().unwrap()).unwrap();
+        assert_eq!(command["kind"], "batch_pane");
+        assert_eq!(command["sessionId"], "ses_1");
+        assert_eq!(
+            command["sessionIds"],
+            serde_json::json!(["ses_1", "ses_2", "ses_3"])
+        );
+        assert_eq!(command["focus"], true);
     }
 }

@@ -64,6 +64,7 @@ import { applyTerminalThemeCss } from "./terminalThemes";
 import {
   assignPaneGroupAccent,
   buildGridPlacement,
+  buildGridPlacementForSessions,
   chooseSplitPlacement,
   focusPane,
   isHorizontalPaneSplitDirection,
@@ -880,6 +881,66 @@ export function splitSessionForExternalAgent(
   return true;
 }
 
+/** Place a batch of newly delegated Sessions in one balanced grid transaction. */
+export function splitSessionsForExternalAgent(
+  sessionIds: readonly string[],
+  focus = true,
+): boolean {
+  const state = getState();
+  const uniqueKeys = [...new Set(sessionIds)]
+    .map(activeKeyFor)
+    .filter((key) => Boolean(findSessionByKey(key)));
+  if (uniqueKeys.length === 0) return false;
+
+  const layout = visiblePaneLayout(state.terminalLayout, activeSessionKey(state));
+  const additions = uniqueKeys.filter((key) => !layoutContains(layout, key));
+  if (additions.length === 0) {
+    const last = additions[additions.length - 1] ?? uniqueKeys[uniqueKeys.length - 1];
+    const plain = last ? plainActiveId(last) : null;
+    if (focus && plain) selectSession(plain);
+    return true;
+  }
+
+  const workspaceRect = paneWorkspaceRect();
+  if (workspaceRect && layout.root) {
+    const rebuilt = buildGridPlacementForSessions(
+      layout,
+      additions,
+      workspaceRect.width,
+      workspaceRect.height,
+      PANE_SEPARATOR_SIZE,
+    );
+    if (rebuilt?.root) {
+      const previous = plainActiveId(
+        layout.focusedSessionId ?? activeSessionKey(state),
+      );
+      const focusedKey = focus
+        ? additions[additions.length - 1]!
+        : layout.focusedSessionId ?? activeSessionKey(state);
+      commitPaneLayout(
+        { ...rebuilt, focusedSessionId: focusedKey },
+        {
+          maximizedSessionId: null,
+          acknowledgeFocused: focus,
+          previousLayout: layout,
+        },
+      );
+      if (!focus && previous) selectSession(previous);
+      return true;
+    }
+  }
+
+  // A missing/zero-sized workspace can occur during boot. Preserve the old
+  // single-item fallback instead of dropping the delegated Sessions.
+  let inserted = false;
+  for (const key of additions) {
+    const plain = plainActiveId(key);
+    if (!plain) continue;
+    inserted = splitSessionForExternalAgent(plain, "right", null, focus) || inserted;
+  }
+  return inserted;
+}
+
 /** Drop a Session's pane from the layout; the Session keeps running. */
 export function closeSessionPaneForExternalAgent(sessionId: string): boolean {
   return removeSessionPane(activeKeyFor(sessionId));
@@ -892,11 +953,18 @@ export interface ExternalPaneCommand {
   focus?: boolean;
   direction?: string;
   targetSessionId?: string;
+  sessionIds?: string[];
 }
 
 /** Apply one queued pane intent. Unknown kinds are ignored, never guessed. */
 export function applyExternalPaneCommand(command: ExternalPaneCommand): boolean {
   if (!command.sessionId) return false;
+  if (command.kind === "batch_pane") {
+    return splitSessionsForExternalAgent(
+      command.sessionIds ?? [command.sessionId],
+      command.focus !== false,
+    );
+  }
   switch (command.kind) {
     case "open_pane":
       return openSessionForExternalAgent(command.sessionId, command.focus !== false);

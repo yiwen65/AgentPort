@@ -185,9 +185,11 @@ Scope: only Sessions this server created are addressable; Sessions the user open
 themselves are read-only here on purpose.
 
 Delegation shape: create_session(agent, projectPath, prompt) opens a real AgentPort
-pane-sized Session and sends the first prompt once the CLI is ready; then
-wait_for_task returns idle | needs_input | exited | timeout with the evidence it
-used; read_output returns the bounded terminal tail. cancel_turn is Ctrl-C and keeps
+pane-sized Session and sends the first prompt once the CLI is ready. For several
+independent tasks prefer create_sessions once, then wait_for_tasks once; each
+returns per-item state and reply. Single-task wait_for_task returns idle | needs_input
+| exited | timeout with the evidence it used; read_output returns the bounded terminal tail.
+cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
 undone.
 

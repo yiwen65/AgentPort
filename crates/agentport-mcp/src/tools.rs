@@ -16,12 +16,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::ops::{
-    ReadyOutcome, SessionOps, StatusMark, ToolFailure, TResult, DEFAULT_READY_MS, DEFAULT_WAIT_MS,
+    ReadyOutcome, SessionOps, StatusMark, TResult, ToolFailure, DEFAULT_READY_MS, DEFAULT_WAIT_MS,
     MAX_WAIT_MS, SEND_READY_MS,
 };
 use crate::registry::{OwnedSession, Registry};
 use crate::text;
 use crate::ui;
+
+/// Keep a malformed or unexpectedly large batch from turning one synchronous
+/// MCP request into an unbounded amount of work. Session creation itself still
+/// uses the existing per-process live-session limit.
+const MAX_BATCH_ITEMS: usize = 32;
 
 pub struct ToolDef {
     pub name: &'static str,
@@ -67,6 +72,14 @@ pub const TOOLS: &[ToolDef] = &[
         schema: create_session_schema,
     },
     ToolDef {
+        name: "create_sessions",
+        description: "Create several independent delegated Sessions in one call. Each task is \
+                      processed with the same readiness and prompt-submission checks as \
+                      create_session; one task's error is returned in its item without discarding \
+                      successful Sessions created earlier in the batch.",
+        schema: create_sessions_schema,
+    },
+    ToolDef {
         name: "send_prompt",
         description: "Send one line of text (Enter appended) to a Session this MCP created. Escape \
                       and control sequences are rejected; use cancel_turn to stop a running turn.",
@@ -79,6 +92,13 @@ pub const TOOLS: &[ToolDef] = &[
                       an uncertain verdict is never reported as success. Keep timeoutMs under your \
                       own request timeout (default 45s); call again to keep waiting.",
         schema: wait_for_task_schema,
+    },
+    ToolDef {
+        name: "wait_for_tasks",
+        description: "Wait for several MCP-owned Sessions in one call. Each item preserves the \
+                      same state, confidence, evidence, reply and output fallback fields as \
+                      wait_for_task; an error for one item does not hide the other results.",
+        schema: wait_for_tasks_schema,
     },
     ToolDef {
         name: "read_output",
@@ -160,7 +180,10 @@ fn list_sessions_schema() -> Value {
 }
 
 fn session_status_schema() -> Value {
-    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+    obj(
+        json!({ "sessionId": { "type": "string" } }),
+        json!(["sessionId"]),
+    )
 }
 
 fn create_session_schema() -> Value {
@@ -201,6 +224,59 @@ fn create_session_schema() -> Value {
     )
 }
 
+fn create_sessions_schema() -> Value {
+    obj(
+        json!({
+            "tasks": {
+                "type": "array",
+                "maxItems": MAX_BATCH_ITEMS,
+                "description": "Independent create_session requests. Results stay aligned by index and optional taskId.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "taskId": {
+                            "type": "string",
+                            "description": "Optional caller correlation id echoed in the result"
+                        },
+                        "agent": {
+                            "type": "string",
+                            "description": "Agent id from list_agents, e.g. claude, codex, pi, easy-pi, shell"
+                        },
+                        "projectPath": { "type": "string", "description": "Absolute project directory" },
+                        "projectId": { "type": "string", "description": "Existing AgentPort project id" },
+                        "title": { "type": "string" },
+                        "prompt": {
+                            "type": "string",
+                            "description": "First task. Sent once the CLI reports a quiet terminal or idle status."
+                        },
+                        "permission": {
+                            "type": "string",
+                            "enum": ["bypass", "auto", "native"],
+                            "default": "bypass"
+                        },
+                        "worktreeId": { "type": "string" },
+                        "pane": {
+                            "type": "string",
+                            "enum": ["auto", "none"],
+                            "default": "auto",
+                            "description": "auto batches pane placement into one balanced renderer update; none leaves the layout unchanged. Use create_session for explicit split-right/split-down/open placement."
+                        },
+                        "promptTimeoutMs": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "maximum": 120000,
+                            "default": 25000
+                        }
+                    },
+                    "required": ["agent"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!(["tasks"]),
+    )
+}
+
 fn send_prompt_schema() -> Value {
     obj(
         json!({
@@ -227,6 +303,42 @@ fn wait_for_task_schema() -> Value {
             }
         }),
         json!(["sessionId"]),
+    )
+}
+
+fn wait_for_tasks_schema() -> Value {
+    obj(
+        json!({
+            "tasks": {
+                "type": "array",
+                "maxItems": MAX_BATCH_ITEMS,
+                "description": "Sessions to wait for; results stay aligned by index and optional taskId.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "taskId": {
+                            "type": "string",
+                            "description": "Optional caller correlation id echoed in the result"
+                        },
+                        "sessionId": { "type": "string" },
+                        "sinceSequence": {
+                            "type": "integer",
+                            "description": "Status sequence from your own send_prompt; only a newer transition settles"
+                        }
+                    },
+                    "required": ["sessionId"],
+                    "additionalProperties": false
+                }
+            },
+            "timeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": MAX_WAIT_MS,
+                "default": DEFAULT_WAIT_MS,
+                "description": "Per-item wait budget; items are processed in order with independent results."
+            }
+        }),
+        json!(["tasks"]),
     )
 }
 
@@ -263,7 +375,10 @@ fn read_output_schema() -> Value {
 }
 
 fn cancel_turn_schema() -> Value {
-    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+    obj(
+        json!({ "sessionId": { "type": "string" } }),
+        json!(["sessionId"]),
+    )
 }
 
 fn terminate_session_schema() -> Value {
@@ -297,11 +412,17 @@ fn split_pane_schema() -> Value {
 }
 
 fn focus_pane_schema() -> Value {
-    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+    obj(
+        json!({ "sessionId": { "type": "string" } }),
+        json!(["sessionId"]),
+    )
 }
 
 fn close_pane_schema() -> Value {
-    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+    obj(
+        json!({ "sessionId": { "type": "string" } }),
+        json!(["sessionId"]),
+    )
 }
 
 fn open_pane_schema() -> Value {
@@ -398,8 +519,10 @@ impl Toolbox {
             "list_sessions" => self.list_sessions(&args),
             "session_status" => self.session_status(&args),
             "create_session" => self.create_session(&args),
+            "create_sessions" => self.create_sessions(&args),
             "send_prompt" => self.send_prompt(&args),
             "wait_for_task" => self.wait_for_task(&args),
+            "wait_for_tasks" => self.wait_for_tasks(&args),
             "read_output" => self.read_output(&args),
             "cancel_turn" => self.cancel_turn(&args),
             "terminate_session" => self.terminate_session(&args),
@@ -477,7 +600,11 @@ impl Toolbox {
         let path = require_str(args, "path")?;
         let normalized = agentport_core::paths::normalize_abs(&path)
             .map_err(|error| ToolFailure::new("invalid_path", error.to_string()))?;
-        let projects = self.ops.service().list_projects().map_err(ToolFailure::from)?;
+        let projects = self
+            .ops
+            .service()
+            .list_projects()
+            .map_err(ToolFailure::from)?;
         if let Some(existing) = projects
             .iter()
             .find(|project| project.root_path == normalized)
@@ -587,6 +714,17 @@ impl Toolbox {
     // -- delegation --------------------------------------------------------
 
     fn create_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        self.create_session_with_pane(args, true)
+    }
+
+    /// Create a Session while optionally deferring pane placement. Batch
+    /// creation uses the same launch/readiness/ownership path as the single
+    /// tool, but queues one combined pane intent after all items succeed.
+    fn create_session_with_pane(
+        &mut self,
+        args: &Map<String, Value>,
+        queue_pane: bool,
+    ) -> TResult<Value> {
         if self.depth >= self.max_depth {
             return Err(ToolFailure::new(
                 "delegation_depth_exceeded",
@@ -756,7 +894,8 @@ impl Toolbox {
                 // input yet; give it one more readiness round rather than
                 // handing the caller a prompt they must re-send by hand.
                 let mut delivery = self.ops.deliver_prompt(&session_id, &prompt);
-                if matches!(&delivery, Ok(value) if !value.submitted && value.blocked_on.is_none()) {
+                if matches!(&delivery, Ok(value) if !value.submitted && value.blocked_on.is_none())
+                {
                     if let Ok(ready_again) = self.ops.wait_ready(&session_id, prompt_timeout) {
                         if ready_again.ready {
                             delivery = self.ops.deliver_prompt(&session_id, &prompt);
@@ -814,24 +953,136 @@ impl Toolbox {
         }
 
         // Queue the placement last: the Session exists and is owned by now, so
-        // the renderer can resolve it when it drains the queue.
-        match pane.as_str() {
-            "none" => {}
-            "open" => {
-                result["pane"] = self.queue_pane(ui::PaneIntent::open(&session_id, true))?;
-            }
-            _ => {
-                result["pane"] = self.queue_pane(ui::PaneIntent {
-                    kind: "split_pane",
-                    session_id: &session_id,
-                    direction: pane_direction,
-                    target_session_id: None,
-                    focus: true,
-                })?;
+        // the renderer can resolve it when it drains the queue. Batch callers
+        // defer this until all successful items have been created.
+        if queue_pane {
+            match pane.as_str() {
+                "none" => {}
+                "open" => {
+                    result["pane"] = self.queue_pane(ui::PaneIntent::open(&session_id, true))?;
+                }
+                _ => {
+                    result["pane"] = self.queue_pane(ui::PaneIntent {
+                        kind: "split_pane",
+                        session_id: &session_id,
+                        direction: pane_direction,
+                        target_session_id: None,
+                        session_ids: None,
+                        focus: true,
+                    })?;
+                }
             }
         }
 
         Ok(result)
+    }
+
+    /// Create several independent Sessions without changing the single-session
+    /// launch path. Work is intentionally bounded and sequential: service and
+    /// registry state stay serialized, while a malformed or failed item is
+    /// converted to an item error and does not discard earlier successes.
+    fn create_sessions(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let tasks = args
+            .get("tasks")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ToolFailure::new("invalid_arguments", "tasks must be an array"))?;
+        if tasks.len() > MAX_BATCH_ITEMS {
+            return Err(ToolFailure::new(
+                "invalid_arguments",
+                format!("tasks must contain at most {MAX_BATCH_ITEMS} items"),
+            ));
+        }
+
+        let mut results = Vec::with_capacity(tasks.len());
+        let mut pane_sessions = Vec::new();
+        let mut succeeded = 0usize;
+
+        for (index, task) in tasks.iter().enumerate() {
+            let task_map = task.as_object();
+            let task_id = task_map.and_then(|map| optional_str(map, "taskId"));
+            let outcome = match task_map {
+                Some(map) => {
+                    let pane = optional_str(map, "pane").unwrap_or_else(|| "auto".into());
+                    let outcome = if matches!(pane.as_str(), "auto" | "none") {
+                        self.create_session_with_pane(map, false)
+                    } else {
+                        Err(ToolFailure::new(
+                            "invalid_arguments",
+                            "batch task pane must be auto or none; use create_session for explicit pane placement",
+                        ))
+                    };
+                    if let Ok(value) = &outcome {
+                        if pane != "none" {
+                            if let Some(session_id) = value.get("sessionId").and_then(Value::as_str)
+                            {
+                                pane_sessions.push(session_id.to_string());
+                            }
+                        }
+                    }
+                    outcome
+                }
+                None => Err(ToolFailure::new(
+                    "invalid_arguments",
+                    "each task must be an object",
+                )),
+            };
+
+            let item = match outcome {
+                Ok(value) => {
+                    succeeded += 1;
+                    batch_item_success(index, task_id.as_deref(), value)
+                }
+                Err(failure) => batch_item_failure(index, task_id.as_deref(), failure),
+            };
+            results.push(item);
+        }
+
+        let failed = results.len().saturating_sub(succeeded);
+        let mut response = json!({
+            "results": results,
+            "succeeded": succeeded,
+            "failed": failed,
+        });
+        if let Some(last_session_id) = pane_sessions.last() {
+            // Pane placement is deliberately one command for the whole batch.
+            // A queue failure is reported as data so all created Sessions remain
+            // addressable; successful Session creation must never be rolled back
+            // merely because the desktop app is unavailable.
+            let pane = match self.queue_batch_pane(&pane_sessions) {
+                Ok(value) => value,
+                Err(failure) => json!({
+                    "queued": false,
+                    "kind": "batch_pane",
+                    "focus": true,
+                    "focusSessionId": last_session_id,
+                    "error": {
+                        "code": failure.code,
+                        "message": failure.message,
+                    },
+                }),
+            };
+            response["pane"] = pane;
+        }
+        Ok(response)
+    }
+
+    fn queue_batch_pane(&self, session_ids: &[String]) -> TResult<Value> {
+        let command_id = ui::enqueue_batch(&self.root, session_ids.to_vec(), true, &now_rfc3339())
+            .map_err(|error| {
+                ToolFailure::new(
+                    "ui_queue_failed",
+                    format!("could not queue the pane: {error}"),
+                )
+            })?;
+        Ok(json!({
+            "sessionIds": session_ids,
+            "kind": "batch_pane",
+            "queued": true,
+            "commandId": command_id,
+            "focus": true,
+            "focusSessionId": session_ids.last(),
+            "note": "the desktop app applies this batch intent on its next queue poll; layout ownership remains in the renderer",
+        }))
     }
 
     fn send_prompt(&mut self, args: &Map<String, Value>) -> TResult<Value> {
@@ -976,6 +1227,66 @@ impl Toolbox {
         }))
     }
 
+    /// Wait for several Sessions using the exact single-session wait path. The
+    /// loop is deliberately bounded and ordered so baselines, settled replies,
+    /// attachments and ownership remain in one Toolbox; failures are isolated
+    /// to their item and never terminate a successful Session.
+    fn wait_for_tasks(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let tasks = args
+            .get("tasks")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ToolFailure::new("invalid_arguments", "tasks must be an array"))?;
+        if tasks.len() > MAX_BATCH_ITEMS {
+            return Err(ToolFailure::new(
+                "invalid_arguments",
+                format!("tasks must contain at most {MAX_BATCH_ITEMS} items"),
+            ));
+        }
+        let timeout = optional_u64(args, "timeoutMs")
+            .unwrap_or(DEFAULT_WAIT_MS)
+            .clamp(1_000, MAX_WAIT_MS);
+        let mut results = Vec::with_capacity(tasks.len());
+        let mut succeeded = 0usize;
+
+        for (index, task) in tasks.iter().enumerate() {
+            let task_map = task.as_object();
+            let task_id = task_map.and_then(|map| optional_str(map, "taskId"));
+            let outcome = match task_map {
+                Some(map) => match require_str(map, "sessionId") {
+                    Ok(session_id) => {
+                        let mut wait_args = Map::new();
+                        wait_args.insert("sessionId".into(), Value::String(session_id));
+                        if let Some(since) = map.get("sinceSequence") {
+                            wait_args.insert("sinceSequence".into(), since.clone());
+                        }
+                        wait_args.insert("timeoutMs".into(), json!(timeout));
+                        self.wait_for_task(&wait_args)
+                    }
+                    Err(failure) => Err(failure),
+                },
+                None => Err(ToolFailure::new(
+                    "invalid_arguments",
+                    "each task must be an object",
+                )),
+            };
+            let item = match outcome {
+                Ok(value) => {
+                    succeeded += 1;
+                    batch_item_success(index, task_id.as_deref(), value)
+                }
+                Err(failure) => batch_item_failure(index, task_id.as_deref(), failure),
+            };
+            results.push(item);
+        }
+
+        Ok(json!({
+            "results": results,
+            "succeeded": succeeded,
+            "failed": tasks.len().saturating_sub(succeeded),
+            "timeoutMs": timeout,
+        }))
+    }
+
     fn read_output(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
@@ -1035,11 +1346,8 @@ impl Toolbox {
             }));
         }
         let outcome = if source == "stream" {
-            self.ops.read_stream(
-                &session_id,
-                optional_str(args, "cursor").as_deref(),
-                limit,
-            )?
+            self.ops
+                .read_stream(&session_id, optional_str(args, "cursor").as_deref(), limit)?
         } else {
             // `auto` and `screen` both project the VT grid; a Host that cannot
             // serialize one degrades to the cursor-free stream instead of
@@ -1140,6 +1448,7 @@ impl Toolbox {
                 _ => None,
             },
             target_session_id: target.as_deref(),
+            session_ids: None,
             focus,
         })
     }
@@ -1152,6 +1461,7 @@ impl Toolbox {
             session_id: &session_id,
             direction: None,
             target_session_id: None,
+            session_ids: None,
             focus: true,
         })
     }
@@ -1166,6 +1476,7 @@ impl Toolbox {
             session_id: &session_id,
             direction: None,
             target_session_id: None,
+            session_ids: None,
             focus: false,
         })
     }
@@ -1174,7 +1485,10 @@ impl Toolbox {
         let kind = intent.kind;
         let session_id = intent.session_id.to_string();
         let command_id = ui::enqueue(&self.root, intent, &now_rfc3339()).map_err(|error| {
-            ToolFailure::new("ui_queue_failed", format!("could not queue the pane: {error}"))
+            ToolFailure::new(
+                "ui_queue_failed",
+                format!("could not queue the pane: {error}"),
+            )
         })?;
         Ok(json!({
             "sessionId": session_id,
@@ -1270,9 +1584,7 @@ fn format_rfc3339(unix_seconds: i64) -> String {
     let hour = seconds_of_day / 3_600;
     let minute = (seconds_of_day % 3_600) / 60;
     let second = seconds_of_day % 60;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 /// Howard Hinnant's days-to-civil conversion.
@@ -1287,6 +1599,28 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn batch_item_success(index: usize, task_id: Option<&str>, value: Value) -> Value {
+    let mut result = value.as_object().cloned().unwrap_or_else(Map::new);
+    result.insert("index".into(), json!(index));
+    if let Some(task_id) = task_id {
+        result.insert("taskId".into(), json!(task_id));
+    }
+    Value::Object(result)
+}
+
+fn batch_item_failure(index: usize, task_id: Option<&str>, failure: ToolFailure) -> Value {
+    let mut result = Map::new();
+    result.insert("index".into(), json!(index));
+    if let Some(task_id) = task_id {
+        result.insert("taskId".into(), json!(task_id));
+    }
+    result.insert(
+        "error".into(),
+        json!({ "code": failure.code, "message": failure.message }),
+    );
+    Value::Object(result)
 }
 
 fn require_str(args: &Map<String, Value>, key: &str) -> TResult<String> {
@@ -1413,6 +1747,84 @@ mod tests {
     fn agent_names_map_to_remote_variants() {
         assert_eq!(remote_agent(AgentType::EasyPi), RemoteAgentType::EasyPi);
         assert_eq!(remote_agent(AgentType::Shell), RemoteAgentType::Shell);
+    }
+
+    #[test]
+    fn batch_schemas_align_items_and_bound_work() {
+        let create = create_sessions_schema();
+        assert_eq!(create["required"], json!(["tasks"]));
+        assert_eq!(
+            create["properties"]["tasks"]["maxItems"],
+            json!(MAX_BATCH_ITEMS)
+        );
+        assert_eq!(
+            create["properties"]["tasks"]["items"]["required"],
+            json!(["agent"])
+        );
+
+        let wait = wait_for_tasks_schema();
+        assert_eq!(wait["required"], json!(["tasks"]));
+        assert_eq!(
+            wait["properties"]["tasks"]["items"]["required"],
+            json!(["sessionId"])
+        );
+        assert_eq!(
+            wait["properties"]["timeoutMs"]["default"],
+            json!(DEFAULT_WAIT_MS)
+        );
+    }
+
+    #[test]
+    fn batch_dispatch_keeps_independent_item_errors() {
+        let mut toolbox = test_support::toolbox();
+        let value = toolbox
+            .call(
+                "create_sessions",
+                &json!({
+                    "tasks": [
+                        { "taskId": "bad-agent", "agent": "not-an-agent" },
+                        { "taskId": "missing-agent" }
+                    ]
+                }),
+            )
+            .unwrap();
+        assert_eq!(value["results"].as_array().unwrap().len(), 2);
+        assert_eq!(value["succeeded"], json!(0));
+        assert_eq!(value["failed"], json!(2));
+        assert_eq!(value["results"][0]["taskId"], json!("bad-agent"));
+        assert_eq!(value["results"][0]["error"]["code"], json!("unknown_agent"));
+        assert_eq!(value["results"][1]["taskId"], json!("missing-agent"));
+        assert_eq!(
+            value["results"][1]["error"]["code"],
+            json!("invalid_arguments")
+        );
+    }
+
+    #[test]
+    fn batch_wait_dispatch_keeps_ownership_errors_independent() {
+        let mut toolbox = test_support::toolbox();
+        let value = toolbox
+            .call(
+                "wait_for_tasks",
+                &json!({
+                    "timeoutMs": 1_000,
+                    "tasks": [
+                        { "taskId": "first", "sessionId": "not-owned-1" },
+                        { "taskId": "second", "sessionId": "not-owned-2", "sinceSequence": 3 }
+                    ]
+                }),
+            )
+            .unwrap();
+        assert_eq!(value["results"].as_array().unwrap().len(), 2);
+        assert_eq!(value["failed"], json!(2));
+        assert_eq!(
+            value["results"][0]["error"]["code"],
+            json!("session_not_owned")
+        );
+        assert_eq!(
+            value["results"][1]["error"]["code"],
+            json!("session_not_owned")
+        );
     }
 
     #[test]

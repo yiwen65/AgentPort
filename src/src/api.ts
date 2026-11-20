@@ -818,6 +818,8 @@ export interface McpUiCommand {
   direction?: string;
   /** Split beside this Session instead of the focused pane. */
   targetSessionId?: string;
+  /** Several Sessions to place in one renderer transaction. */
+  sessionIds?: string[];
   createdAt?: string;
   source?: string;
 }

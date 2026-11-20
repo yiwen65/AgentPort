@@ -67,6 +67,7 @@ const baseSession = {
 
 const watchingSession = { ...baseSession, id: "ses_watching", title: "watching" };
 const agentSession = { ...baseSession, id: "ses_agent", title: "agent" };
+const secondAgentSession = { ...baseSession, id: "ses_agent_2", title: "agent 2" };
 
 const projectWith = (...sessions: SessionView[]) => [
   {
@@ -262,6 +263,49 @@ describe("openSessionForExternalAgent", () => {
     expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
       "ses_watching",
     ]);
+  });
+
+  it("applies a batch pane intent in one balanced layout update", () => {
+    const layoutElement = document.createElement("div");
+    layoutElement.className = "pane-layout";
+    Object.defineProperty(layoutElement, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        width: 1200,
+        height: 800,
+        left: 0,
+        top: 0,
+        right: 1200,
+        bottom: 800,
+      }),
+    });
+    document.body.append(layoutElement);
+    setState({
+      projects: projectWith(baseSession, agentSession, secondAgentSession),
+      activeSessionId: baseSession.id,
+      terminalLayout: singletonPaneLayout(baseSession.id),
+      terminalLayoutGroups: [],
+      maximizedSessionId: null,
+      attachedIds: [baseSession.id],
+      dialog: null,
+      confirm: null,
+      toasts: [],
+      archivingSessionIds: [],
+    });
+
+    expect(
+      applyExternalPaneCommand({
+        kind: "batch_pane",
+        sessionId: agentSession.id,
+        sessionIds: [agentSession.id, secondAgentSession.id],
+      }),
+    ).toBe(true);
+    expect(orderedLayoutSessionIds(getState().terminalLayout)).toEqual([
+      baseSession.id,
+      agentSession.id,
+      secondAgentSession.id,
+    ]);
+    expect(getState().activeSessionId).toBe(secondAgentSession.id);
   });
 
   it("routes queued intents and ignores unknown kinds", () => {

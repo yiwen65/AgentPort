@@ -4,6 +4,7 @@ import {
   DEFAULT_SPLIT_RATIO,
   MAX_PANE_LAYOUT_DEPTH,
   buildGridPlacement,
+  buildGridPlacementForSessions,
   chooseGridShape,
   chooseSplitPlacement,
   MIN_PANE_HEIGHT,
@@ -865,6 +866,23 @@ describe("optimal pane placement", () => {
       columns: 3,
       rows: 3,
     });
+  });
+
+  it("adds several delegated Agents in one balanced grid rebuild", () => {
+    const layout = buildGridPlacementForSessions(
+      singletonPaneLayout("ses_1"),
+      ["ses_2", "ses_3", "ses_3"],
+      workspace.width,
+      workspace.height,
+      6,
+    );
+    expect(layout).not.toBeNull();
+    expect(orderedLayoutSessionIds(layout!)).toEqual([
+      "ses_1",
+      "ses_2",
+      "ses_3",
+    ]);
+    expect(layout?.focusedSessionId).toBe("ses_3");
   });
 
   it("keeps nine delegated Agents on a readable 3x3 grid", () => {

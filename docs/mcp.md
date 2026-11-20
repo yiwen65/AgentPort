@@ -61,9 +61,11 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `list_agents` | 列出可用的 CLI Agent；`probe: true` 会重新探测（较慢） |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等） |
 | `list_sessions` / `session_status` | 只读观察；状态带 source / confidence / evidence |
-| `create_session` | 建 Session；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
+| `create_session` | 建单个 Session；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
+| `create_sessions` | 一次创建多个独立委派任务；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
-| `wait_for_task` | 等当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 + **`reply`（本轮助手的回答原文）** |
+| `wait_for_task` | 等单个当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 + **`reply`（本轮助手的回答原文）** |
+| `wait_for_tasks` | 一次等待多个 MCP-owned Session；每项返回与 `wait_for_task` 相同的 state/confidence/evidence/reply/fallback 字段 |
 | `read_output` | 按 `source` 读取：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）+ 行数与 `truncated`/`limited` 标注 |
 | `cancel_turn` | 发 Ctrl-C，会话保留 |
 | `terminate_session` | 停止并清理整个进程组，不可逆 |
@@ -72,14 +74,31 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `focus_pane` | 请求聚焦这个 Session 的窗格（不在屏上就先放上去） |
 | `close_pane` | 请求把这个 Session 的窗格从布局移除；**只改视图，不停会话** |
 
-一次典型委派：
+单任务委派：
 
 ```text
 resolve_project {path: "/repo"}
 create_session  {agent: "claude", projectId: "...", title: "fix flaky test", prompt: "..."}
 wait_for_task  {sessionId: "...", timeoutMs: 600000}
-read_output    {sessionId: "..."}
-terminate_session {sessionId: "..."}
+```
+
+批量委派优先使用两次调用，减少模型轮次；`wait_for_tasks` 已返回每个 Session 的 `reply`，成功时不需要再调用 `read_output`。完成任务也不要自动 `terminate_session`，Session 会保留给用户查看或继续接管：
+
+```text
+resolve_project {path: "/repo"}
+create_sessions {
+  tasks: [
+    {taskId: "lint", agent: "claude", projectId: "...", prompt: "run lint"},
+    {taskId: "tests", agent: "codex", projectId: "...", prompt: "run tests"}
+  ]
+}
+wait_for_tasks {
+  tasks: [
+    {taskId: "lint", sessionId: "...", sinceSequence: 12},
+    {taskId: "tests", sessionId: "...", sinceSequence: 8}
+  ],
+  timeoutMs: 600000
+}
 ```
 
 ## 语义与边界

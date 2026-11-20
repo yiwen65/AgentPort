@@ -514,9 +514,30 @@ export function buildGridPlacement(
   height: number,
   separatorSize = 0,
 ): PaneLayout | null {
+  return buildGridPlacementForSessions(
+    layout,
+    [newSessionId],
+    width,
+    height,
+    separatorSize,
+  );
+}
+
+/** Rebuild one balanced grid while adding several new leaves at once. */
+export function buildGridPlacementForSessions(
+  layout: PaneLayout,
+  newSessionIds: readonly string[],
+  width: number,
+  height: number,
+  separatorSize = 0,
+): PaneLayout | null {
   const existing = orderedLayoutSessionIds(layout);
-  if (existing.length === 0) return null;
-  const ids = [...existing, newSessionId];
+  const additions = newSessionIds.filter(
+    (sessionId, index, all) =>
+      sessionId && !existing.includes(sessionId) && all.indexOf(sessionId) === index,
+  );
+  if (existing.length === 0 || additions.length === 0) return null;
+  const ids = [...existing, ...additions];
   const { columns } = chooseGridShape(ids.length, width, height, separatorSize);
   const rows: PaneLeaf[][] = [];
   for (let index = 0; index < ids.length; index += columns) {
@@ -529,7 +550,7 @@ export function buildGridPlacement(
   return {
     ...layout,
     root,
-    focusedSessionId: newSessionId,
+    focusedSessionId: additions[additions.length - 1] ?? layout.focusedSessionId,
   };
 }
 
