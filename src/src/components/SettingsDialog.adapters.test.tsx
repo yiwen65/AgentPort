@@ -31,21 +31,75 @@ beforeEach(async () => {
   setState({ settings: { ...settings }, adapters: [install("claude"), install("codex")], platform: null,
     projects: [], dialog: { kind: "settings" }, secretBackend: "Unavailable", indexState: "ready", rendererFallbackReason: null });
   vi.spyOn(api, "notificationSetups").mockResolvedValue([]);
+  // The adapters table also reports each Agent's MCP registration; these rows
+  // are covered by the dedicated test below.
+  vi.spyOn(api, "mcpRegistrations").mockResolvedValue([
+    { agent: "claude", state: "registered", target: "claude mcp", command: "/app/agentport-mcp", detail: "" },
+    { agent: "codex", state: "missing", target: "codex mcp", command: "/app/agentport-mcp", detail: "" },
+  ]);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+describe("MCP registration per Agent", () => {
+  it("reflects each Agent's own registration and toggles only that Agent", async () => {
+    const set = vi.spyOn(api, "setMcpRegistration").mockImplementation(async (agent, enabled) => ({
+      agent: agent as AgentTypeStr,
+      state: enabled ? "registered" : "missing",
+      target: `${agent} mcp`,
+      command: "/app/agentport-mcp",
+      detail: "",
+    }));
+    openAdapters();
+    const claude = await screen.findByRole("switch", {
+      name: /Register the AgentPort MCP for Claude Code/,
+    });
+    const codex = screen.getByRole("switch", {
+      name: /Register the AgentPort MCP for Codex/,
+    });
+    await waitFor(() => expect(claude.getAttribute("aria-checked")).toBe("true"));
+    expect(codex.getAttribute("aria-checked")).toBe("false");
+
+    fireEvent.click(codex);
+    await waitFor(() => expect(set).toHaveBeenCalledWith("codex", true));
+    await waitFor(() => expect(codex.getAttribute("aria-checked")).toBe("true"));
+
+    fireEvent.click(claude);
+    await waitFor(() => expect(set).toHaveBeenCalledWith("claude", false));
+  });
+
+  it("disables the switch for Agents without a verified mechanism", async () => {
+    vi.spyOn(api, "mcpRegistrations").mockResolvedValue([
+      { agent: "claude", state: "unsupported", target: "", command: null, detail: "no CLI" },
+      { agent: "codex", state: "missing", target: "codex mcp", command: "/app/agentport-mcp", detail: "" },
+    ]);
+    openAdapters();
+    const claude = await screen.findByRole("switch", {
+      name: /Register the AgentPort MCP for Claude Code/,
+    });
+    await waitFor(() =>
+      expect((claude as HTMLButtonElement).disabled).toBe(true),
+    );
+    expect(claude.getAttribute("title")).toBe("no CLI");
+    const codex = screen.getByRole("switch", {
+      name: /Register the AgentPort MCP for Codex/,
+    });
+    expect((codex as HTMLButtonElement).disabled).toBe(false);
+  });
+});
 
 describe("Agent enablement and missing-only discovery", () => {
   it("keeps disabled rows and uses reversible switches, including the last enabled Agent", async () => {
     const save = vi.spyOn(api, "saveSettings").mockResolvedValue(undefined);
     openAdapters();
     const table = screen.getByRole("table", { name: "Agent adapter list" });
-    const claude = within(table).getByRole("switch", { name: /Claude/ });
-    const codex = within(table).getByRole("switch", { name: /Codex/ });
+    const claude = within(table).getByRole("switch", { name: /^Enable Claude Code$/ });
+    const codex = within(table).getByRole("switch", { name: /^Enable Codex$/ });
     expect(claude.getAttribute("aria-checked")).toBe("true");
     expect(codex.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(claude);
     expect(claude.getAttribute("aria-checked")).toBe("false");
-    expect(within(table).getAllByRole("switch")).toHaveLength(2);
+    // Two Agents × (MCP registration, enablement).
+    expect(within(table).getAllByRole("switch")).toHaveLength(4);
     expect(within(table).queryByRole("button", { name: /Remove/ })).toBeNull();
     fireEvent.click(codex);
     expect(codex.getAttribute("aria-checked")).toBe("true");
@@ -66,7 +120,9 @@ describe("Agent enablement and missing-only discovery", () => {
     expect(all).not.toHaveBeenCalled();
     expect(getState().adapters).toEqual([install("claude"), install("codex"), install("omp")]);
     expect(getState().settings).toMatchObject({ agentHidden: ["codex"], agentOrder: ["codex", "claude"] });
-    expect(screen.getByRole("switch", { name: /Codex/ }).getAttribute("aria-checked")).toBe("false");
+    expect(
+      screen.getByRole("switch", { name: /^Enable Codex$/ }).getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
   it("does no probing when every supported Agent is already present", async () => {

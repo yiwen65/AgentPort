@@ -22,6 +22,7 @@ pub mod native_backup;
 pub mod native_cleanup;
 pub mod notify;
 pub mod notification_policy;
+pub mod mcp_setup;
 pub mod notification_setup;
 pub mod paths;
 pub mod pi_storage;

@@ -1040,6 +1040,80 @@ async fn probe_agents(
 
 /// Adapter registry for renderer surfaces. New compiled adapters appear in
 /// onboarding without a second hard-coded frontend list.
+/// The MCP sidecar that ships next to this executable. Registering a path from
+/// the running App (rather than a hard-coded /Applications path) keeps the
+/// entry correct for debug bundles, custom install dirs and future versions.
+fn mcp_sidecar_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("agentport-mcp")))
+        .unwrap_or_else(|| std::path::PathBuf::from("agentport-mcp"))
+}
+
+/// Per-Agent MCP registration state (read-only; runs each CLI's `mcp list`).
+#[tauri::command]
+async fn mcp_registrations(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<Value>, String> {
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
+        let bin = mcp_sidecar_path();
+        let installs = db.list_adapters().unwrap_or_default();
+        // One status probe per Agent; provider CLIs are independent processes,
+        // so fan out instead of paying their startup cost serially.
+        let reports: Vec<agentport_core::mcp_setup::RegistrationReport> =
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = installs
+                    .iter()
+                    .map(|install| {
+                        let bin = bin.clone();
+                        scope.spawn(move || {
+                            agentport_core::mcp_setup::status(install.agent_type, install, &bin)
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .filter_map(|handle| handle.join().ok())
+                    .collect()
+            });
+        reports
+            .into_iter()
+            .map(|report| serde_json::to_value(report).map_err(|error| error.to_string()))
+            .collect()
+    })
+    .await
+}
+
+/// Add or remove the AgentPort MCP entry for one Agent. Explicit, reversible,
+/// and scoped to the entry named `agentport`.
+#[tauri::command]
+async fn set_mcp_registration(
+    state: State<'_, AppState>,
+    agent: String,
+    enabled: bool,
+) -> std::result::Result<Value, String> {
+    let agent_type: AgentType = agent.parse().map_err(|error| format!("{error}"))?;
+    let paths = state.paths.clone();
+    run_backend_blocking(move || {
+        let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
+        let install = db
+            .get_adapter(agent_type)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("{} is not probed yet", agent_type.display_name()))?;
+        let report = agentport_core::mcp_setup::set(
+            agent_type,
+            &install,
+            &mcp_sidecar_path(),
+            enabled,
+        )
+        .map_err(|error| error.to_string())?;
+        serde_json::to_value(report).map_err(|error| error.to_string())
+    })
+    .await
+}
+
 #[tauri::command]
 fn list_supported_agents() -> Vec<Value> {
     AgentType::all()
@@ -5112,6 +5186,8 @@ fn main() {
             set_notification_session,
             rollback_notification_setup,
             list_supported_agents,
+            mcp_registrations,
+            set_mcp_registration,
             add_project,
             rename_project,
             set_project_layout,

@@ -23,6 +23,7 @@ import { orderAgentIds } from "../agentOrder";
 import { applyTerminalLanguage } from "../terminals";
 import { getTerminalPalette, TERMINAL_THEME_IDS } from "../terminalThemes";
 import { AgentIcon } from "./AgentIcons";
+import type { McpRegistration } from "../types";
 import NotificationSetupPanel from "./NotificationSetupPanel";
 import DeviceSettings from "./DeviceSettings";
 import ShellIcon from "./ShellIcon";
@@ -365,6 +366,52 @@ function AdapterSection({
   const [busy, setBusy] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [notificationRevision, setNotificationRevision] = useState(0);
+  // MCP registration is per Agent and lives in that Agent's own config, so the
+  // panel reads it once on mount and after every toggle.
+  const [mcp, setMcp] = useState<Record<string, McpRegistration>>({});
+  const [mcpBusy, setMcpBusy] = useState<string | null>(null);
+
+  const loadMcp = useMemo(
+    () => async () => {
+      try {
+        const reports = await api.mcpRegistrations();
+        setMcp(Object.fromEntries(reports.map((report) => [report.agent, report])));
+      } catch {
+        // A failed probe leaves the switches disabled rather than guessing.
+        setMcp({});
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    void loadMcp();
+  }, [loadMcp, notificationRevision]);
+
+  const toggleMcp = async (agent: string, enable: boolean) => {
+    setMcpBusy(agent);
+    try {
+      const report = await api.setMcpRegistration(agent, enable);
+      setMcp((current) => ({ ...current, [report.agent]: report }));
+      toast(
+        enable
+          ? t("settings:ui.adapters.mcpEnabled", { agent: agentDisplay(agent) })
+          : t("settings:ui.adapters.mcpDisabled", { agent: agentDisplay(agent) }),
+        "success",
+      );
+    } catch (error) {
+      toast(
+        t("settings:ui.adapters.mcpFailed", {
+          agent: agentDisplay(agent),
+          detail: errorText(error),
+        }),
+        "error",
+      );
+      void loadMcp();
+    } finally {
+      setMcpBusy(null);
+    }
+  };
   // Disabled adapters stay in this management table so they can be enabled again.
   const orderedAgentIds = orderAgentIds(
     agentOrder,
@@ -445,6 +492,7 @@ function AdapterSection({
               <th>{t("settings:ui.adapters.columns.agent")}</th>
               <th>{t("settings:ui.adapters.columns.selection")}</th>
               <th>{t("settings:ui.adapters.columns.order")}</th>
+              <th>{t("settings:ui.adapters.columns.mcp")}</th>
               <th>{t("settings:ui.adapters.columns.enabled")}</th>
             </tr>
           </thead>
@@ -486,6 +534,40 @@ function AdapterSection({
                       ↓
                     </button>
                   </span>
+                </td>
+                <td>
+                  {(() => {
+                    const report = mcp[a.agentType];
+                    const supported = report
+                      ? report.state !== "unsupported" && report.command !== null
+                      : false;
+                    const registered = report?.state === "registered";
+                    const label = t("settings:ui.adapters.mcpLabel", {
+                      agent: agentDisplay(a.agentType),
+                    });
+                    const hint = report
+                      ? report.detail || report.target
+                      : t("settings:ui.adapters.mcpUnknown");
+                    return (
+                      <span className="adapter-mcp-cell">
+                        <button
+                          type="button"
+                          className="adapter-enabled-switch"
+                          role="switch"
+                          aria-checked={registered}
+                          disabled={!supported || mcpBusy === a.agentType}
+                          title={hint}
+                          aria-label={label}
+                          onClick={() => void toggleMcp(a.agentType, !registered)}
+                        />
+                        {report && report.state === "unsupported" ? (
+                          <span className="adapter-mcp-note dim">
+                            {t("settings:ui.adapters.mcpUnsupported")}
+                          </span>
+                        ) : null}
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td>
                   <button

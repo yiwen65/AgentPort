@@ -9,7 +9,18 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 
 ## 注册
 
-MCP 客户端以 stdio 方式启动它：
+**最简单的方式：设置 → Agent 适配器 → 每个 Agent 后面的「MCP 注册」开关。**
+
+开关直接调用该 Agent 自己的 MCP 管理命令（`claude mcp add -s user …`、`codex mcp add …`、
+`epi/pi mcp add …`、`qodercli mcp add -s user …`、`grok mcp add …`），Cursor 走它的
+`~/.cursor/mcp.json`；只写名为 `agentport` 的条目，关掉开关就移除，其它配置一字不动。
+注册的命令路径取自**当前运行的这个 App**（`.app/Contents/MacOS/agentport-mcp`），所以升级 App
+后仍然指向同一份。
+
+没有任何已验证机制的 Agent（Kimi Code、oh-my-pi、OpenCode、Amp、Gemini、Cline、Kiro、Generic Shell）
+开关置灰并给出原因 —— 不猜、不改它们的配置文件。
+
+也可以手动注册，MCP 客户端以 stdio 方式启动它：
 
 ```json
 {

@@ -170,7 +170,8 @@
         "agent": "Agent",
         "selection": "自动选择结果",
         "order": "排序",
-        "enabled": "启用"
+        "enabled": "启用",
+        "mcp": "MCP 注册"
       },
       "moveUp": "上移 {{agent}}",
       "moveDown": "下移 {{agent}}",
@@ -182,7 +183,13 @@
       "probePassed_one": "新发现 {{count}} 个可用 Agent",
       "probePassed_other": "新发现 {{count}} 个可用 Agent",
       "probeNone": "没有发现新的可用 Agent；已有配置保持不变。",
-      "reprobeFailed": "无法重新检测 Agent：{{detail}}"
+      "reprobeFailed": "无法重新检测 Agent：{{detail}}",
+      "mcpLabel": "为 {{agent}} 注册 AgentPort MCP",
+      "mcpEnabled": "已为 {{agent}} 注册 AgentPort MCP",
+      "mcpDisabled": "已移除 {{agent}} 的 AgentPort MCP 注册",
+      "mcpFailed": "{{agent}} 的 MCP 注册失败：{{detail}}",
+      "mcpUnsupported": "暂不支持",
+      "mcpUnknown": "无法读取该 Agent 的 MCP 配置"
     },
     "commitAi": {
       "description": "配置 OpenAI 或 Anthropic 兼容服务；Git Center 的提交信息生成等 AI 功能共用此配置。",

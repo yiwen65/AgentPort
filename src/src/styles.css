@@ -1226,6 +1226,23 @@ body.is-project-dragging .tree-row.project {
   outline-offset: 3px;
 }
 
+.adapter-enabled-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* MCP registration cell: switch plus a one-word reason when unsupported. */
+.adapter-mcp-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.adapter-mcp-note {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .tree-row.session {
   min-height: 41px;
   padding-top: 3px;

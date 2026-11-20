@@ -170,7 +170,8 @@
         "agent": "Agent",
         "selection": "Automatic selection",
         "order": "Order",
-        "enabled": "Enabled"
+        "enabled": "Enabled",
+        "mcp": "MCP"
       },
       "moveUp": "Move {{agent}} up",
       "moveDown": "Move {{agent}} down",
@@ -182,7 +183,13 @@
       "probePassed_one": "Found {{count}} new working Agent",
       "probePassed_other": "Found {{count}} new working Agents",
       "probeNone": "No new working Agents found; existing configuration is unchanged.",
-      "reprobeFailed": "Could not check Agents again: {{detail}}"
+      "reprobeFailed": "Could not check Agents again: {{detail}}",
+      "mcpLabel": "Register the AgentPort MCP for {{agent}}",
+      "mcpEnabled": "AgentPort MCP registered for {{agent}}",
+      "mcpDisabled": "AgentPort MCP removed for {{agent}}",
+      "mcpFailed": "Could not change the MCP registration for {{agent}}: {{detail}}",
+      "mcpUnsupported": "not supported",
+      "mcpUnknown": "could not read this Agent's MCP configuration"
     },
     "commitAi": {
       "description": "Configure an OpenAI- or Anthropic-compatible service. AI features such as commit message generation in Git Center share this configuration.",

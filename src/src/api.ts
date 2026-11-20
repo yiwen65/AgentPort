@@ -28,6 +28,7 @@ import type {
   PermissionStr,
   Preset,
   ProbeOutcome,
+  McpRegistration,
   NotificationSetup,
   ProjectLayoutEntry,
   ProjectView,
@@ -257,6 +258,9 @@ export const localApi = {
   probeAgent: (agent: string, path: string | null) =>
     invoke<ProbeOutcome>("probe_agent", { agent, path }),
   listSupportedAgents: () => invoke<SupportedAgent[]>("list_supported_agents"),
+  mcpRegistrations: () => invoke<McpRegistration[]>("mcp_registrations"),
+  setMcpRegistration: (agent: string, enabled: boolean) =>
+    invoke<McpRegistration>("set_mcp_registration", { agent, enabled }),
   notificationSetups: () => invoke<NotificationSetup[]>("notification_setups"),
   rollbackNotificationSetup: (agent: string) =>
     invoke<NotificationSetup>("rollback_notification_setup", { agent }),

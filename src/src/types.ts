@@ -177,6 +177,15 @@ export interface AdapterInstall {
   flags: string[];
 }
 
+/// Per-Agent MCP registration state (see `agentport_core::mcp_setup`).
+export interface McpRegistration {
+  agent: AgentTypeStr;
+  state: "registered" | "missing" | "unsupported" | "unknown";
+  target: string;
+  command: string | null;
+  detail: string;
+}
+
 export interface Preset {
   id: string;
   agentType: AgentTypeStr;
