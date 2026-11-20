@@ -35,15 +35,20 @@ pub const MAX_WAIT_MS: u64 = 600_000;
 pub const DEFAULT_WAIT_MS: u64 = 45_000;
 /// Gap between the prompt text and its Enter keypress. See `deliver_prompt`.
 const ENTER_GAP: Duration = Duration::from_millis(150);
-/// How long to watch for the redraw that proves the prompt was submitted.
-const SUBMIT_EVIDENCE: Duration = Duration::from_millis(900);
+/// How long to watch for evidence that the prompt actually started a turn.
+const SUBMIT_EVIDENCE: Duration = Duration::from_millis(1_500);
 const MAX_ENTER_RETRIES: u32 = 2;
-/// Quiet window for the fallback used when the service reports no status at
-/// all. It must exceed the Host's own PTY-silence threshold (3 s), or the MCP
-/// would declare a turn finished while the Agent is merely thinking.
-const QUIET_TURN: Duration = Duration::from_millis(4_000);
+/// Quiet window before calling a Shell Session finished: a command that printed
+/// nothing for four seconds after Enter is done, and the Shell has no other
+/// signal to offer.
+const QUIET_SHELL: Duration = Duration::from_millis(4_000);
+/// Quiet window for a coding Agent that never reported a turn boundary. Models
+/// routinely think for many seconds without a byte of output, so this only
+/// produces an `unknown` verdict, never "done".
 /// Quiet window used to decide a freshly launched TUI finished painting.
 const QUIET_READY: Duration = Duration::from_millis(500);
+/// Cadence for scanning the rendered screen for trust/login prompts.
+const DIALOG_CHECK: Duration = Duration::from_millis(1_500);
 pub const DEFAULT_READY_MS: u64 = 25_000;
 
 #[derive(Debug, Clone)]
@@ -62,6 +67,41 @@ impl ToolFailure {
 }
 
 pub type TResult<T> = Result<T, ToolFailure>;
+
+/// Trust, login and sign-in screens: the CLI is asking a question, not running
+/// the prompt. Reading it from the rendered tail is the only signal available —
+/// these dialogs are not status events and have no hook.
+const BLOCKING_PROMPT_PATTERNS: &[&str] = &[
+    "trust this folder",
+    "trust this directory",
+    "trust folder",
+    "do you trust the files",
+    "approve in your browser",
+    "finish signing in",
+    "waiting for approval",
+    "log in to continue",
+    "sign in to continue",
+    // First-run onboarding menus (Cursor CLI) navigate instead of accepting text.
+    "use arrow keys to navigate",
+    "navigate · enter select",
+];
+
+/// First recognizable blocking prompt in a rendered tail, if any.
+///
+/// Matching is done twice: once verbatim and once with all whitespace removed,
+/// because full-screen TUIs often draw words with cursor positioning and the
+/// captured tail can arrive as `1.Trustfolder`.
+pub fn detect_blocking_prompt(tail: &str) -> Option<&'static str> {
+    let lower = tail.to_ascii_lowercase();
+    let squeezed: String = lower.split_whitespace().collect();
+    BLOCKING_PROMPT_PATTERNS
+        .iter()
+        .find(|pattern| {
+            lower.contains(**pattern)
+                || squeezed.contains(&pattern.split_whitespace().collect::<String>())
+        })
+        .copied()
+}
 
 /// `AGENTPORT_MCP_WAIT_TRACE=1` explains why a wait has not settled yet.
 fn wait_trace_enabled() -> bool {
@@ -421,25 +461,67 @@ impl SessionOps {
         let mut bytes = self.send_bytes(session_id, text.as_bytes())?;
         std::thread::sleep(ENTER_GAP);
         let _ = self.drain(session_id);
+        // Never type into a trust/login dialog: the keystrokes are dropped and
+        // the caller would wait for a turn that never starts.
+        if let Some(dialog) = self
+            .peek_tail(session_id)
+            .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
+        {
+            return Ok(PromptDelivery {
+                bytes: 0,
+                submitted: false,
+                redrew: false,
+                enter_retries: 0,
+                blocked_on: Some(dialog),
+            });
+        }
+        // A distinctive prefix identifies our own prompt in the transcript
+        // echo; a dialog that swallows keystrokes never shows it.
+        let token: String = text.trim().chars().take(10).collect();
         let mut retries = 0;
         loop {
             bytes += self.send_bytes(session_id, b"\r")?;
-            if self.await_submit(session_id)? {
-                return Ok(PromptDelivery {
-                    bytes,
-                    submitted: true,
-                    enter_retries: retries,
-                });
+            let blocked_on = |this: &mut Self| -> Option<String> {
+                this.peek_tail(session_id)
+                    .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
+            };
+            match self.await_turn_start(session_id, &token)? {
+                SubmitEvidence::Started => {
+                    return Ok(PromptDelivery {
+                        bytes,
+                        submitted: true,
+                        redrew: true,
+                        enter_retries: retries,
+                        blocked_on: None,
+                    })
+                }
+                // The screen changed but no turn began: most likely a trust,
+                // login or permission dialog owns the keyboard. Pressing Enter
+                // again could choose an item in that dialog, so stop here and
+                // report it honestly.
+                SubmitEvidence::RedrewOnly => {
+                    return Ok(PromptDelivery {
+                        bytes,
+                        submitted: false,
+                        redrew: true,
+                        enter_retries: retries,
+                        blocked_on: blocked_on(self),
+                    })
+                }
+                SubmitEvidence::Silent => {
+                    if retries >= MAX_ENTER_RETRIES {
+                        return Ok(PromptDelivery {
+                            bytes,
+                            submitted: false,
+                            redrew: false,
+                            enter_retries: retries,
+                            blocked_on: blocked_on(self),
+                        });
+                    }
+                    retries += 1;
+                    std::thread::sleep(ENTER_GAP);
+                }
             }
-            if retries >= MAX_ENTER_RETRIES {
-                return Ok(PromptDelivery {
-                    bytes,
-                    submitted: false,
-                    enter_retries: retries,
-                });
-            }
-            retries += 1;
-            std::thread::sleep(ENTER_GAP);
         }
     }
 
@@ -457,27 +539,63 @@ impl SessionOps {
         Ok(seen)
     }
 
-    /// True when the Session produced anything after the Enter keypress: a TUI
-    /// that accepted the prompt clears its input box or starts a spinner.
-    fn await_submit(&mut self, session_id: &str) -> TResult<bool> {
+    /// Classify what the Enter keypress produced.
+    ///
+    /// "A redraw happened" is not proof of submission: a menu dialog also
+    /// redraws. Only a turn start (working state, or a fresh attention signal)
+    /// proves the prompt was accepted.
+    fn await_turn_start(&mut self, session_id: &str, token: &str) -> TResult<SubmitEvidence> {
         let deadline = Instant::now() + SUBMIT_EVIDENCE;
+        let mut redrew = false;
+        let mut semantic_working = false;
         loop {
             let poll = self.poll(session_id, 256, 100)?;
             if !poll.events.is_empty() {
                 let mut stream = StreamState::default();
                 stream.absorb(&poll.events);
-                if stream.wrote_output || stream.latest_state.is_some() {
-                    return Ok(true);
+                redrew = true;
+                if stream.latest_state.as_ref().is_some_and(|state| {
+                    state.state == "working"
+                        && matches!(state.source.as_str(), "hook" | "adapter")
+                }) {
+                    semantic_working = true;
                 }
             }
-            if poll.closed {
-                self.detach(session_id);
-                return Ok(false);
+            if let Ok(summary) = self.summary(session_id) {
+                let hook_working = summary.latest_status.as_ref().is_some_and(|status| {
+                    status.state == "working"
+                        && matches!(status.source.as_str(), "hook" | "adapter")
+                });
+                // Only a semantic work claim proves a turn started; a PTY
+                // "working" is also what a repainting dialog looks like.
+                if hook_working || summary.latest_attention_kind.is_some() {
+                    semantic_working = true;
+                }
             }
-            if Instant::now() >= deadline {
-                return Ok(false);
+            let done = semantic_working || poll.closed || Instant::now() >= deadline;
+            if done {
+                if semantic_working {
+                    return Ok(SubmitEvidence::Started);
+                }
+                // Fall back to the transcript: a submitted prompt is echoed as
+                // a user message, a swallowed one never reaches it.
+                let echoed = self
+                    .peek_tail(session_id)
+                    .map(|tail| tail.contains(token))
+                    .unwrap_or(false);
+                return Ok(match (echoed, redrew) {
+                    (true, true) => SubmitEvidence::Started,
+                    (false, true) => SubmitEvidence::RedrewOnly,
+                    _ => SubmitEvidence::Silent,
+                });
             }
         }
+    }
+
+    /// Bounded replay of the Host tail, used as a submission oracle.
+    fn peek_tail(&mut self, session_id: &str) -> Option<String> {
+        let outcome = self.read_output(session_id, text::WAIT_TAIL_BYTES).ok()?;
+        Some(outcome.text)
     }
 
     pub fn send_bytes(&mut self, session_id: &str, bytes: &[u8]) -> TResult<u64> {
@@ -562,12 +680,14 @@ impl SessionOps {
     /// window loses bytes in some TUIs. Readiness is "output observed, then
     /// quiet" or an explicit idle status, never a fixed sleep.
     pub fn wait_ready(&mut self, session_id: &str, timeout_ms: u64) -> TResult<ReadyOutcome> {
-        let started = Instant::now();
-        let deadline = started + Duration::from_millis(timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let mut stream = StreamState::default();
         loop {
             let poll = self.poll(session_id, 64, 120)?;
             stream.absorb(&poll.events);
+            if poll.closed {
+                self.detach(session_id);
+            }
             if let Some(exit) = stream.exit.clone() {
                 return Ok(ReadyOutcome {
                     ready: false,
@@ -621,16 +741,18 @@ impl SessionOps {
 
     /// Wait for the current turn to settle, returning the evidence used.
     ///
-    /// Three sources cooperate, in this order:
+    /// Sources, in order of authority:
     ///
-    /// 1. the service summary (a cached live Host handshake) — decides "this
-    ///    Session is over" and reports an already-settled turn;
-    /// 2. `state` frames on the attachment — the live, fastest turn signal;
-    /// 3. terminal quiet, *only* when no `working` signal was ever seen, and
-    ///    reported as low confidence because it is a guess.
+    /// 1. an attention event: `needs_input` (approval) or `turn_completed`;
+    /// 2. a hook/adapter `idle`, which is a turn boundary;
+    /// 3. the lifecycle, for an ended Session;
+    /// 4. terminal quiet — for a Generic Shell only, where silence really does
+    ///    mean the command finished.
     ///
-    /// A closed attachment is never treated as an exit: the Host evicts clients
-    /// that stop draining, which happens between tool calls.
+    /// A PTY `idle` is *not* a boundary: the Host reports it after three
+    /// seconds of silence, which is exactly what a model thinking looks like.
+    /// A closed attachment is not an exit either: the Host evicts clients that
+    /// stop draining, which happens between tool calls.
     pub fn wait_for_task(
         &mut self,
         session_id: &str,
@@ -642,6 +764,7 @@ impl SessionOps {
         let mut stream = StreamState::default();
         let mut saw_turn_source = false;
         let watching_since = Instant::now();
+        let mut last_dialog_check = Instant::now();
         loop {
             let summary = self.summary(session_id)?;
             let terminal = matches!(
@@ -659,25 +782,30 @@ impl SessionOps {
                     started,
                 ));
             }
-            // A turn boundary is not the same as an idle moment: the PTY
-            // heuristic reports `idle` after 3 s without output, which is
-            // exactly what a model thinking mid-answer looks like. Only a
-            // completion classifier (`turn_completed`) or a hook-reported idle
-            // settles a prompted turn.
             let attention = summary.latest_attention_kind.as_deref();
+            if attention == Some("approval_requested") {
+                return Ok(self.settle(
+                    session_id,
+                    "needs_input",
+                    "hook",
+                    "high",
+                    "the Agent is waiting for approval".into(),
+                    &stream,
+                    started,
+                ));
+            }
             if let Some(status) = summary.latest_status.as_ref() {
                 let mark = StatusMark {
                     run_ordinal: status.run_ordinal,
                     sequence: status.sequence,
                 };
                 let fresh = since.is_none_or(|baseline| mark.is_newer_than(baseline));
-                if matches!(status.source.as_str(), "hook" | "adapter") {
-                    saw_turn_source = true;
-                }
+                let turn_source = matches!(status.source.as_str(), "hook" | "adapter");
+                saw_turn_source |= turn_source;
                 match status.state.as_str() {
                     "needs_input" => {
                         return Ok(self.settle(
-                    session_id,
+                            session_id,
                             "needs_input",
                             &status.source,
                             &status.confidence,
@@ -688,7 +816,7 @@ impl SessionOps {
                     }
                     "exited" => {
                         return Ok(self.settle(
-                    session_id,
+                            session_id,
                             "exited",
                             &status.source,
                             &status.confidence,
@@ -697,23 +825,29 @@ impl SessionOps {
                             started,
                         ))
                     }
+                    // A hook/adapter idle is a turn boundary. So is a
+                    // completion classifier, whatever its state source.
                     "idle"
                         if attention == Some("turn_completed")
-                            || status.source == "hook"
+                            || turn_source
+                            // No prompt is pending and nothing moved since we
+                            // attached: the caller is asking about a turn that
+                            // is already over.
                             || (since.is_none() && stream.latest_state.is_none()) =>
                     {
+                        let evidence = if attention == Some("turn_completed") {
+                            "turn completion reported after the prompt".to_string()
+                        } else if since.is_some() && fresh {
+                            "status moved to idle after the prompt".to_string()
+                        } else {
+                            "status was already idle and no prompt is pending".to_string()
+                        };
                         return Ok(self.settle(
-                    session_id,
+                            session_id,
                             "idle",
                             &status.source,
                             &status.confidence,
-                            if attention == Some("turn_completed") {
-                                "turn completion reported after the prompt".into()
-                            } else if since.is_some() && fresh {
-                                "status moved to idle after the prompt".into()
-                            } else {
-                                "status was already idle and no prompt is pending".into()
-                            },
+                            evidence,
                             &stream,
                             started,
                         ))
@@ -739,17 +873,16 @@ impl SessionOps {
                 eprintln!(
                     "wait_trace events={polled} state={:?} quiet_age_ms={:?} turn_source={saw_turn_source}",
                     stream.latest_state.as_ref().map(|state| state.state.clone()),
-                    stream.last_output_at.map(|at| at.elapsed().as_millis()),
+                    stream.last_activity_at().map(|at| at.elapsed().as_millis()),
                 );
             }
             if let Some(state) = stream.latest_state.clone() {
-                if matches!(state.source.as_str(), "hook" | "adapter") {
-                    saw_turn_source = true;
-                }
+                let turn_source = matches!(state.source.as_str(), "hook" | "adapter");
+                saw_turn_source |= turn_source;
                 match state.state.as_str() {
                     "needs_input" => {
                         return Ok(self.settle(
-                    session_id,
+                            session_id,
                             "needs_input",
                             &state.source,
                             &state.confidence,
@@ -762,7 +895,7 @@ impl SessionOps {
                     }
                     "exited" => {
                         return Ok(self.settle(
-                    session_id,
+                            session_id,
                             "exited",
                             &state.source,
                             &state.confidence,
@@ -771,20 +904,13 @@ impl SessionOps {
                             started,
                         ))
                     }
-                    // A hook/adapter idle is a turn boundary; a PTY idle is a
-                    // pause and must not settle.
-                    "idle"
-                        if matches!(state.source.as_str(), "hook" | "adapter")
-                            || (since.is_none() && !saw_turn_source) =>
-                    {
+                    "idle" if turn_source => {
                         return Ok(self.settle(
-                    session_id,
+                            session_id,
                             "idle",
                             &state.source,
                             &state.confidence,
-                            state
-                                .evidence
-                                .unwrap_or_else(|| "turn boundary reported".into()),
+                            state.evidence.unwrap_or_else(|| "turn boundary reported".into()),
                             &stream,
                             started,
                         ))
@@ -793,25 +919,24 @@ impl SessionOps {
                 }
             }
 
-            // No turn boundary was ever observed: fall back to silence, clearly
-            // labelled, and only for Agents that never reported a hook or
-            // semantic turn event at all. The baseline is "any activity", not
-            // just output: a Session that went quiet before we attached still
-            // has to be able to settle.
+            // Only a Shell has "silence means the command finished". For a
+            // coding Agent silence is equally consistent with a trust prompt
+            // and with a model thinking, so the caller gets its honestly
+            // labelled timeout instead of a guess.
             let working = stream
                 .latest_state
                 .as_ref()
                 .is_some_and(|state| state.state == "working");
-            if !saw_turn_source && !working {
+            if summary.adapter_type == "shell" && !saw_turn_source && !working {
                 if let Some(at) = stream.last_activity_at().or(Some(watching_since)) {
-                    if at.elapsed() >= QUIET_TURN {
+                    if at.elapsed() >= QUIET_SHELL {
                         return Ok(self.settle(
-                    session_id,
+                            session_id,
                             "idle",
                             "quiet_window",
                             "low",
                             format!(
-                                "this Agent reports no turn boundary; quiet for {}ms",
+                                "Generic Shell command finished; quiet for {}ms",
                                 at.elapsed().as_millis()
                             ),
                             &stream,
@@ -821,13 +946,34 @@ impl SessionOps {
                 }
             }
 
+            // A trust or login screen is the CLI asking the user a question. It
+            // has no hook and no status event, so it is read from the rendered
+            // tail — checked on a slow cadence because it costs a replay.
+            if last_dialog_check.elapsed() >= DIALOG_CHECK {
+                last_dialog_check = Instant::now();
+                if let Some(dialog) = self
+                    .peek_tail(session_id)
+                    .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
+                {
+                    return Ok(self.settle(
+                        session_id,
+                        "needs_input",
+                        "screen_pattern",
+                        "medium",
+                        format!("the CLI is waiting on a trust or login prompt ({dialog})"),
+                        &stream,
+                        started,
+                    ));
+                }
+            }
+
             if Instant::now() >= deadline {
                 return Ok(self.settle(
                     session_id,
                     "timeout",
                     "watchdog",
                     "low",
-                    format!("still running after {timeout_ms}ms"),
+                    format!("no turn boundary within {timeout_ms}ms"),
                     &stream,
                     started,
                 ));
@@ -950,9 +1096,21 @@ pub struct ReadyOutcome {
 #[derive(Debug, Clone)]
 pub struct PromptDelivery {
     pub bytes: u64,
-    /// The TUI redrew after Enter, i.e. the prompt went in as a submitted turn.
+    /// A turn actually started, i.e. the prompt was accepted and submitted.
     pub submitted: bool,
+    /// The screen changed after Enter. True for a paste echo *and* for a menu
+    /// dialog, which is why it cannot stand in for `submitted`.
+    pub redrew: bool,
     pub enter_retries: u32,
+    /// Recognized trust/login prompt that has to be answered first.
+    pub blocked_on: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitEvidence {
+    Started,
+    RedrewOnly,
+    Silent,
 }
 
 pub struct ReadOutcome {
@@ -962,4 +1120,39 @@ pub struct ReadOutcome {
     pub ended: bool,
     /// The Host reported a gap; the returned text is not a complete window.
     pub incomplete: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocking_prompts_are_recognized_from_real_screens() {
+        // Kimi Code and Qoder ask before trusting a new project folder.
+        assert_eq!(
+            detect_blocking_prompt("  Trust this folder?\n  ↑↓ navigate · Enter select"),
+            Some("trust this folder")
+        );
+        assert_eq!(
+            detect_blocking_prompt("❯ 1. Trust folder\n  2. Don't trust and exit"),
+            Some("trust folder")
+        );
+        // Grok Build asks for a browser sign-in when it has no session.
+        assert_eq!(
+            detect_blocking_prompt("Approve in your browser to finish signing in. V7C4-JDCN"),
+            Some("approve in your browser")
+        );
+        // A TUI that draws words with cursor positioning can lose the spaces.
+        assert_eq!(
+            detect_blocking_prompt("❯1.Trustfolder\n 2.Don'ttrustandexit"),
+            Some("trust folder")
+        );
+        assert_eq!(
+            detect_blocking_prompt("│  Use arrow keys to navigate, Enter to select"),
+            Some("use arrow keys to navigate")
+        );
+        // Ordinary agent output must never be mistaken for a dialog.
+        assert_eq!(detect_blocking_prompt("❯ fix the failing test\n⏺ done"), None);
+        assert_eq!(detect_blocking_prompt("trustworthiness is not a dialog"), None);
+    }
 }

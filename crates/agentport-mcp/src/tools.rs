@@ -660,12 +660,24 @@ impl Toolbox {
                         result["promptSent"] = json!(delivery.submitted);
                         result["promptBytes"] = json!(delivery.bytes);
                         result["promptSubmitted"] = json!(delivery.submitted);
+                        result["promptRedrew"] = json!(delivery.redrew);
                         result["enterRetries"] = json!(delivery.enter_retries);
+                        if let Some(dialog) = delivery.blocked_on.clone() {
+                            result["blockedOn"] = json!(dialog);
+                        }
                         if !delivery.submitted {
-                            result["hint"] = json!(
-                                "the text was typed but the CLI never redrew, so the turn may \
-                                 not have started; check outputTail before waiting"
-                            );
+                            result["hint"] = json!(if delivery.blocked_on.is_some() {
+                                "the CLI is waiting on a trust or login prompt in the pane; \
+                                 answer it there (or delegate into a directory the Agent already \
+                                 trusts) and then call send_prompt"
+                            } else if delivery.redrew {
+                                "the screen changed but no turn started — the CLI is probably \
+                                 showing a trust, login or permission dialog; answer it in the \
+                                 AgentPort pane, then use send_prompt"
+                            } else {
+                                "Enter was swallowed: no output changed at all. Check outputTail \
+                                 before retrying"
+                            });
                         }
                     }
                     Err(failure) => {
@@ -719,13 +731,19 @@ impl Toolbox {
             "sessionId": session_id,
             "sent": delivery.submitted,
             "submitted": delivery.submitted,
+            "redrew": delivery.redrew,
             "bytes": delivery.bytes,
             "enterRetries": delivery.enter_retries,
+            "blockedOn": delivery.blocked_on.clone(),
             "statusSequence": baseline.map(|mark| mark.sequence),
             "hint": if delivery.submitted {
                 Value::Null
+            } else if delivery.blocked_on.is_some() {
+                json!("the CLI is waiting on a trust or login prompt in the pane; answer it there, then call send_prompt")
+            } else if delivery.redrew {
+                json!("the screen changed but no turn started — the CLI is probably showing a trust, login or permission dialog")
             } else {
-                json!("the text is typed but the CLI never redrew; the turn may not have started")
+                json!("Enter was swallowed: no output changed at all")
             },
         }))
     }
@@ -760,7 +778,10 @@ impl Toolbox {
         // Only a real turn boundary clears the baseline and is remembered. A
         // quiet-window verdict is a guess: caching it would turn silence into
         // a confident "finished" on the next call.
-        if outcome.state != "timeout" && outcome.source != "quiet_window" {
+        if matches!(outcome.state, "idle" | "needs_input" | "exited")
+            && outcome.source != "quiet_window"
+            && outcome.confidence != "low"
+        {
             self.baselines.remove(&session_id);
             self.settled.insert(
                 session_id.clone(),

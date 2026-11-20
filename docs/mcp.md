@@ -111,6 +111,26 @@ AgentPort 界面本身是"可重连客户端"，它并没有轮询本机数据�
 
 桌面 App 没在运行时：Session 照常创建和运行，`open_pane` 命令留在队列里，等 App 起来后消费。
 
+## 各 Agent 的实测结果
+
+2026-11-20 用真实安装的 CLI 逐个跑 `create_session(prompt) → wait_for_task → read_output`：
+
+| Agent | 首发任务提交 | 完成判定 | 备注 |
+| --- | --- | --- | --- |
+| Claude Code | ✅ | `idle/hook`（高） | |
+| Codex | ✅ | `idle/hook`（高） | |
+| easy-pi / Pi / oh-my-pi | ✅ | `idle/adapter`（高） | 原生 TurnEnd 语义事件 |
+| Kimi Code | 被信任提示拦住 | `needs_input`（中） | 新目录会弹「Trust this folder?」 |
+| Qoder CLI | 被信任提示拦住 | `needs_input`（中） | 「1. Trust folder / 2. Don't trust」 |
+| Cursor CLI | 被首启菜单拦住 | `needs_input`（中） | 首次启动是方向键菜单 |
+| Grok Build | 被登录拦住 | `needs_input`（中） | 「Approve in your browser」 |
+
+两条实践结论：
+
+1. **委派到 Agent 已经信任过的目录**（用户平时干活的仓库）就不会碰到信任提示。
+2. 遇到提示时 MCP 会返回 `needs_input` + `blockedOn`，**不会**把提示当成"任务完成"或"提交成功"；
+   在 AgentPort 那个窗格里回答一次，之后 `send_prompt` 就能正常派活。
+
 ## 故障排查
 
 | 现象 | 原因 |

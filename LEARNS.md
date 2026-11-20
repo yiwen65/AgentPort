@@ -1080,3 +1080,12 @@
 - Correct approach: 只用"回合边界"结算 prompted turn —— `latest_attention_kind == turn_completed`，或状态来源是 `hook`/`adapter` 的 idle；PTY idle 只当暂停。静默兜底仅用于**从未报告过回合边界**的 Agent，基线取"任何活动的最后时刻"（输出或状态帧，缺省用开始观察的时刻），并要求 4 s 且当前不是 `working`；兜底结论一律 `confidence: low`，且不得被缓存成"已完成"。
 - Prevention: 完成判定要区分"状态为 idle"和"回合已结束"；任何兜底信号都要有可验证的基线（不能依赖"我看到的最后一条输出"），并且低置信结论不得写进"已结算"缓存。
 - Verified by: 端到端脚本的新增断言（`sleep 4` 的命令不会在 3.5 s 前被判完成、重复 wait 仍为 `quiet_window/low` 且 4.2 s 内返回）；Claude 长 prompt 两次均 `idle/hook` 且 `outputTail` 里带回诗文（2.4 KB）；shell 会话两次分别 7.4 s/4.3 s 诚实返回 `quiet_window/low`。
+
+## `跨 Agent 委派` — 按键语义、信任弹窗、回合边界是三件不同的事
+
+- Wrong approach: 用"发出后屏幕有变化"当提交成功，用"某段时间没有输出"当任务完成，并假设所有 Agent 在新目录里都能直接开跑。
+- Why it failed: 逐个真实 CLI 实测（2026-11-20，同一脚本）暴露出三类互相独立的问题：①按键语义——一次写入"文本+回车"被 Ink 类 TUI 当粘贴（Claude Code 长中文 prompt 稳定失败）；②信任/登录弹窗——新目录下 Kimi「Trust this folder?」、Qoder「1. Trust folder」、Cursor 首启方向键菜单、Grok「Approve in your browser」都会把击键吞掉，屏幕却在重绘，于是"有红绘=已提交"是假阳性；③回合边界——PTY 静默 3 s 的 idle 在模型思考时也会出现，不能当完成。
+- Recognition signal: `promptSubmitted: true` 但输入框里还留着原文；`wait_for_task` 报 `idle/pty` 而屏幕还有 spinner；`timeout` 后 `read_output` 看到的是信任菜单或登录码。
+- Correct approach: 提交证据只认"回合真的开始"（hook/adapter 的 working 或 attention），其次才用"transcript 里出现自己的 prompt 前缀 + 屏幕有重绘"；纯重绘不算提交。等待期间每 1.5 s 扫一次渲染后的尾部，命中信任/登录/首启菜单关键词就返回 `needs_input`（`screen_pattern`、中置信度、带 `blockedOn`），并**在发送前**先做同样的检查，避免把字打进菜单里。非 Shell 的 Agent 只用真正的回合边界结算，静默只给 `timeout`。
+- Prevention: 任何一个"替用户操作 TUI"的开关都要区分"按键"与"文本"、区分"红绘"与"开始工作"、区分"安静"与"完成"；委派优先落在 Agent 已经信任过的目录；新增 Agent 支持时按同一脚本跑一遍矩阵，不要只测一个 Agent。
+- Verified by: 9 个已安装 Agent 的矩阵——claude/codex/easy-pi/pi/omp `submitted:true + idle/hook|adapter(high)` 且拿回回答；kimi/qoder/cursor/grok 在 4.5–12.6 s 内返回 `needs_input/screen_pattern` 并给出 `blockedOn`（修复前分别是 60–70 s 的 `timeout` 或假的 `idle/low`）；Shell 端到端脚本仍全过。
