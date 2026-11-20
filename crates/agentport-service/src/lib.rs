@@ -4752,6 +4752,13 @@ fn input_phase_name(phase: InputBatchAckPhase) -> &'static str {
     }
 }
 
+fn output_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        cfg!(debug_assertions) && std::env::var_os("AGENTPORT_OUTPUT_TRACE").is_some()
+    })
+}
+
 fn host_event(
     cursor: &mut RunCursor,
     replay_pending: &mut bool,
@@ -4779,7 +4786,7 @@ fn host_event(
         HostFrame::Output {
             data, offset, cursor: next, ..
         } => {
-            if cfg!(debug_assertions) {
+            if output_trace_enabled() {
                 let at_ms = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
                 eprintln!("output_trace stage=service_host_event offset={} bytes={} at_ms={at_ms}", offset, data.len());
             }

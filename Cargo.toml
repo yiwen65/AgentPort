@@ -50,6 +50,29 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 [profile.dev.package.rquickjs-sys]
 opt-level = 2
 
+# The debug desktop is used for live terminal testing. Keep its output path
+# fast enough for fullscreen TUIs while retaining debug assertions and logs.
+[profile.dev.package.agentport-host]
+opt-level = 2
+
+[profile.dev.package.agentport-remote-bridge]
+opt-level = 2
+
+[profile.dev.package.agentport-service]
+opt-level = 2
+
+[profile.dev.package.agentport-core]
+opt-level = 1
+
+[profile.dev.package.agentport-remote-protocol]
+opt-level = 2
+
+[profile.dev.package.serde_json]
+opt-level = 2
+
+[profile.dev.package.base64]
+opt-level = 2
+
 [profile.release]
 opt-level = 2
 lto = "thin"

@@ -35,6 +35,13 @@ use thiserror::Error;
 
 const WRITER_QUEUE_CAPACITY: usize = 128;
 const ATTACHMENT_WRITER_QUEUE_CAPACITY: usize = 32;
+
+fn output_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        cfg!(debug_assertions) && std::env::var_os("AGENTPORT_OUTPUT_TRACE").is_some()
+    })
+}
 const WRITER_CONTROL_QUANTUM: usize = 16;
 const WRITER_FALLBACK_TICK: Duration = Duration::from_millis(250);
 // Cancellation is checked between subscription waits; writer wakeups do not
@@ -970,7 +977,7 @@ fn spawn_dispatcher_with_output(
                 match subscription.recv_timeout(DISPATCH_CANCEL_TICK) {
                     Ok(event) => {
                         let envelope = event_envelope(&attachment_id, event);
-                        if cfg!(debug_assertions) {
+                        if output_trace_enabled() {
                             if let ServerEnvelope::Event(event) = &envelope {
                                 if event.event_type == "output" || event.event_type == "transient_output" {
                                     let encoded_len = event.payload.get("dataBase64").and_then(Value::as_str).map(str::len).unwrap_or(0);

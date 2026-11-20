@@ -2353,10 +2353,28 @@ fn is_pi_initial_session_notice_line(line: &[u8], native_session_id: &str) -> bo
     .as_bytes()
 }
 
+/// Offset traces are opt-in: writing one log line per PTY batch from the
+/// broadcast critical path can itself stall output on a busy debug Host.
+fn output_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        cfg!(debug_assertions) && std::env::var_os("AGENTPORT_OUTPUT_TRACE").is_some()
+    })
+}
+
+/// Coalescing is on by default; `AGENTPORT_PTY_BATCH=0` restores one frame per
+/// PTY read for comparison and emergency rollback.
+fn pty_batch_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("AGENTPORT_PTY_BATCH").is_none_or(|value| value != "0")
+    })
+}
+
 fn append_live_output(data: Vec<u8>, shared: &Shared) {
     let _output_guard = shared.output_serial.lock().unwrap();
     let offset = shared.output_tail.lock().unwrap().append(&data);
-    if cfg!(debug_assertions) {
+    if output_trace_enabled() {
         let at_ms = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
         info!(target: "output_trace", stage = "host_append", offset, bytes = data.len(), at_ms);
     }
@@ -2385,7 +2403,11 @@ enum PtyRead {
     Fault(String),
 }
 
-fn append_batched_output(batcher: &mut OutputBatcher, shared: &Shared, data: Vec<u8>) {
+fn append_pty_output(batcher: &mut OutputBatcher, shared: &Shared, data: Vec<u8>) {
+    if !pty_batch_enabled() {
+        append_live_output(data, shared);
+        return;
+    }
     let now = Instant::now();
     for batch in batcher.push(&data, now) {
         append_live_output(batch, shared);
@@ -2448,7 +2470,7 @@ fn spawn_pty_reader(
                         None => chunk.clone(),
                     };
                     if !data.is_empty() {
-                        append_batched_output(&mut batcher, &shared, data);
+                        append_pty_output(&mut batcher, &shared, data);
                     }
                     // Retain the bounded tail only for native session identity.
                     // Status patterns use the parsed live screen on the control
@@ -2475,7 +2497,7 @@ fn spawn_pty_reader(
                     break;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    for batch in batcher.flush_idle(Instant::now()) {
+                    for batch in batcher.flush_idle() {
                         append_live_output(batch, &shared);
                     }
                 }
@@ -2490,7 +2512,7 @@ fn spawn_pty_reader(
                     None => chunk,
                 };
                 if !data.is_empty() {
-                    append_batched_output(&mut batcher, &shared, data);
+                    append_pty_output(&mut batcher, &shared, data);
                 }
             }
         }
@@ -2499,11 +2521,11 @@ fn spawn_pty_reader(
         if let Some(r) = &mut redactor {
             let tail = r.finish();
             if !tail.is_empty() {
-                append_batched_output(&mut batcher, &shared, tail);
+                append_pty_output(&mut batcher, &shared, tail);
             }
             info!(redaction_hits = r.hits(), "redactor finished");
         }
-        for batch in batcher.flush(Instant::now()) {
+        for batch in batcher.flush() {
             append_live_output(batch, &shared);
         }
         let terminal = match pty_fault {
