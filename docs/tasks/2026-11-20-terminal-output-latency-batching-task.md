@@ -186,8 +186,9 @@
   - Bottleneck attribution is based on stage evidence, not outputReceived alone.
   - If device is unavailable, status is blocked with exact unblock condition.
 - Verification method: `devicectl` install/launch/copy plus an offline correlation script.
-- Validation evidence: Not run for the new stage trace; prior iPhone sampling remains partial evidence.
-- Blocker: Physical device currently may be occupied by another app; no controlled AgentPort Session workload was authorized in this turn.
+- Validation evidence: Controlled physical iPhone run completed. New offset traces were collected from the active fullscreen TUI; positive-byte mobile native→JS callback latency was median 5 ms / p95 12 ms, and JS callback→parser handoff median 3 ms / p95 12 ms. JS output chunks in the captured window had median 147 B, p95 673 B, max 65,536 B. Host/Bridge stage logs were not present because the active Session Host predates the new debug Host binary.
+- Blocker: Host/Bridge offset stages still need a newly created/restarted Session after the rebuilt desktop Host/Bridge binaries are deployed.
+- Unblock condition: Rebuild/restart desktop debug app, create or restart a test Session using the new Host, then repeat the physical iPhone run.
 - Unblock condition: User provides a short window with AgentPort Session visible and active.
 
 <!-- task-doc-section:validation-plan -->
@@ -214,11 +215,11 @@
 - 2026-11-20: Task document created in execute mode. Existing evidence confirmed local WebGL/parser are fast but stage-level network attribution is missing.
 - 2026-11-20: T-001 started; implementation serialized because offset schema is shared by all downstream stages.
 - 2026-11-20: T-001–T-004 implemented and validated. Host batcher target is 8 KiB with a 4 ms active-stream check and DEC 2026 boundary flush; debug-only offset traces added across Host/service/Bridge/mobile native/JS through parser handoff. Render remains a separate frame metric.
-- 2026-11-20: T-005 blocked because the physical iPhone is occupied; no final stage percentile attribution claimed.
+- 2026-11-20: T-005 physical run started and completed for mobile native/JS stages; Host/Bridge attribution remains blocked because the active Session Host predates the new instrumentation. No final network bottleneck attribution claimed.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
 - Evidence: T-001–T-004 done; Host batcher/Rust tests, mobile 1025-test suite, TypeScript/Vite build and focused checks passed.
-- Limitations: T-005 blocked. The new debug trace has not yet been collected from a controlled physical-iPhone AgentPort Session, so network/Bridge/Host bottleneck attribution remains pending.
+- Limitations: T-005 remains blocked for Host/Bridge stages. The physical mobile native/JS trace is collected, but a newly deployed instrumented Host/Bridge Session is still required before attributing network versus remote processing.
