@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SPLIT_RATIO,
   MAX_PANE_LAYOUT_DEPTH,
+  buildGridPlacement,
+  chooseGridShape,
+  chooseSplitPlacement,
   MIN_PANE_HEIGHT,
   MIN_PANE_WIDTH,
   TERMINAL_LAYOUT_STORAGE_KEY,
@@ -815,5 +818,89 @@ describe("pane layout store reconciliation", () => {
     expect(store.getState().activeSessionId).toBe("a");
     expect(store.getState().attachedIds).toEqual(["a", "c"]);
     expect(store.getState().maximizedSessionId).toBeNull();
+  });
+});
+
+describe("optimal pane placement", () => {
+  const workspace = { width: 1400, height: 900 };
+
+  const gridAfter = (count: number) => {
+    let layout = singletonPaneLayout("ses_1");
+    for (let index = 2; index <= count; index += 1) {
+      const rebuilt = buildGridPlacement(
+        layout,
+        `ses_${index}`,
+        workspace.width,
+        workspace.height,
+        6,
+      );
+      expect(rebuilt).not.toBeNull();
+      layout = { ...rebuilt!, focusedSessionId: `ses_${index}` };
+    }
+    return layout;
+  };
+
+  const sizesOf = (layout: PaneLayout) => {
+    const root = layout.root;
+    if (!root) return [];
+    return orderedLayoutSessionIds(layout).map((id) =>
+      paneSessionSize(root, id, workspace.width, workspace.height, 6),
+    );
+  };
+
+  it("picks the most even grid shape for the pane count", () => {
+    expect(chooseGridShape(1, workspace.width, workspace.height, 6)).toEqual({
+      columns: 1,
+      rows: 1,
+    });
+    expect(chooseGridShape(2, workspace.width, workspace.height, 6)).toEqual({
+      columns: 2,
+      rows: 1,
+    });
+    expect(chooseGridShape(4, workspace.width, workspace.height, 6)).toEqual({
+      columns: 2,
+      rows: 2,
+    });
+    expect(chooseGridShape(9, workspace.width, workspace.height, 6)).toEqual({
+      columns: 3,
+      rows: 3,
+    });
+  });
+
+  it("keeps nine delegated Agents on a readable 3x3 grid", () => {
+    const layout = gridAfter(9);
+    const sizes = sizesOf(layout);
+    expect(sizes).toHaveLength(9);
+    // Nine columns used to leave ~150px slivers; a 3x3 grid stays ~460x300.
+    expect(Math.min(...sizes.map((size) => size!.width))).toBeGreaterThan(400);
+    expect(Math.min(...sizes.map((size) => size!.height))).toBeGreaterThan(250);
+  });
+
+  it("keeps every pane of an exact-fit layout balanced", () => {
+    // Shapes that tile without an empty cell: no pane may be much smaller.
+    for (const count of [2, 3, 4, 6, 9]) {
+      const sizes = sizesOf(gridAfter(count)).map((size) => size!);
+      const areas = sizes.map((size) => size.width * size.height);
+      expect(Math.max(...areas) / Math.min(...areas)).toBeLessThan(1.6);
+    }
+  });
+
+  it("never leaves a sliver, even when the grid cannot tile exactly", () => {
+    for (const count of [5, 7, 8]) {
+      const sizes = sizesOf(gridAfter(count)).map((size) => size!);
+      // The narrowest pane stays readable rather than a 9-column sliver.
+      expect(Math.min(...sizes.map((size) => size.width))).toBeGreaterThan(320);
+    }
+  });
+
+  it("still reports an incremental candidate for explicit splits", () => {
+    const planned = chooseSplitPlacement(
+      singletonPaneLayout("ses_1"),
+      workspace.width,
+      workspace.height,
+      6,
+    );
+    expect(planned?.sessionId).toBe("ses_1");
+    expect(planned?.direction).toBe("right");
   });
 });

@@ -63,6 +63,8 @@ import { i18n } from "./i18n";
 import { applyTerminalThemeCss } from "./terminalThemes";
 import {
   assignPaneGroupAccent,
+  buildGridPlacement,
+  chooseSplitPlacement,
   focusPane,
   isHorizontalPaneSplitDirection,
   isPaneSplitDirection,
@@ -807,23 +809,62 @@ export function splitSessionForExternalAgent(
   if (layoutContains(layout, key)) {
     return openSessionForExternalAgent(sessionId, focus);
   }
+  // Placement: the whole layout decides. Splitting the focused pane every time
+  // turns a wide window into a row of slivers (nine delegated Agents became nine
+  // ~90px columns). Without an explicit target the layout is rebuilt on the grid
+  // shape that keeps every pane as large as the workspace allows — 2 → two
+  // columns, 4 → 2x2, 9 → 3x3 — and the new Session takes the next cell.
+  const workspaceRect = targetSessionId ? null : paneWorkspaceRect();
+  if (workspaceRect) {
+    const rebuilt = buildGridPlacement(
+      layout,
+      key,
+      workspaceRect.width,
+      workspaceRect.height,
+      PANE_SEPARATOR_SIZE,
+    );
+    if (rebuilt && rebuilt.root) {
+      const previous = plainActiveId(layout.focusedSessionId ?? activeSessionKey(state));
+      const focusedKey = focus ? key : layout.focusedSessionId ?? activeSessionKey(state);
+      commitPaneLayout(
+        { ...rebuilt, focusedSessionId: focusedKey },
+        {
+          maximizedSessionId: null,
+          acknowledgeFocused: focus,
+          previousLayout: layout,
+          movingSessionId: key,
+        },
+      );
+      if (!focus && previous) selectSession(previous);
+      return true;
+    }
+  }
+  const planned = workspaceRect
+    ? chooseSplitPlacement(
+        layout,
+        workspaceRect.width,
+        workspaceRect.height,
+        PANE_SEPARATOR_SIZE,
+      )
+    : null;
   const targetKey =
     (targetSessionId ? activeKeyFor(targetSessionId) : null) ??
+    planned?.sessionId ??
     layout.focusedSessionId ??
     activeSessionKey(state);
   if (!targetKey || targetKey === key) {
     return openSessionForExternalAgent(sessionId, focus);
   }
-  // `focus: false` must keep the pane the user was in, which is not
-  // necessarily the split target.
-  // The requested axis may not fit (a 575px pane cannot halve into two 320px
-  // panes). Try the other axis before giving up: "give it a pane" is the intent,
-  // and a downward pane usually fits where a sideways one does not.
-  const other: PaneSplitDirection = isHorizontalPaneSplitDirection(direction)
+  // `focus: false` must keep the pane the user was in, which is not necessarily
+  // the split target.
+  const requested = planned?.direction ?? direction;
+  // The planned axis should fit, but a pane can be an awkward shape: try the
+  // other axis before giving up.
+  const other: PaneSplitDirection = isHorizontalPaneSplitDirection(requested)
     ? "down"
     : "right";
-  const chosen = canSplitSessionPane(targetKey, direction)
-    ? direction
+  const chosen = canSplitSessionPane(targetKey, requested)
+    ? requested
     : canSplitSessionPane(targetKey, other)
       ? other
       : null;

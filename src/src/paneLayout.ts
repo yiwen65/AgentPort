@@ -424,6 +424,163 @@ export function clampPaneSplitRatio(
   );
 }
 
+/** One pane's logical size inside the workspace. */
+export type PanePlacementCandidate = {
+  sessionId: string;
+  direction: PaneSplitDirection;
+  width: number;
+  height: number;
+};
+
+/** Cell size of a `columns × rows` grid in a `width × height` workspace. */
+export function gridCellSize(
+  columns: number,
+  rows: number,
+  width: number,
+  height: number,
+  separatorSize = 0,
+): PaneSize {
+  const separator = Number.isFinite(separatorSize) ? Math.max(0, separatorSize) : 0;
+  const totalColumns = Math.max(1, columns);
+  const totalRows = Math.max(1, rows);
+  return {
+    width: Math.max(0, (width - separator * (totalColumns - 1)) / totalColumns),
+    height: Math.max(0, (height - separator * (totalRows - 1)) / totalRows),
+  };
+}
+
+/**
+ * Grid shape for `count` panes in this workspace: the columns/rows whose cells
+ * are the most evenly shaped (a 1400x900 workspace gives 9 panes a 3x3 grid,
+ * not 9 columns).
+ */
+export function chooseGridShape(
+  count: number,
+  width: number,
+  height: number,
+  separatorSize = 0,
+): { columns: number; rows: number } {
+  const total = Math.max(1, Math.floor(count));
+  let best = { columns: total, rows: 1 };
+  let bestScore = Number.NEGATIVE_INFINITY;
+  const separator = Number.isFinite(separatorSize) ? Math.max(0, separatorSize) : 0;
+  for (let columns = 1; columns <= total; columns += 1) {
+    const rows = Math.ceil(total / columns);
+    const cell = gridCellSize(columns, rows, width, height, separator);
+    if (cell.width <= 0 || cell.height <= 0) continue;
+    // Score by the *shorter* side of the worst cell: that is exactly what makes
+    // nine panes a 3x3 grid instead of nine 150px columns, and it stays stable
+    // when the last row is not full (those panes are simply wider).
+    const score = Math.min(cell.width, cell.height);
+    if (score > bestScore) {
+      bestScore = score;
+      best = { columns, rows };
+    }
+  }
+  return best;
+}
+
+/** Fold leaves into one split node with equal shares. */
+function buildEqualSplit(
+  leaves: PaneLeaf[],
+  direction: PaneSplitDirection,
+): PaneLayoutNode {
+  let node: PaneLayoutNode = leaves[0];
+  for (let index = 2; index <= leaves.length; index += 1) {
+    node = {
+      type: "split",
+      id: createPaneSplitId(),
+      direction,
+      ratio: (index - 1) / index,
+      first: node,
+      second: leaves[index - 1],
+    };
+  }
+  return node;
+}
+
+/**
+ * Rebuild the layout as a balanced grid that includes `newSessionId`.
+ *
+ * Splitting one pane at a time cannot keep nine Agents usable: by the ninth
+ * split some pane is inevitably a sliver. Rebuilding the whole tree on the
+ * chosen grid keeps every pane as large as the workspace allows, which is what
+ * "optimally placed" has to mean once pane count grows.
+ */
+export function buildGridPlacement(
+  layout: PaneLayout,
+  newSessionId: string,
+  width: number,
+  height: number,
+  separatorSize = 0,
+): PaneLayout | null {
+  const existing = orderedLayoutSessionIds(layout);
+  if (existing.length === 0) return null;
+  const ids = [...existing, newSessionId];
+  const { columns } = chooseGridShape(ids.length, width, height, separatorSize);
+  const rows: PaneLeaf[][] = [];
+  for (let index = 0; index < ids.length; index += columns) {
+    rows.push(ids.slice(index, index + columns).map((sessionId) => paneLeaf(sessionId)));
+  }
+  const rowNodes: PaneLayoutNode[] = rows.map((row) =>
+    row.length === 1 ? row[0] : buildEqualSplit(row, "right"),
+  );
+  const root = rowNodes.length === 1 ? rowNodes[0] : buildEqualSplit(rowNodes as PaneLeaf[], "down");
+  return {
+    ...layout,
+    root,
+    focusedSessionId: newSessionId,
+  };
+}
+
+/**
+ * Where an incremental split should go when a whole-grid rebuild is not wanted:
+ * every candidate (each pane, both axes) scored by the smallest pane it leaves
+ * behind.
+ */
+export function chooseSplitPlacement(
+  layout: PaneLayout,
+  width: number,
+  height: number,
+  separatorSize = 0,
+): PanePlacementCandidate | null {
+  if (!layout.root) return null;
+  let best: PanePlacementCandidate | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const sessionId of orderedLayoutSessionIds(layout)) {
+    for (const direction of ["right", "down"] as const) {
+      const candidate = splitPane(layout, sessionId, "__placement_probe__", direction);
+      const candidateRoot = candidate.root;
+      if (!candidateRoot) continue;
+      const sizes = orderedLayoutSessionIds(candidate)
+        .map((id) => paneSessionSize(candidateRoot, id, width, height, separatorSize))
+        .filter((size): size is PaneSize => size !== null);
+      if (sizes.length === 0) continue;
+      let smallest = Number.POSITIVE_INFINITY;
+      let worstAsperity = 0;
+      for (const size of sizes) {
+        smallest = Math.min(smallest, size.width * size.height);
+        if (size.width > 0 && size.height > 0) {
+          worstAsperity = Math.max(
+            worstAsperity,
+            Math.abs(Math.log(size.width / size.height)),
+          );
+        }
+      }
+      const score = smallest - worstAsperity * 1_000;
+      if (score > bestScore) {
+        const root = layout.root;
+        if (!root) continue;
+        const size = paneSessionSize(root, sessionId, width, height, separatorSize);
+        if (!size) continue;
+        bestScore = score;
+        best = { sessionId, direction, width: size.width, height: size.height };
+      }
+    }
+  }
+  return best;
+}
+
 export function createPaneSplitId(): string {
   splitSequence += 1;
   try {

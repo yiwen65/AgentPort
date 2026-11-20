@@ -186,9 +186,9 @@ fn create_session_schema() -> Value {
             "worktreeId": { "type": "string" },
             "pane": {
                 "type": "string",
-                "enum": ["split-right", "split-down", "open", "none"],
-                "default": "split-right",
-                "description": "Where the new Session appears in the desktop layout: split-right (default) opens a new pane beside the focused one, split-down below it, open follows the ordinary open/focus rules, none leaves the layout alone. The layout is owned by the renderer, so this is a queued intent."
+                "enum": ["auto", "split-right", "split-down", "open", "none"],
+                "default": "auto",
+                "description": "Where the new Session appears in the desktop layout. auto (default) lets the renderer rebuild the layout on the grid that keeps every pane as large as possible, so several delegated Agents form a grid instead of a row of slivers; split-right/split-down force an axis next to the focused pane; open follows the ordinary open/focus rules; none leaves the layout alone. The layout is owned by the renderer, so this is a queued intent."
             },
             "promptTimeoutMs": {
                 "type": "integer",
@@ -280,7 +280,12 @@ fn split_pane_schema() -> Value {
     obj(
         json!({
             "sessionId": { "type": "string" },
-            "direction": { "type": "string", "enum": ["right", "down"], "default": "right" },
+            "direction": {
+                "type": "string",
+                "enum": ["auto", "right", "down"],
+                "default": "auto",
+                "description": "auto lets the renderer pick the placement that keeps the whole layout balanced"
+            },
             "targetSessionId": {
                 "type": "string",
                 "description": "Split beside this Session instead of the focused pane"
@@ -661,15 +666,20 @@ impl Toolbox {
         // Delegation places the new Session in its own pane by default: a
         // coordinator that has to call split_pane separately is one call more
         // expensive and forgets the pane the first time it matters.
-        let pane = optional_str(args, "pane").unwrap_or_else(|| "split-right".into());
+        let pane = optional_str(args, "pane").unwrap_or_else(|| "auto".into());
         let pane_direction = match pane.as_str() {
+            // `auto` asks the renderer for the best placement; the intent stays
+            // a split, only the axis is left to the layout planner.
+            "auto" => None,
             "split-right" => Some("right"),
             "split-down" => Some("down"),
             "open" | "none" => None,
             other => {
                 return Err(ToolFailure::new(
                     "invalid_arguments",
-                    format!("pane must be split-right, split-down, open or none (got {other})"),
+                    format!(
+                        "pane must be auto, split-right, split-down, open or none (got {other})"
+                    ),
                 ))
             }
         };
@@ -1109,11 +1119,11 @@ impl Toolbox {
     fn split_pane(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
-        let direction = optional_str(args, "direction").unwrap_or_else(|| "right".into());
-        if !matches!(direction.as_str(), "right" | "down") {
+        let direction = optional_str(args, "direction").unwrap_or_else(|| "auto".into());
+        if !matches!(direction.as_str(), "auto" | "right" | "down") {
             return Err(ToolFailure::new(
                 "invalid_arguments",
-                "direction must be right or down",
+                "direction must be auto, right or down",
             ));
         }
         let target = optional_str(args, "targetSessionId");
@@ -1124,7 +1134,11 @@ impl Toolbox {
         self.queue_pane(ui::PaneIntent {
             kind: "split_pane",
             session_id: &session_id,
-            direction: Some(if direction == "down" { "down" } else { "right" }),
+            direction: match direction.as_str() {
+                "right" => Some("right"),
+                "down" => Some("down"),
+                _ => None,
+            },
             target_session_id: target.as_deref(),
             focus,
         })
