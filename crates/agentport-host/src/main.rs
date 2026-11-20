@@ -2358,7 +2358,7 @@ fn append_live_output(data: Vec<u8>, shared: &Shared) {
     let offset = shared.output_tail.lock().unwrap().append(&data);
     if cfg!(debug_assertions) {
         let at_ms = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
-        eprintln!("output_trace stage=host_append offset={offset} bytes={} at_ms={at_ms}", data.len());
+        info!(target: "output_trace", stage = "host_append", offset, bytes = data.len(), at_ms);
     }
     let end = offset.saturating_add(data.len() as u64);
     shared.log_bytes.store(end, Ordering::Relaxed);
