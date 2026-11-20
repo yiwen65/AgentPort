@@ -34,6 +34,16 @@ describe("DEC 2026 render transaction", () => {
     f.dispose();
   });
 
+  it("repaints only the rows touched by a differential frame", () => {
+    const f = fixture();
+    expect(f.handlers.get("h")!([2026])).toBe(false);
+    f.renderer._renderRows(5, 6);
+    f.renderer._renderer.value.renderRows(8, 8);
+    expect(f.handlers.get("l")!([2026])).toBe(false);
+    expect(f.refresh).toHaveBeenCalledWith(5, 8);
+    f.dispose();
+  });
+
   it("bounds an unmatched frame even when begin is repeated", () => {
     vi.useFakeTimers();
     const f = fixture();

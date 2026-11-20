@@ -13,7 +13,17 @@ export function installSynchronizedOutput(terminal: Terminal, observe?: (held: b
   const paint = renderer._renderer.value;
   const paintRows = paint.renderRows;
   let synchronized = false;
+  let dirtyStart: number | undefined;
+  let dirtyEnd: number | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const rememberDirtyRows = (start: number, end: number) => {
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+    const maxRow = Math.max(0, terminal.rows - 1);
+    const first = Math.max(0, Math.min(maxRow, Math.min(start, end)));
+    const last = Math.max(0, Math.min(maxRow, Math.max(start, end)));
+    dirtyStart = dirtyStart === undefined ? first : Math.min(dirtyStart, first);
+    dirtyEnd = dirtyEnd === undefined ? last : Math.max(dirtyEnd, last);
+  };
   const notify = (held: boolean, reason: "marker" | "timeout" | "reset" | "paint") => {
     try { observe?.(held, reason); } catch { /* Optional diagnostics cannot affect rendering. */ }
   };
@@ -23,17 +33,33 @@ export function installSynchronizedOutput(terminal: Terminal, observe?: (held: b
     if (!synchronized) return;
     synchronized = false;
     notify(false, reason);
-    terminal.refresh(0, terminal.rows - 1);
+    // DEC 2026 frames are commonly differential (Pi redraws only its spinner or
+    // input row). Repainting the whole viewport for every frame makes a phone
+    // do O(rows) GPU/DOM work even when one row changed. xterm already tells us
+    // the exact dirty ranges; merge them while the frame is held and paint only
+    // that union. Keep the full-screen fallback for a frame that bypassed both
+    // render hooks (for example a renderer-specific cursor update).
+    const start = dirtyStart;
+    const end = dirtyEnd;
+    dirtyStart = undefined;
+    dirtyEnd = undefined;
+    terminal.refresh(start ?? 0, end ?? terminal.rows - 1);
   };
   const expire = () => resume("timeout");
   renderer._renderRows = function(start, end) {
     if (!synchronized) renderRows.call(this, start, end);
-    else if (observe) notify(true, "paint");
+    else {
+      rememberDirtyRows(start, end);
+      if (observe) notify(true, "paint");
+    }
   };
   // DOM cursor/focus handlers can paint directly, bypassing RenderService.
   paint.renderRows = function(start, end) {
     if (!synchronized) paintRows.call(this, start, end);
-    else if (observe) notify(true, "paint");
+    else {
+      rememberDirtyRows(start, end);
+      if (observe) notify(true, "paint");
+    }
   };
   const reset = terminal.reset;
   terminal.reset = function() { resume("reset"); reset.call(this); };
