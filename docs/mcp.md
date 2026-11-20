@@ -69,8 +69,15 @@ terminate_session {sessionId: "..."}
 **作用域**：只有本 MCP 创建的 Session 可以被驱动。用户自己开的 Session 在这里是只读的 ——
 一个 Agent 不应该能往你正在操作的窗格里打字。归属记录在 `<数据目录>/mcp/agent-sessions.json`。
 
-**权限**：`permission` 默认 `native`（沿用 CLI 自己的审批）；`auto` 必须同时传
-`allowAutoApprove: true`；`bypass` 永远拒绝。
+**权限**：委派默认就是**各自的完全权限模式**（`permission: "bypass"`），因为委派本来就是无人值守的：
+子 Agent 停在审批提示上没人回答，任务就死在那里。各 Agent 的映射沿用 AgentPort 自己的适配器验证
+过的原生 flag —— Claude/Qoder `--dangerously-skip-permissions`、Codex
+`--dangerously-bypass-approvals-and-sandbox`、Kimi `--yolo`、Cursor/Grok 各自的对应 flag；
+Pi、Amp、Generic Shell 上游没有审批概念，`effectivePermissionMode` 会如实回 `native`。
+
+需要保留 CLI 自己的审批时显式传 `permission: "native"`（那就意味着会阻塞等人在 AgentPort 窗格里
+批准），或传 `"auto"` 只放宽一部分。这些 Session 在标题栏照常带 ⚠ 警示，`list_sessions` 也会显示
+`permissionMode`。
 
 **输入**：没有裸字节输入工具。`send_prompt` 只接受一行文本，拒绝 ESC 与控制字符，上限 8 KiB。
 

@@ -161,6 +161,12 @@ def main() -> int:
         check(not is_error, f"session created: {created.get('sessionId')}")
         session_id = created["sessionId"]
         check(created["promptSent"], "first prompt sent after the ready gate")
+        # Delegation is unattended: the default must be the Agent's own
+        # full-permission mode, not the CLI's interactive prompts.
+        check(
+            created["permissionMode"] == "bypass",
+            f"delegated Session defaults to full permissions ({created['permissionMode']})",
+        )
 
         print("wait_for_task")
         waited, is_error = client.call(
@@ -187,19 +193,18 @@ def main() -> int:
         print("scope guard")
         foreign, is_error = client.call("read_output", {"sessionId": "ses_not_mine"})
         check(is_error and foreign["error"]["code"] == "session_not_owned", "foreign session rejected")
-        bypass, is_error = client.call(
+        native, is_error = client.call(
             "create_session",
-            {"agent": args.agent, "projectId": project_id, "permission": "bypass"},
+            {"agent": args.agent, "projectId": project_id, "permission": "native", "title": "native"},
         )
-        check(is_error and bypass["error"]["code"] == "permission_not_allowed", "bypass rejected")
-        auto, is_error = client.call(
+        check(not is_error, "an explicit native permission is still accepted")
+        check(native["permissionMode"] == "native", "native is not silently widened")
+        client.call("terminate_session", {"sessionId": native["sessionId"]})
+        bad, is_error = client.call(
             "create_session",
-            {"agent": args.agent, "projectId": project_id, "permission": "auto"},
+            {"agent": args.agent, "projectId": project_id, "permission": "sandbox"},
         )
-        check(
-            is_error and auto["error"]["code"] == "risk_acknowledgement_required",
-            "auto requires an explicit acknowledgement",
-        )
+        check(is_error and bad["error"]["code"] == "invalid_permission", "unknown permission rejected")
 
         print("open_pane")
         pane, is_error = client.call("open_pane", {"sessionId": session_id})

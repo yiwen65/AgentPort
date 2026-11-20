@@ -35,6 +35,9 @@ pub struct OwnedSession {
     pub agent: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    /// Permission mode the delegated Session was launched with, for audit.
+    #[serde(default)]
+    pub permission: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -224,6 +227,7 @@ mod tests {
             parent_session_id: None,
             agent: Some("shell".into()),
             title: None,
+            permission: Some("bypass".into()),
         }
     }
 

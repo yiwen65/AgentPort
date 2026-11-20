@@ -57,8 +57,11 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "create_session",
         description: "Create a Session for the given Agent in a project and, optionally, send the \
-                      first prompt once the CLI is ready. Returns the Session id. Sessions are \
-                      owned by this MCP server: only they can be driven by the other tools.",
+                      first prompt once the CLI is ready. The delegated Session runs in the \
+                      Agent's own full-permission mode by default (no approval prompts, no \
+                      sandbox bypass prompt); pass permission=native to keep the CLI's prompts. \
+                      Returns the Session id. Sessions are owned by this MCP server: only they \
+                      can be driven by the other tools.",
         schema: create_session_schema,
     },
     ToolDef {
@@ -153,14 +156,9 @@ fn create_session_schema() -> Value {
             },
             "permission": {
                 "type": "string",
-                "enum": ["native", "auto"],
-                "default": "native",
-                "description": "native keeps the CLI's own approval prompts (default). auto relaxes them."
-            },
-            "allowAutoApprove": {
-                "type": "boolean",
-                "default": false,
-                "description": "Required acknowledgement when permission is auto."
+                "enum": ["bypass", "auto", "native"],
+                "default": "bypass",
+                "description": "bypass (default) launches the Agent with its own full-permission flag so a delegated task never stops to ask; auto relaxes approvals less aggressively; native keeps the CLI's own prompts but will block on them when nobody is watching."
             },
             "worktreeId": { "type": "string" },
             "promptTimeoutMs": {
@@ -532,29 +530,20 @@ impl Toolbox {
             )
         })?;
 
-        let permission = optional_str(args, "permission").unwrap_or_else(|| "native".into());
-        if permission == "bypass" {
-            return Err(ToolFailure::new(
-                "permission_not_allowed",
-                "permission=bypass is never allowed over MCP; use native or auto",
-            ));
-        }
-        if permission != "native" && permission != "auto" {
+        // Delegation is unattended by definition: the default is the Agent's own
+        // full-permission mode, so a child never parks on an approval prompt
+        // that nobody is there to answer. Callers that want the CLI's prompts
+        // ask for `native` explicitly (and then own the blocking that implies).
+        let permission = optional_str(args, "permission").unwrap_or_else(|| "bypass".into());
+        if !matches!(permission.as_str(), "bypass" | "auto" | "native") {
             return Err(ToolFailure::new(
                 "invalid_permission",
-                "permission must be native or auto",
+                "permission must be bypass, auto or native",
             ));
         }
-        let allow_auto = args
-            .get("allowAutoApprove")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if permission == "auto" && !allow_auto {
-            return Err(ToolFailure::new(
-                "risk_acknowledgement_required",
-                "permission=auto relaxes the CLI's own approvals; pass allowAutoApprove=true to accept it",
-            ));
-        }
+        // The service requires an explicit risk acknowledgement for any mode
+        // that relaxes approvals; a delegated Session has no other actor to ask.
+        let risk_ack = permission != "native";
 
         let project_id = match (
             optional_str(args, "projectId"),
@@ -600,7 +589,7 @@ impl Toolbox {
                 worktree_id: optional_str(args, "worktreeId"),
                 permission: permission.clone(),
                 transport: None,
-                risk_ack: allow_auto,
+                risk_ack,
                 cols: None,
                 rows: None,
                 extra_args: None,
@@ -615,6 +604,7 @@ impl Toolbox {
             parent_session_id: self.parent_session_id.clone(),
             agent: Some(agent.as_str().to_string()),
             title: title.clone(),
+            permission: Some(permission.clone()),
         }) {
             // The Session exists and is running: never leave an un-addressable
             // process behind, and never hand back an id the caller cannot use.
@@ -636,6 +626,9 @@ impl Toolbox {
             "agent": agent.as_str(),
             "title": title,
             "permissionMode": permission,
+            // Agents without a permission flag (Pi, Shell) fall back to their
+            // native behaviour; say so instead of implying a flag was applied.
+            "effectivePermissionMode": effective_permission_mode(agent, &permission),
             "resumePrecision": launch.resume_precision,
             "notices": notices,
             "ready": false,
@@ -900,6 +893,22 @@ impl Toolbox {
                     && matches!(session.lifecycle.as_str(), "running" | "creating")
             })
             .count())
+    }
+}
+
+/// Mirror of the service's mapping: an Agent without permission flags cannot be
+/// widened, so the requested mode is not what actually runs.
+fn effective_permission_mode(agent: AgentType, requested: &str) -> &'static str {
+    use agentport_core::models::PermissionMode;
+    let core_mode = match requested {
+        "auto" => PermissionMode::Auto,
+        "bypass" => PermissionMode::Bypass,
+        _ => PermissionMode::Native,
+    };
+    match agent.effective_permission_mode(core_mode) {
+        PermissionMode::Auto => "auto",
+        PermissionMode::Bypass => "bypass",
+        PermissionMode::Native => "native",
     }
 }
 

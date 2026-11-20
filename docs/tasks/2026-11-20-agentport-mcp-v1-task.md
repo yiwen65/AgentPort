@@ -65,7 +65,7 @@ AgentPort 的界面只是可重连客户端，真正拥有进程的是 `agentpor
 | D-001 | 形态：独立 stdio sidecar `agentport-mcp`，进程常驻，直接 `CoreService::open` | 与手机 Bridge 同构；常驻才能持有 reaper；stdio 被 Claude Code / Codex / pi 普遍支持 |
 | D-002 | 会话归属记录在 `<data>/mcp/agent-sessions.json`，不新增 DB 迁移 | 避免 schema 版本联动；归属只影响 MCP 自身作用域 |
 | D-003 | 默认作用域只含本 MCP 创建的 Session；`open_pane` 同样受限 | 防止向用户正在操作的会话注入输入 |
-| D-004 | `permission` 只接受 `native` / `auto`，拒绝 `bypass` | 避免 prompt injection 一步提权 |
+| D-004 | 委派默认 `permission: "bypass"`（各自的完全权限 flag），可用 `native` / `auto` 收窄 | 委派是无人值守的：停在审批提示上等于任务失败；风险由用户确认的默认策略承担，Session 带 ⚠ 警示 |
 | D-005 | 不暴露裸字节输入；`send_prompt` 追加 `\r`、限制长度并拒绝 ESC/控制序列 | 只保留"派一句话"的语义 |
 | D-006 | 首发任务由后端做 ready 门：等到"已出现输出且静默 quiet 窗口"或状态 idle 后再发送 | 交互式 TUI 启动窗口期早发会丢字节；不能让模型自己 sleep |
 | D-007 | `wait_for_task` 分层判定：attention/状态 → 输出静默 → 生命周期，并返回 source/confidence | 各 Agent 判定精度不同，不能伪装确定性 |
@@ -82,7 +82,7 @@ AgentPort 的界面只是可重连客户端，真正拥有进程的是 `agentpor
 | `resolve_project` | `path`（绝对路径） | `projectId`、`name`、`rootPath`、`created`、`focusedExisting` | 不存在则注册（幂等） |
 | `list_sessions` | `includeArchived?` | 会话摘要：id/title/agent/lifecycle/status/attention/hostAlive/cwd | 只读 |
 | `session_status` | `sessionId` | 同上单条 + 状态历史尾部 | 只读 |
-| `create_session` | `agent`、`projectPath`/`projectId`、`title?`、`permission?`(native\|auto)、`allowAutoApprove?`、`prompt?`、`promptTimeoutMs?`、`worktreeId?` | `sessionId`、`title`、`cwd`、`ready`、`promptSent`、`statusSequence`、`notices` | 归属注册；首发任务走 ready 门 |
+| `create_session` | `agent`、`projectPath`/`projectId`、`title?`、`permission?`(bypass\|auto\|native，默认 bypass)、`prompt?`、`promptTimeoutMs?`、`worktreeId?` | `sessionId`、`title`、`cwd`、`permissionMode`、`effectivePermissionMode`、`ready`、`promptSent`、`statusSequence`、`blockedOn?`、`notices` | 归属注册；首发任务走 ready 门 |
 | `send_prompt` | `sessionId`、`text` | `sent`、`bytes` | 仅归属内会话；长度/字符限制 |
 | `wait_for_task` | `sessionId`、`timeoutMs?`（默认 120 s，上限 600 s）、`sinceSequence?` | `state`(idle\|needs_input\|exited\|timeout)、`source`、`confidence`、`evidence`、`outputTail`、`outputIncomplete`、`alreadySettled?` | 只承认比基线更新的状态迁移；重复调用直接返回上次结论 |
 | `read_output` | `sessionId`、`tailBytes?`（默认 16 KiB，上限 64 KiB） | `text`、`truncated`、`incomplete`、`bytes`、`ended?` | Host 尾部重放；始终去除 ANSI；会话已结束时明确 `ended` |
