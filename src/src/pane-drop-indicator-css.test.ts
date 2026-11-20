@@ -21,7 +21,6 @@ describe("pane drop indicator rendering", () => {
 
   it("keeps all four drop direction labels available", () => {
     for (const direction of ["left", "right", "up", "down"]) {
-      expect(rule(`\\.pane-drop-zone\\.${direction}`)).not.toBe("");
       expect(rule(`\\.pane-drop-preview\\.${direction}`)).not.toBe("");
     }
   });

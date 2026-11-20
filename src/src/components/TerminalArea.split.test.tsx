@@ -705,7 +705,7 @@ describe("TerminalArea recursive panes", () => {
       clientY: 50,
     }));
     expect(pane.querySelector(".pane-drop-preview.up")).not.toBeNull();
-    expect(pane.querySelector(".pane-drop-zone.up.active")).not.toBeNull();
+    expect(pane.querySelectorAll(".pane-drop-zone")).toHaveLength(0);
 
     fireEvent(pane, paneDragEvent("dragover", {
       dataTransfer: transfer(rpc.id),
@@ -713,20 +713,29 @@ describe("TerminalArea recursive panes", () => {
       clientY: 300,
     }));
     expect(pane.querySelector(".pane-drop-preview.left")).not.toBeNull();
-    expect(pane.querySelector(".pane-drop-zone.left.active")).not.toBeNull();
+    expect(pane.querySelectorAll(".pane-drop-zone")).toHaveLength(0);
   });
 
-  it("renders all four Session drop directions as an inert overlay", () => {
-    const { container, getByText } = render(<TerminalArea />);
+  it("renders only the outer preview partition", () => {
+    const { container } = render(<TerminalArea />);
     const pane = paneLeaf(container, ptyB.id);
-    stubPaneRect(pane);
+    stubPaneRect(pane, 900, 600);
 
-    fireEvent.dragEnter(pane, { dataTransfer: transfer(rpc.id) });
-    for (const label of ["放到左侧", "放到右侧", "放到上方", "放到下方"]) {
-      const zone = getByText(label).closest<HTMLElement>(".pane-drop-zone");
-      expect(zone).not.toBeNull();
-      expect(zone?.getAttribute("aria-disabled")).toBe("false");
+    const drops = [
+      { clientX: 450, clientY: 50, direction: "up" },
+      { clientX: 450, clientY: 550, direction: "down" },
+      { clientX: 50, clientY: 300, direction: "left" },
+      { clientX: 850, clientY: 300, direction: "right" },
+    ] as const;
+    for (const { clientX, clientY, direction } of drops) {
+      fireEvent(pane, paneDragEvent("dragover", {
+        dataTransfer: transfer(rpc.id),
+        clientX,
+        clientY,
+      }));
+      expect(pane.querySelector(`.pane-drop-preview.${direction}`)).not.toBeNull();
     }
+    expect(pane.querySelectorAll(".pane-drop-zone")).toHaveLength(0);
   });
 
   it("exposes keyboard-operable split separators", () => {

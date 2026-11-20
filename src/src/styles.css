@@ -3773,11 +3773,7 @@ body.is-resizing-pane {
   position: absolute;
   z-index: 30;
   inset: 31px 0 0;
-  display: grid;
-  grid-template-columns: 1fr 1.4fr 1fr;
-  grid-template-rows: 1fr 1.4fr 1fr;
-  gap: 8px;
-  padding: 12px;
+  display: block;
   isolation: isolate;
   overflow: hidden;
   /* Pure indicator: the pane leaf owns the drop, so mounting this must not
@@ -3897,90 +3893,6 @@ body.is-resizing-pane {
 
 .session-pane-leaf:not(:has(> .pane-header)) > .pane-drop-overlay {
   top: 0;
-}
-
-.pane-drop-zone {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  place-items: center;
-  border: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--accent-text);
-  font-size: 12px;
-  font-weight: 650;
-  opacity: 0.76;
-  transition:
-    opacity 160ms ease,
-    transform 160ms ease,
-    background 160ms ease,
-    border-color 160ms ease,
-    box-shadow 160ms ease;
-}
-
-.pane-drop-zone span {
-  padding: 7px 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--term-surface-raised) 62%, transparent);
-  box-shadow: 0 4px 14px color-mix(in srgb, black 14%, transparent);
-  text-shadow: 0 1px 12px color-mix(in srgb, var(--accent) 38%, transparent);
-  white-space: nowrap;
-}
-
-.pane-drop-overlay.has-active .pane-drop-zone:not(.active) {
-  opacity: 0.28;
-  transform: scale(0.97);
-}
-
-.pane-drop-zone.active {
-  border-style: solid;
-  border-color: color-mix(in srgb, var(--accent) 94%, transparent);
-  background: color-mix(in srgb, var(--accent) 23%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent),
-    0 10px 26px color-mix(in srgb, var(--accent) 18%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 16%, transparent);
-  opacity: 1;
-  transform: scale(1.015);
-}
-
-.pane-drop-zone.active span {
-  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
-  background: color-mix(in srgb, var(--accent) 26%, var(--term-surface-raised));
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 22%, transparent);
-}
-
-.pane-drop-zone.up {
-  grid-column: 2;
-  grid-row: 1;
-  border-bottom-style: solid;
-}
-
-.pane-drop-zone.down {
-  grid-column: 2;
-  grid-row: 3;
-  border-top-style: solid;
-}
-
-.pane-drop-zone.left {
-  grid-column: 1;
-  grid-row: 2;
-  border-right-style: solid;
-}
-
-.pane-drop-zone.right {
-  grid-column: 3;
-  grid-row: 2;
-  border-left-style: solid;
-}
-
-.pane-drop-zone.disabled {
-  border-color: var(--term-border);
-  background: color-mix(in srgb, var(--term-surface-raised) 72%, transparent);
-  color: var(--term-muted);
-  opacity: 0.58;
 }
 
 /* Secondary sidebar state for Sessions visible in a non-focused pane. Each

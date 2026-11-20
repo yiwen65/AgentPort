@@ -1028,43 +1028,17 @@ function PaneDropOverlay({
   sessionKey: string;
   activeDirection: PaneSplitDirection | null;
 }) {
-  const { t } = useTranslation("shell");
-  const copyKey = {
-    left: "pane.dropLeft",
-    right: "pane.dropRight",
-    up: "pane.dropUp",
-    down: "pane.dropDown",
-  } as const;
   const activeAllowed = activeDirection
     ? canSplitSessionPane(sessionKey, activeDirection)
     : false;
-  const zone = (direction: PaneSplitDirection) => {
-    const allowed = canSplitSessionPane(sessionKey, direction);
-    const active = allowed && direction === activeDirection;
-    return (
-      <div
-        className={`pane-drop-zone ${direction}${active ? " active" : ""}${allowed ? "" : " disabled"}`}
-        aria-disabled={!allowed}
-      >
-        <span>{t(copyKey[direction])}</span>
-      </div>
-    );
-  };
   return (
-    <div
-      className={`pane-drop-overlay${activeAllowed ? " has-active" : ""}`}
-      role="presentation"
-    >
+    <div className="pane-drop-overlay" role="presentation">
       {activeAllowed ? (
         <div
           className={`pane-drop-preview ${activeDirection}`}
           aria-hidden="true"
         />
       ) : null}
-      {zone("up")}
-      {zone("down")}
-      {zone("left")}
-      {zone("right")}
     </div>
   );
 }
