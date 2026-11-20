@@ -27,7 +27,7 @@ echo "== frontend test gate =="
 (cd src && npm test)
 
 echo "== release build =="
-cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli -p agentport-relay --features agentport-relay/connector
+cargo build --release -p agentport-host -p agentport-mcp -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-cli -p agentport-relay --features agentport-relay/connector
 
 # Updater artifacts are signed with the updater key, never with the OS code
 # signing identity. Without a key the bundler refuses to build as soon as
@@ -66,7 +66,7 @@ fi
 
 TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
 mkdir -p src-tauri/binaries
-for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+for binary in agentport-host agentport-mcp agentport-remote-bridge agentport-mosh-attach agentport-connector; do
   cp "target/release/$binary" "src-tauri/binaries/$binary-${TRIPLE}"
   chmod +x "src-tauri/binaries/$binary-${TRIPLE}"
   echo "sidecar: src-tauri/binaries/$binary-${TRIPLE}"
@@ -81,7 +81,7 @@ if [ "$UNIVERSAL" = 1 ]; then
   rustup target add aarch64-apple-darwin x86_64-apple-darwin
   cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target aarch64-apple-darwin
   cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target x86_64-apple-darwin
-  for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+  for binary in agentport-host agentport-mcp agentport-remote-bridge agentport-mosh-attach agentport-connector; do
     # Per-arch copies: tauri-build resolves externalBin for each cargo target
     # of the universal build, not only for the lipo'd file.
     cp "target/aarch64-apple-darwin/release/$binary" "src-tauri/binaries/$binary-aarch64-apple-darwin"

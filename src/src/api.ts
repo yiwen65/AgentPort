@@ -801,6 +801,25 @@ export function onProjectsChanged(cb: (projects: ProjectView[]) => void): Promis
   return listen<ProjectView[]>("projects-changed", (e) => cb(e.payload));
 }
 
+/**
+ * View-level intent from the AgentPort MCP server (another process). The pane
+ * layout belongs to the renderer, so the backend can only ask, never write it.
+ */
+export interface McpUiCommand {
+  id: string;
+  kind: string;
+  sessionId: string;
+  focus?: boolean;
+  createdAt?: string;
+  source?: string;
+}
+
+export function onMcpUiCommand(
+  cb: (command: McpUiCommand) => void,
+): Promise<UnlistenFn> {
+  return listen<McpUiCommand>("mcp-ui-command", (event) => cb(event.payload));
+}
+
 /** Payload includes sessionId (status_value in main.rs). */
 export function onSessionState(cb: (ev: StatusEventView) => void): Promise<UnlistenFn> {
   return listen<StatusEventView>("session-state", (e) => cb(e.payload));

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-NAMES = ['agentport-host', 'agentport-remote-bridge', 'agentport-mosh-attach', 'agentport-connector']
+NAMES = ['agentport-host', 'agentport-mcp', 'agentport-remote-bridge', 'agentport-mosh-attach', 'agentport-connector']
 # This is tauri-build's documented/implemented externalBin copy side effect.
 CARGO = '''#!/usr/bin/env python3
 import os,sys,shutil
@@ -22,7 +22,7 @@ if args[args.index('-p')+1]=='agentport':
 else:
  explicit='--target' in args
  output=root/'target'/('test-host/debug' if explicit else 'debug');output.mkdir(parents=True,exist_ok=True)
- for name in ['agentport-host','agentport-remote-bridge','agentport-mosh-attach','agentport-connector']:
+ for name in ['agentport-host','agentport-mcp','agentport-remote-bridge','agentport-mosh-attach','agentport-connector']:
   p=output/name
   # Reproduce Cargo Fresh trusting a top-level artifact overwritten by Tauri.
   if not explicit and os.environ.get('CARGO_FRESH') and p.exists():continue

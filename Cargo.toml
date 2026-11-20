@@ -6,6 +6,7 @@ members = [
     "crates/agentport-relay",
     "crates/agentport-host",
     "crates/agentport-cli",
+    "crates/agentport-mcp",
     "crates/agentport-service",
     "crates/agentport-remote-protocol",
     "crates/agentport-remote-bridge",

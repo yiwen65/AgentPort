@@ -136,7 +136,7 @@ elif name == "cargo" and args[0] == "build":
     target = args[args.index("--target") + 1] if "--target" in args else ""
     out = root / "target" / target / "release"
     out.mkdir(parents=True, exist_ok=True)
-    for binary in ("agentport-host", "agentport-remote-bridge", "agentport-mosh-attach", "agentport-connector"):
+    for binary in ("agentport-host", "agentport-mcp", "agentport-remote-bridge", "agentport-mosh-attach", "agentport-connector"):
         (out / binary).write_text("fake binary")
 elif name == "lipo":
     Path(args[args.index("-output") + 1]).write_text("fake universal")

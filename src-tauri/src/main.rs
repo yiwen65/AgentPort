@@ -43,6 +43,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 mod commit_ai;
+mod external_agents;
 mod markdown_images;
 mod git_commands;
 mod git_workspace_commands;
@@ -615,7 +616,7 @@ fn worktree_view(w: &Worktree) -> WorktreeView {
     }
 }
 
-fn collect_projects(db: &Db, _active: Option<&str>) -> Vec<ProjectView> {
+pub(crate) fn collect_projects(db: &Db, _active: Option<&str>) -> Vec<ProjectView> {
     let projections = db.list_session_projections(false).unwrap_or_default();
     let mut sessions_by_project: HashMap<String, Vec<SessionView>> = HashMap::new();
     for SessionProjection {
@@ -1766,7 +1767,7 @@ fn ensure_session_monitor(app: &AppHandle, state: &AppState, session: &Session) 
     });
 }
 
-fn ensure_live_session_monitors(app: &AppHandle, state: &AppState) {
+pub(crate) fn ensure_live_session_monitors(app: &AppHandle, state: &AppState) {
     if let Ok(sessions) = state.db.list_live_sessions() {
         for session in sessions {
             ensure_session_monitor(app, state, &session);
@@ -5058,6 +5059,9 @@ fn main() {
         .setup(move |app| {
             notifications::install(app.handle());
             start_notification_worker(app.handle().clone(), notification_rx);
+            // Sessions and pane requests written by the MCP server (another
+            // process) only become visible when this process notices them.
+            external_agents::spawn(app.handle().clone());
             relay::start_on_app_launch(app.handle());
             let update_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

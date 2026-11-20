@@ -3782,6 +3782,15 @@ impl Db {
         Ok(())
     }
 
+    /// SQLite's per-connection change counter. It increments when *another*
+    /// connection commits, which is exactly what a cheap "did some other
+    /// process write?" probe needs: no lock, no query, no fs polling of WAL
+    /// sidecars whose mtime is not a commit signal.
+    pub fn data_version(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row("PRAGMA data_version", [], |row| row.get(0))?)
+    }
+
     pub fn latest_status(&self, session_id: &str) -> Result<Option<StatusEvent>> {
         let conn = self.conn.lock().unwrap();
         match conn.query_row(

@@ -54,7 +54,7 @@ fi
   cargo build -p agentport --features tauri/custom-protocol)
 
 TARGET_TRIPLE="$(rustc -vV | awk '/^host: / { print $2 }')"
-for name in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+for name in agentport-host agentport-mcp agentport-remote-bridge agentport-mosh-attach agentport-connector; do
   if ! cmp -s "$ROOT/src-tauri/binaries/$name-$TARGET_TRIPLE" "$ROOT/target/debug/$name"; then
     echo "ERROR: GUI build changed staged sidecar $name; refusing to install a mixed bundle" >&2
     exit 2
@@ -79,7 +79,7 @@ install_binary() {
   rm -f "$temporary"
   return 1
 }
-for name in agentport agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+for name in agentport agentport-host agentport-mcp agentport-remote-bridge agentport-mosh-attach agentport-connector; do
   install_binary "$name"
 done
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $DEBUG_BUNDLE_ID" "$PLIST"

@@ -191,11 +191,11 @@ jobs:
           set -euo pipefail
           mkdir -p src-tauri/binaries
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            cargo build --release -p agentport-host -p agentport-remote-bridge \
+            cargo build --release -p agentport-host -p agentport-mcp -p agentport-remote-bridge \
               -p agentport-mosh-attach -p agentport-relay \
               --features agentport-relay/connector --target "$target"
           done
-          for binary in agentport-host agentport-remote-bridge agentport-mosh-attach agentport-connector; do
+          for binary in agentport-host agentport-mcp agentport-remote-bridge agentport-mosh-attach agentport-connector; do
             cp "target/aarch64-apple-darwin/release/$binary" \
               "src-tauri/binaries/$binary-aarch64-apple-darwin"
             cp "target/x86_64-apple-darwin/release/$binary" \

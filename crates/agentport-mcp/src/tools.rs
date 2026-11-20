@@ -1,0 +1,1063 @@
+//! Tool surface: JSON Schemas plus the dispatch that maps each tool onto
+//! `agentport-service`.
+//!
+//! The surface is deliberately narrow. Everything destructive (git writes,
+//! document writes, secret writes, worktree removal, archiving, settings) and
+//! everything that could type into a Session the user is driving stays out of
+//! v1: this is a delegation tool, not a remote control for the whole app.
+
+use agentport_core::models::AgentType;
+use agentport_remote_protocol::{
+    AgentProbeAllParams, ProjectAddParams, RemoteAgentType, SessionCreateParams, SessionIdParams,
+};
+use agentport_service::RemoteService;
+use serde_json::{json, Map, Value};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::ops::{
+    SessionOps, StatusMark, ToolFailure, TResult, DEFAULT_READY_MS, DEFAULT_WAIT_MS, MAX_WAIT_MS,
+};
+use crate::registry::{OwnedSession, Registry};
+use crate::text::{self, DEFAULT_READ_BYTES};
+use crate::ui;
+
+pub struct ToolDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub schema: fn() -> Value,
+}
+
+pub const TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "list_agents",
+        description: "List the CLI Agents AgentPort knows on this machine. Only Agents with \
+                      installed=true can be launched through create_session. Results come from \
+                      AgentPort's cached probe; pass probe=true to re-detect them (slower).",
+        schema: list_agents_schema,
+    },
+    ToolDef {
+        name: "resolve_project",
+        description: "Resolve an absolute directory to an AgentPort project, registering it when \
+                      it is not known yet. Use this before create_session when you only know a path.",
+        schema: resolve_project_schema,
+    },
+    ToolDef {
+        name: "list_sessions",
+        description: "List AgentPort Sessions with lifecycle, status evidence and host liveness. \
+                      Read-only; includes Sessions the user created.",
+        schema: list_sessions_schema,
+    },
+    ToolDef {
+        name: "session_status",
+        description: "Status of one Session plus the tail of its status history (state, source, \
+                      confidence, evidence).",
+        schema: session_status_schema,
+    },
+    ToolDef {
+        name: "create_session",
+        description: "Create a Session for the given Agent in a project and, optionally, send the \
+                      first prompt once the CLI is ready. Returns the Session id. Sessions are \
+                      owned by this MCP server: only they can be driven by the other tools.",
+        schema: create_session_schema,
+    },
+    ToolDef {
+        name: "send_prompt",
+        description: "Send one line of text (Enter appended) to a Session this MCP created. Escape \
+                      and control sequences are rejected; use cancel_turn to stop a running turn.",
+        schema: send_prompt_schema,
+    },
+    ToolDef {
+        name: "wait_for_task",
+        description: "Wait for the Session's current turn to settle. Returns idle | needs_input | \
+                      exited | timeout together with the source, confidence and evidence used, so \
+                      an uncertain verdict is never reported as success.",
+        schema: wait_for_task_schema,
+    },
+    ToolDef {
+        name: "read_output",
+        description: "Read the newest terminal output of a Session (ANSI stripped, bounded). \
+                      Works while the Session runs.",
+        schema: read_output_schema,
+    },
+    ToolDef {
+        name: "cancel_turn",
+        description: "Send Ctrl-C to the Session's Agent (keeps the Session alive). Use this to \
+                      stop a runaway turn.",
+        schema: cancel_turn_schema,
+    },
+    ToolDef {
+        name: "terminate_session",
+        description: "Stop the Session and clean up its whole process group. Irreversible: the \
+                      Agent process is gone and only native history remains.",
+        schema: terminate_session_schema,
+    },
+    ToolDef {
+        name: "open_pane",
+        description: "Ask the AgentPort desktop app to show this Session in the visible pane \
+                      layout. Fails when the app is not running.",
+        schema: open_pane_schema,
+    },
+];
+
+fn obj(properties: Value, required: Value) -> Value {
+    json!({ "type": "object", "properties": properties, "required": required,
+            "additionalProperties": false })
+}
+
+fn list_agents_schema() -> Value {
+    obj(
+        json!({
+            "probe": {
+                "type": "boolean",
+                "default": false,
+                "description": "Re-detect installed CLIs instead of using the cached snapshot"
+            }
+        }),
+        json!([]),
+    )
+}
+
+fn resolve_project_schema() -> Value {
+    obj(
+        json!({ "path": { "type": "string", "description": "Absolute directory path" } }),
+        json!(["path"]),
+    )
+}
+
+fn list_sessions_schema() -> Value {
+    obj(
+        json!({ "includeArchived": { "type": "boolean", "default": false } }),
+        json!([]),
+    )
+}
+
+fn session_status_schema() -> Value {
+    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+}
+
+fn create_session_schema() -> Value {
+    obj(
+        json!({
+            "agent": {
+                "type": "string",
+                "description": "Agent id from list_agents, e.g. claude, codex, pi, easy-pi, shell"
+            },
+            "projectPath": { "type": "string", "description": "Absolute project directory" },
+            "projectId": { "type": "string", "description": "Existing AgentPort project id" },
+            "title": { "type": "string" },
+            "prompt": {
+                "type": "string",
+                "description": "First task. Sent once the CLI reports a quiet terminal or idle status."
+            },
+            "permission": {
+                "type": "string",
+                "enum": ["native", "auto"],
+                "default": "native",
+                "description": "native keeps the CLI's own approval prompts (default). auto relaxes them."
+            },
+            "allowAutoApprove": {
+                "type": "boolean",
+                "default": false,
+                "description": "Required acknowledgement when permission is auto."
+            },
+            "worktreeId": { "type": "string" },
+            "promptTimeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 120000,
+                "default": 25000
+            }
+        }),
+        json!(["agent"]),
+    )
+}
+
+fn send_prompt_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "text": { "type": "string", "description": "Single prompt line; Enter is appended" }
+        }),
+        json!(["sessionId", "text"]),
+    )
+}
+
+fn wait_for_task_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "timeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": MAX_WAIT_MS,
+                "default": DEFAULT_WAIT_MS
+            },
+            "sinceSequence": {
+                "type": "integer",
+                "description": "Status sequence from your own send_prompt; only a newer transition settles"
+            }
+        }),
+        json!(["sessionId"]),
+    )
+}
+
+fn read_output_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "tailBytes": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": text::MAX_READ_BYTES,
+                "default": DEFAULT_READ_BYTES
+            }
+        }),
+        json!(["sessionId"]),
+    )
+}
+
+fn cancel_turn_schema() -> Value {
+    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+}
+
+fn terminate_session_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "graceMs": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 1500 }
+        }),
+        json!(["sessionId"]),
+    )
+}
+
+fn open_pane_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "focus": { "type": "boolean", "default": true }
+        }),
+        json!(["sessionId"]),
+    )
+}
+
+#[derive(Debug, Clone)]
+struct SettledTurn {
+    state: &'static str,
+    source: String,
+    confidence: String,
+    evidence: String,
+}
+
+/// Everything a tool call needs. One instance lives for the whole stdio
+/// session, so attachments and the ownership registry stay warm.
+pub struct Toolbox {
+    ops: SessionOps,
+    registry: Registry,
+    /// Status mark captured just before this server sent a prompt, per Session.
+    /// `wait_for_task` needs it to tell "finished my turn" apart from "was
+    /// already idle before I asked".
+    baselines: std::collections::HashMap<String, StatusMark>,
+    /// Turns this server already saw settle. A repeated wait must answer from
+    /// that fact instead of waiting again, or a caller that polls twice would
+    /// burn a full timeout on the second call.
+    settled: std::collections::HashMap<String, SettledTurn>,
+    root: PathBuf,
+    parent_session_id: Option<String>,
+    depth: u32,
+    max_depth: u32,
+    max_sessions: usize,
+    ready_timeout_ms: u64,
+}
+
+pub struct ToolboxConfig {
+    pub root: PathBuf,
+    pub parent_session_id: Option<String>,
+    pub max_depth: u32,
+    pub max_sessions: usize,
+}
+
+impl Toolbox {
+    pub fn new(service: Arc<dyn RemoteService>, config: ToolboxConfig) -> Toolbox {
+        let registry = Registry::load(&config.root);
+        // Depth is derived from the registry rather than injected through env:
+        // a child Agent's MCP looks up the Session that launched it.
+        let depth = config
+            .parent_session_id
+            .as_ref()
+            .and_then(|parent| registry.get(parent))
+            .map(|entry| entry.depth + 1)
+            .unwrap_or(0);
+        Toolbox {
+            ops: SessionOps::new(service),
+            registry,
+            baselines: std::collections::HashMap::new(),
+            settled: std::collections::HashMap::new(),
+            root: config.root,
+            parent_session_id: config.parent_session_id,
+            depth,
+            max_depth: config.max_depth,
+            max_sessions: config.max_sessions.max(1),
+            ready_timeout_ms: DEFAULT_READY_MS,
+        }
+    }
+
+    pub fn depth(&self) -> u32 {
+        self.depth
+    }
+
+    pub fn call(&mut self, name: &str, args: &Value) -> TResult<Value> {
+        let args = args
+            .as_object()
+            .cloned()
+            .ok_or_else(|| ToolFailure::new("invalid_arguments", "arguments must be an object"))?;
+        match name {
+            "list_agents" => self.list_agents(&args),
+            "resolve_project" => self.resolve_project(&args),
+            "list_sessions" => self.list_sessions(&args),
+            "session_status" => self.session_status(&args),
+            "create_session" => self.create_session(&args),
+            "send_prompt" => self.send_prompt(&args),
+            "wait_for_task" => self.wait_for_task(&args),
+            "read_output" => self.read_output(&args),
+            "cancel_turn" => self.cancel_turn(&args),
+            "terminate_session" => self.terminate_session(&args),
+            "open_pane" => self.open_pane(&args),
+            other => Err(ToolFailure::new(
+                "unknown_tool",
+                format!("unknown tool {other}"),
+            )),
+        }
+    }
+
+    // -- read-only ---------------------------------------------------------
+
+    fn list_agents(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        if args.get("probe").and_then(Value::as_bool).unwrap_or(false) {
+            let probed = self
+                .ops
+                .service()
+                .probe_all_agents(AgentProbeAllParams {
+                    preserve_selections: false,
+                })
+                .map_err(ToolFailure::from)?;
+            let entries: Vec<Value> = probed
+                .iter()
+                .map(|result| {
+                    json!({
+                        "agent": result.agent.clone(),
+                        "displayName": result.display_name.clone(),
+                        "installed": result.install.is_some(),
+                        "path": result.install.as_ref().map(|install| install.executable_path.clone()),
+                        "version": result.install.as_ref().map(|install| install.version_text.clone()),
+                        "exactResume": result.install.as_ref().map(|install| install.exact_resume),
+                        "approvalModel": result.install.as_ref().map(|install| install.approval_model.as_str()),
+                        "defaultTransport": result.install.as_ref().map(|install| install.default_transport.as_str()),
+                        "probeState": result.state.clone(),
+                        "unavailableReason": result.reason.clone(),
+                    })
+                })
+                .collect();
+            return Ok(json!({ "agents": entries, "probed": true }));
+        }
+        let agents = self
+            .ops
+            .service()
+            .supported_agents()
+            .map_err(ToolFailure::from)?;
+        let entries: Vec<Value> = agents
+            .iter()
+            .map(|agent| {
+                json!({
+                    "agent": agent.agent.clone(),
+                    "displayName": agent.display_name.clone(),
+                    "commandNames": agent.command_names.clone(),
+                    "installed": agent.install.is_some(),
+                    "path": agent.install.as_ref().map(|install| install.executable_path.clone()),
+                    "version": agent.install.as_ref().map(|install| install.version_text.clone()),
+                    "exactResume": agent.install.as_ref().map(|install| install.exact_resume),
+                    "approvalModel": agent.install.as_ref().map(|install| install.approval_model.as_str()),
+                    "defaultTransport": agent.install.as_ref().map(|install| install.default_transport.as_str()),
+                    "unavailableReason": if agent.install.is_some() {
+                        Value::Null
+                    } else {
+                        Value::String("not probed on this machine; run a probe in AgentPort settings".into())
+                    },
+                })
+            })
+            .collect();
+        Ok(json!({ "agents": entries }))
+    }
+
+    fn resolve_project(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let path = require_str(args, "path")?;
+        let normalized = agentport_core::paths::normalize_abs(&path)
+            .map_err(|error| ToolFailure::new("invalid_path", error.to_string()))?;
+        let projects = self.ops.service().list_projects().map_err(ToolFailure::from)?;
+        if let Some(existing) = projects
+            .iter()
+            .find(|project| project.root_path == normalized)
+        {
+            return Ok(json!({
+                "projectId": existing.id,
+                "name": existing.name,
+                "rootPath": existing.root_path,
+                "created": false,
+            }));
+        }
+        let added = self
+            .ops
+            .service()
+            .add_project(ProjectAddParams {
+                path: normalized,
+                name: None,
+            })
+            .map_err(ToolFailure::from)?;
+        Ok(json!({
+            "projectId": added.project.id,
+            "name": added.project.name,
+            "rootPath": added.project.root_path,
+            "created": !added.focused_existing,
+        }))
+    }
+
+    fn list_sessions(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let include_archived = args
+            .get("includeArchived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let sessions = self.ops.list_sessions(include_archived)?;
+        let known: std::collections::HashSet<String> =
+            sessions.iter().map(|session| session.id.clone()).collect();
+        self.registry.prune(&known);
+        let owned: Vec<Value> = sessions
+            .iter()
+            .map(|session| {
+                json!({
+                    "sessionId": session.id,
+                    "title": session.title,
+                    "projectId": session.project_id,
+                    "agent": session.adapter_type,
+                    "cwd": session.cwd,
+                    "lifecycle": session.lifecycle,
+                    "hostAlive": session.host_alive,
+                    "permissionMode": session.permission_mode,
+                    "status": session.latest_status.as_ref().map(|status| json!({
+                        "state": status.state,
+                        "source": status.source,
+                        "confidence": status.confidence,
+                        "occurredAt": status.occurred_at,
+                    })),
+                    "attention": session.latest_attention_kind,
+                    "ownedByMcp": self.registry.contains(&session.id),
+                })
+            })
+            .collect();
+        Ok(json!({ "sessions": owned, "mcpDepth": self.depth }))
+    }
+
+    fn session_status(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        let summary = self.ops.summary(&session_id)?;
+        let history = self
+            .ops
+            .service()
+            .session_status_history(SessionIdParams {
+                session_id: session_id.clone(),
+            })
+            .unwrap_or_default();
+        let recent: Vec<Value> = history
+            .iter()
+            .rev()
+            .take(5)
+            .map(|status| {
+                json!({
+                    "state": status.state,
+                    "source": status.source,
+                    "confidence": status.confidence,
+                    "sequence": status.sequence,
+                    "occurredAt": status.occurred_at,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "sessionId": summary.id,
+            "title": summary.title,
+            "agent": summary.adapter_type,
+            "cwd": summary.cwd,
+            "lifecycle": summary.lifecycle,
+            "hostAlive": summary.host_alive,
+            "permissionMode": summary.permission_mode,
+            "status": summary.latest_status.as_ref().map(|status| json!({
+                "state": status.state,
+                "source": status.source,
+                "confidence": status.confidence,
+                "occurredAt": status.occurred_at,
+            })),
+            "attention": summary.latest_attention_kind,
+            "history": recent,
+            "ownedByMcp": self.registry.contains(&session_id),
+        }))
+    }
+
+    // -- delegation --------------------------------------------------------
+
+    fn create_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        if self.depth >= self.max_depth {
+            return Err(ToolFailure::new(
+                "delegation_depth_exceeded",
+                format!(
+                    "delegation depth {} reached the limit of {}; finish this task yourself",
+                    self.depth, self.max_depth
+                ),
+            ));
+        }
+        let live_owned = self.live_owned_count()?;
+        if live_owned >= self.max_sessions {
+            return Err(ToolFailure::new(
+                "too_many_sessions",
+                format!(
+                    "this MCP already drives {live_owned} live Sessions (limit {}); terminate one first",
+                    self.max_sessions
+                ),
+            ));
+        }
+
+        let agent_name = require_str(args, "agent")?;
+        let agent: AgentType = agent_name.parse().map_err(|_| {
+            ToolFailure::new(
+                "unknown_agent",
+                format!("unknown agent {agent_name}; call list_agents for valid ids"),
+            )
+        })?;
+
+        let permission = optional_str(args, "permission").unwrap_or_else(|| "native".into());
+        if permission == "bypass" {
+            return Err(ToolFailure::new(
+                "permission_not_allowed",
+                "permission=bypass is never allowed over MCP; use native or auto",
+            ));
+        }
+        if permission != "native" && permission != "auto" {
+            return Err(ToolFailure::new(
+                "invalid_permission",
+                "permission must be native or auto",
+            ));
+        }
+        let allow_auto = args
+            .get("allowAutoApprove")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if permission == "auto" && !allow_auto {
+            return Err(ToolFailure::new(
+                "risk_acknowledgement_required",
+                "permission=auto relaxes the CLI's own approvals; pass allowAutoApprove=true to accept it",
+            ));
+        }
+
+        let project_id = match (
+            optional_str(args, "projectId"),
+            optional_str(args, "projectPath"),
+        ) {
+            (Some(id), _) => id,
+            (None, Some(path)) => {
+                let resolved = self.resolve_project(&{
+                    let mut map = Map::new();
+                    map.insert("path".into(), Value::String(path));
+                    map
+                })?;
+                resolved["projectId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            }
+            (None, None) => {
+                return Err(ToolFailure::new(
+                    "missing_project",
+                    "pass projectId or projectPath",
+                ))
+            }
+        };
+
+        let title = optional_str(args, "title");
+        let prompt = optional_str(args, "prompt")
+            .map(|text| text::sanitize_prompt(&text))
+            .transpose()
+            .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+        let prompt_timeout = optional_u64(args, "promptTimeoutMs")
+            .unwrap_or(self.ready_timeout_ms)
+            .clamp(1_000, 120_000);
+
+        let launch = self
+            .ops
+            .service()
+            .create_session(SessionCreateParams {
+                project_id,
+                agent: remote_agent(agent),
+                title: title.clone(),
+                preset_id: None,
+                worktree_id: optional_str(args, "worktreeId"),
+                permission: permission.clone(),
+                transport: None,
+                risk_ack: allow_auto,
+                cols: None,
+                rows: None,
+                extra_args: None,
+            })
+            .map_err(ToolFailure::from)?;
+
+        let session_id = launch.session_id.clone();
+        if let Err(error) = self.registry.insert(OwnedSession {
+            session_id: session_id.clone(),
+            created_at: now_rfc3339(),
+            depth: self.depth,
+            parent_session_id: self.parent_session_id.clone(),
+            agent: Some(agent.as_str().to_string()),
+            title: title.clone(),
+        }) {
+            // The Session exists and is running: never leave an un-addressable
+            // process behind, and never hand back an id the caller cannot use.
+            let _ = self.ops.stop(&session_id, 1_500);
+            return Err(ToolFailure::new(
+                "registry_write_failed",
+                format!("could not record ownership ({error}); the Session was stopped"),
+            ));
+        }
+
+        let notices: Vec<Value> = launch
+            .notices
+            .iter()
+            .map(|notice| json!({ "code": notice.code, "message": notice.message }))
+            .collect();
+
+        let mut result = json!({
+            "sessionId": session_id,
+            "agent": agent.as_str(),
+            "title": title,
+            "permissionMode": permission,
+            "resumePrecision": launch.resume_precision,
+            "notices": notices,
+            "ready": false,
+            "promptSent": false,
+        });
+
+        if let Some(prompt) = prompt {
+            let ready = self.ops.wait_ready(&session_id, prompt_timeout)?;
+            result["ready"] = json!(ready.ready);
+            result["readyEvidence"] = json!(ready.reason);
+            result["outputTail"] = json!(ready.tail);
+            if ready.ready {
+                // Baseline before the prompt so `wait_for_task` can require a
+                // *newer* status transition.
+                let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
+                match self.ops.send_bytes(&session_id, &prompt_payload(&prompt)) {
+                    Ok(bytes) => {
+                        if let Some(baseline) = baseline {
+                            self.baselines.insert(session_id.clone(), baseline);
+                        }
+                        self.settled.remove(&session_id);
+                        result["promptSent"] = json!(true);
+                        result["promptBytes"] = json!(bytes);
+                    }
+                    Err(failure) => {
+                        result["promptSent"] = json!(false);
+                        result["promptError"] = json!(failure.message);
+                    }
+                }
+            } else {
+                result["promptSent"] = json!(false);
+                result["hint"] = json!(
+                    "the CLI never reached a quiet terminal; inspect outputTail and send the \
+                     prompt yourself with send_prompt"
+                );
+            }
+        }
+
+        // Report the title the Session actually got (AgentPort may suffix it).
+        if let Ok(summary) = self.ops.summary(&session_id) {
+            result["title"] = json!(summary.title);
+            result["cwd"] = json!(summary.cwd);
+        }
+
+        Ok(result)
+    }
+
+    fn send_prompt(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let raw = require_str(args, "text")?;
+        let prompt = text::sanitize_prompt(&raw)
+            .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+        let summary = self.ops.summary(&session_id)?;
+        if !matches!(summary.lifecycle.as_str(), "running" | "creating") {
+            return Err(ToolFailure::new(
+                "session_not_running",
+                format!(
+                    "Session is {}; use terminate_session or create a new one",
+                    summary.lifecycle
+                ),
+            ));
+        }
+        let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
+        let bytes = self.ops.send_bytes(&session_id, &prompt_payload(&prompt))?;
+        if let Some(baseline) = baseline {
+            self.baselines.insert(session_id.clone(), baseline);
+        }
+        self.settled.remove(&session_id);
+        Ok(json!({
+            "sessionId": session_id,
+            "sent": true,
+            "bytes": bytes,
+            "statusSequence": baseline.map(|mark| mark.sequence),
+        }))
+    }
+
+    fn wait_for_task(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let timeout = optional_u64(args, "timeoutMs").unwrap_or(DEFAULT_WAIT_MS);
+        let since = match optional_u64(args, "sinceSequence") {
+            Some(sequence) => Some(StatusMark {
+                run_ordinal: i64::MIN,
+                sequence: sequence as i64,
+            }),
+            None => self.baselines.get(&session_id).copied(),
+        };
+        if since.is_none() {
+            if let Some(previous) = self.settled.get(&session_id) {
+                return Ok(json!({
+                    "sessionId": session_id,
+                    "state": previous.state,
+                    "source": previous.source,
+                    "confidence": previous.confidence,
+                    "evidence": previous.evidence,
+                    "waitedMs": 0,
+                    "outputTail": "",
+                    "outputIncomplete": false,
+                    "alreadySettled": true,
+                }));
+            }
+        }
+        let outcome = self.ops.wait_for_task(&session_id, timeout, since)?;
+        if outcome.state != "timeout" {
+            // The turn is over; a second wait answers from this record.
+            self.baselines.remove(&session_id);
+            self.settled.insert(
+                session_id.clone(),
+                SettledTurn {
+                    state: outcome.state,
+                    source: outcome.source.clone(),
+                    confidence: outcome.confidence.clone(),
+                    evidence: outcome.evidence.clone(),
+                },
+            );
+        }
+        Ok(json!({
+            "sessionId": session_id,
+            "state": outcome.state,
+            "source": outcome.source,
+            "confidence": outcome.confidence,
+            "evidence": outcome.evidence,
+            "waitedMs": outcome.waited_ms,
+            "outputTail": outcome.tail,
+            "outputIncomplete": outcome.incomplete,
+        }))
+    }
+
+    fn read_output(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let tail_bytes =
+            optional_u64(args, "tailBytes").unwrap_or(DEFAULT_READ_BYTES as u64) as usize;
+        let outcome = self.ops.read_output(&session_id, tail_bytes)?;
+        let mut value = json!({
+            "sessionId": session_id,
+            "text": outcome.text,
+            "truncated": outcome.truncated,
+            "incomplete": outcome.incomplete,
+            "bytes": outcome.bytes,
+        });
+        if outcome.ended {
+            value["ended"] = json!(true);
+            if outcome.text.trim().is_empty() {
+                value["hint"] = json!(
+                    "this Session has ended and its Host tail is gone; read the Agent's native \
+                     history from the AgentPort app instead"
+                );
+            }
+        }
+        Ok(value)
+    }
+
+    fn cancel_turn(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        if self.ops.is_terminal(&session_id)? {
+            return Err(ToolFailure::new(
+                "session_not_running",
+                "this Session has already ended; there is no turn to cancel",
+            ));
+        }
+        let accepted = self.ops.interrupt(&session_id)?;
+        Ok(json!({ "sessionId": session_id, "accepted": accepted, "sessionAlive": true }))
+    }
+
+    fn terminate_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let grace = optional_u64(args, "graceMs").unwrap_or(1_500);
+        let group_cleaned = self.ops.stop(&session_id, grace)?;
+        self.baselines.remove(&session_id);
+        self.settled.remove(&session_id);
+        // Ownership is kept: the Session row still exists (terminated, not
+        // deleted), and `list_sessions` prunes rows whose Session is gone, so
+        // an agent can still ask what happened to what it started.
+        Ok(json!({
+            "sessionId": session_id,
+            "stopped": true,
+            "groupCleaned": group_cleaned,
+        }))
+    }
+
+    fn open_pane(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let focus = args.get("focus").and_then(Value::as_bool).unwrap_or(true);
+        let command_id = ui::enqueue(&self.root, "open_pane", &session_id, focus, &now_rfc3339())
+            .map_err(|error| {
+                ToolFailure::new("ui_queue_failed", format!("could not queue the pane: {error}"))
+            })?;
+        Ok(json!({
+            "sessionId": session_id,
+            "queued": true,
+            "commandId": command_id,
+            "note": "the desktop app applies this on its next queue poll",
+        }))
+    }
+
+    // -- helpers -----------------------------------------------------------
+
+    fn require_owned(&self, session_id: &str) -> TResult<()> {
+        if self.registry.contains(session_id) {
+            return Ok(());
+        }
+        Err(ToolFailure::new(
+            "session_not_owned",
+            format!(
+                "Session {session_id} was not created by this MCP server. Sessions the user opened \
+                 are read-only here; create your own with create_session"
+            ),
+        ))
+    }
+
+    fn live_owned_count(&mut self) -> TResult<usize> {
+        let sessions = self.ops.list_sessions(false)?;
+        Ok(sessions
+            .iter()
+            .filter(|session| {
+                self.registry.contains(&session.id)
+                    && matches!(session.lifecycle.as_str(), "running" | "creating")
+            })
+            .count())
+    }
+}
+
+fn prompt_payload(prompt: &str) -> Vec<u8> {
+    let mut bytes = prompt.as_bytes().to_vec();
+    // A TUI submit is Enter (CR), not LF: several CLIs insert a newline instead.
+    bytes.push(b'\r');
+    bytes
+}
+
+fn remote_agent(agent: AgentType) -> RemoteAgentType {
+    match agent {
+        AgentType::Claude => RemoteAgentType::Claude,
+        AgentType::Codex => RemoteAgentType::Codex,
+        AgentType::Kimi => RemoteAgentType::Kimi,
+        AgentType::Qoder => RemoteAgentType::Qoder,
+        AgentType::Pi => RemoteAgentType::Pi,
+        AgentType::Omp => RemoteAgentType::Omp,
+        AgentType::Opencode => RemoteAgentType::Opencode,
+        AgentType::Amp => RemoteAgentType::Amp,
+        AgentType::Gemini => RemoteAgentType::Gemini,
+        AgentType::Cline => RemoteAgentType::Cline,
+        AgentType::KiroCli => RemoteAgentType::KiroCli,
+        AgentType::CursorAgent => RemoteAgentType::CursorAgent,
+        AgentType::EasyPi => RemoteAgentType::EasyPi,
+        AgentType::GrokBuild => RemoteAgentType::GrokBuild,
+        AgentType::Shell => RemoteAgentType::Shell,
+    }
+}
+
+/// RFC3339 with second precision: enough for an audit line, no chrono dep.
+pub fn now_rfc3339() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs() as i64;
+    format_rfc3339(secs)
+}
+
+fn format_rfc3339(unix_seconds: i64) -> String {
+    let days = unix_seconds.div_euclid(86_400);
+    let seconds_of_day = unix_seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
+    )
+}
+
+/// Howard Hinnant's days-to-civil conversion.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn require_str(args: &Map<String, Value>, key: &str) -> TResult<String> {
+    match args.get(key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value.trim().to_string()),
+        Some(Value::String(_)) => Err(ToolFailure::new(
+            "invalid_arguments",
+            format!("{key} must not be empty"),
+        )),
+        Some(_) => Err(ToolFailure::new(
+            "invalid_arguments",
+            format!("{key} must be a string"),
+        )),
+        None => Err(ToolFailure::new(
+            "invalid_arguments",
+            format!("{key} is required"),
+        )),
+    }
+}
+
+fn optional_str(args: &Map<String, Value>, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn optional_u64(args: &Map<String, Value>, key: &str) -> Option<u64> {
+    args.get(key).and_then(Value::as_u64)
+}
+
+#[cfg(test)]
+pub mod test_support {
+    use super::*;
+    use agentport_remote_protocol::{
+        SecretAddParams, SessionAttachParams, SessionControlParams, SessionDetachParams,
+        SessionInputParams, SessionPollParams, SessionStopParams, SessionStructuredPromptParams,
+    };
+    use agentport_service::{
+        BootSnapshot, Result as ServiceResult, SecretAddResult, ServiceError, SessionAttachResult,
+        SessionControlResult, SessionInputResult, SessionPollResult, SessionStopResult,
+        SessionSubscription, SessionSummary,
+    };
+
+    /// Minimal service: every protocol path answers "not supported" so dispatch
+    /// tests can assert framing and guardrails without a database.
+    pub struct StubService;
+
+    impl RemoteService for StubService {
+        fn service_snapshot(&self) -> agentport_service::ServiceSnapshot {
+            Default::default()
+        }
+        fn boot(&self) -> ServiceResult<BootSnapshot> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn list_sessions(&self, _include_archived: bool) -> ServiceResult<Vec<SessionSummary>> {
+            Ok(Vec::new())
+        }
+        fn attach_session(&self, _: SessionAttachParams) -> ServiceResult<SessionAttachResult> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn subscribe_session(&self, _: &str) -> ServiceResult<SessionSubscription> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn input_session(&self, _: SessionInputParams) -> ServiceResult<SessionInputResult> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn structured_prompt(&self, _: SessionStructuredPromptParams) -> ServiceResult<()> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn abort_structured_turn(&self, _: SessionDetachParams) -> ServiceResult<()> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn control_session(&self, _: SessionControlParams) -> ServiceResult<SessionControlResult> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn poll_session(&self, _: SessionPollParams) -> ServiceResult<SessionPollResult> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn detach_session(&self, _: SessionDetachParams) -> ServiceResult<()> {
+            Ok(())
+        }
+        fn stop_session(&self, _: SessionStopParams) -> ServiceResult<SessionStopResult> {
+            Err(ServiceError::InvalidRequest)
+        }
+        fn add_secret(&self, _: SecretAddParams) -> ServiceResult<SecretAddResult> {
+            Err(ServiceError::InvalidRequest)
+        }
+    }
+
+    pub fn toolbox() -> Toolbox {
+        let root = std::env::temp_dir().join(format!("agentport-mcp-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        Toolbox::new(
+            Arc::new(StubService),
+            ToolboxConfig {
+                root,
+                parent_session_id: None,
+                max_depth: 2,
+                max_sessions: 2,
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_tool_has_a_valid_object_schema() {
+        let mut names = std::collections::HashSet::new();
+        for tool in TOOLS {
+            assert!(names.insert(tool.name), "duplicate tool {}", tool.name);
+            let schema = (tool.schema)();
+            assert_eq!(schema["type"], "object", "{}", tool.name);
+            assert!(schema["properties"].is_object(), "{}", tool.name);
+            assert!(schema["required"].is_array(), "{}", tool.name);
+        }
+    }
+
+    #[test]
+    fn prompt_payload_submits_with_carriage_return() {
+        assert_eq!(prompt_payload("hi there"), b"hi there\r".to_vec());
+    }
+
+    #[test]
+    fn agent_names_map_to_remote_variants() {
+        assert_eq!(remote_agent(AgentType::EasyPi), RemoteAgentType::EasyPi);
+        assert_eq!(remote_agent(AgentType::Shell), RemoteAgentType::Shell);
+    }
+
+    #[test]
+    fn rfc3339_matches_known_epochs() {
+        assert_eq!(format_rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
+    }
+}

@@ -22,6 +22,7 @@ vi.mock("./api", () => ({
   onGitStateInvalidated: vi.fn().mockResolvedValue(vi.fn()),
   onNotificationActivated: vi.fn().mockResolvedValue(vi.fn()),
   onNativeCleanupWarning: mocks.onNativeCleanupWarning,
+  onMcpUiCommand: vi.fn().mockResolvedValue(vi.fn()),
   onProjectsChanged: vi.fn().mockResolvedValue(vi.fn()),
   onRepositoryStateChanged: vi.fn().mockResolvedValue(vi.fn()),
   onSessionAgentId: vi.fn().mockResolvedValue(vi.fn()),

@@ -12,6 +12,7 @@ import {
   onProjectsChanged,
   onRepositoryStateChanged,
   onGitStateInvalidated,
+  onMcpUiCommand,
   onSessionAgentId,
   onSessionExit,
   onSessionState,
@@ -20,6 +21,7 @@ import {
   applyThemeSettings,
   isMac,
   openNewSessionDialog,
+  openSessionForExternalAgent,
   openSplitAgentPicker,
   refreshProjectsSoon,
   restartSessionFlow,
@@ -195,6 +197,17 @@ function useBoot() {
             applyWhenBooted(() => {
               if (!shouldApplyLocalBackendEvent(getState())) return;
               handleGitStateInvalidation(event);
+            });
+          }),
+          // The MCP server runs out of process and can only queue view intents.
+          onMcpUiCommand((command) => {
+            applyWhenBooted(() => {
+              if (!shouldApplyLocalBackendEvent(getState())) return;
+              if (command.kind !== "open_pane" || !command.sessionId) return;
+              openSessionForExternalAgent(
+                command.sessionId,
+                command.focus !== false,
+              );
             });
           }),
           onSessionState((ev) => {

@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "agentport"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "agentport-core",
  "agentport-relay",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-cli"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "agentport-core",
  "chrono",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "agentport-host"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "agentport-core",
  "chrono",
@@ -171,8 +171,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentport-mcp"
+version = "0.1.10"
+dependencies = [
+ "agentport-core",
+ "agentport-remote-protocol",
+ "agentport-service",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "strip-ansi-escapes",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "agentport-mosh-attach"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "agentport-remote-protocol",
  "agentport-service",

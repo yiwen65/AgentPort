@@ -761,6 +761,50 @@ export function splitSessionIntoPane(
   return true;
 }
 
+/**
+ * Show a Session that an external agent (the AgentPort MCP server) just opened.
+ *
+ * A split workspace gains a pane next to the focused one instead of being
+ * replaced by a singleton view: the user may be watching work in the other
+ * panes, and an Agent asking for a window must not take that away. Any other
+ * case is an ordinary selection.
+ */
+export function openSessionForExternalAgent(
+  sessionId: string,
+  focus = true,
+): boolean {
+  const state = getState();
+  if (!findSession(state.projects, sessionId)) {
+    // The Session was created microseconds ago by another process; the sidebar
+    // snapshot can still be one poll behind. Retry after a refresh rather than
+    // silently dropping the request.
+    void refreshProjects().then(() => {
+      if (findSession(getState().projects, sessionId)) {
+        openSessionForExternalAgent(sessionId, focus);
+      }
+    });
+    return false;
+  }
+  const key = activeKeyFor(sessionId);
+  const layout = visiblePaneLayout(state.terminalLayout, activeSessionKey(state));
+  const focused = layout.focusedSessionId;
+  if (
+    focused &&
+    focused !== key &&
+    paneLayoutHasSplit(layout) &&
+    !layoutContains(layout, key) &&
+    splitSessionIntoPane(focused, key, "right")
+  ) {
+    if (!focus) {
+      const previous = plainActiveId(focused);
+      if (previous) selectSession(previous);
+    }
+    return true;
+  }
+  selectSession(sessionId);
+  return true;
+}
+
 export function removeSessionPane(key: string): boolean {
   const state = getState();
   const displayLayout = visiblePaneLayout(

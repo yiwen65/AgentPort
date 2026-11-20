@@ -145,7 +145,7 @@ Windows、iOS、Android 不在支持范围内（移动端只通过手机配对 /
 
 ## 文档
 
-[用户指南](docs/user-guide.md) · [安装](docs/install.md) · [故障排查](docs/troubleshooting.md) · [安全说明](docs/security.md) · [已知限制](docs/known-limitations.md) · [应用内更新](docs/updater.md) · [验收报告](docs/acceptance-report.md)
+[用户指南](docs/user-guide.md) · [安装](docs/install.md) · [Sessions MCP](docs/mcp.md) · [故障排查](docs/troubleshooting.md) · [安全说明](docs/security.md) · [已知限制](docs/known-limitations.md) · [应用内更新](docs/updater.md) · [验收报告](docs/acceptance-report.md)
 
 <details>
 <summary>开发与源码</summary>
@@ -169,6 +169,8 @@ bash scripts/build-linux.sh ubuntu2204         # Ubuntu .deb（Docker）
 ```
 
 无头客户端 `agentport-cli` 覆盖界面的全部核心能力（探测、建会话、输入输出、Worktree、Secret、搜索、时间线、导出诊断包），E2E 与验收脚本都基于它，命令一览见[用户指南附录](docs/user-guide.md)。
+
+`agentport-mcp` 以 stdio MCP 暴露同一层能力，让外部 Agent 在 AgentPort 里创建并委派 Session，见 [Sessions MCP](docs/mcp.md)。
 
 </details>
 
