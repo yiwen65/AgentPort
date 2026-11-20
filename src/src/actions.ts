@@ -842,10 +842,23 @@ export function splitSessionForExternalAgent(
   }
   // `focus: false` must keep the pane the user was in, which is not
   // necessarily the split target.
-  const previous = plainActiveId(layout.focusedSessionId ?? activeSessionKey(state));
-  if (!splitSessionIntoPane(targetKey, key, direction)) {
+  // The requested axis may not fit (a 575px pane cannot halve into two 320px
+  // panes). Try the other axis before giving up: "give it a pane" is the intent,
+  // and a downward pane usually fits where a sideways one does not.
+  const other: PaneSplitDirection = direction === "right" ? "down" : "right";
+  const chosen = canSplitSessionPane(targetKey, direction)
+    ? direction
+    : canSplitSessionPane(targetKey, other)
+      ? other
+      : null;
+  if (!chosen || !splitSessionIntoPane(targetKey, key, chosen)) {
+    // Never collapse a multi-pane workspace just because one more pane does not
+    // fit: the user may be watching several Agents. The Session still appears in
+    // the sidebar, and the caller is told the pane was not opened.
+    if (paneLayoutHasSplit(layout)) return false;
     return openSessionForExternalAgent(sessionId, focus);
   }
+  const previous = plainActiveId(layout.focusedSessionId ?? activeSessionKey(state));
   if (!focus && previous) selectSession(previous);
   return true;
 }
