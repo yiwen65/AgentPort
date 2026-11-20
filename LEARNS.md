@@ -1053,3 +1053,12 @@
 - Correct approach: Move focus out of the input using a known safe visible control (here, re-validating the unchanged pairing code), then activate authorization. Inspect keyboard geometry only if the keyboard exists; validate the Connector approval and actual terminal result afterward.
 - Prevention: Check coverage, not AX hittability alone, for native WebView form actions. Do not repeat an apparent network operation until its actual UI/backend outcome is known.
 - Verified by: With no product-code change, public pairing then created one approved device/channel; native terminal input crossed the public WSS route and the independent Linux Host read confirmed NATIVE_PUBLIC_INPUT_OK.
+
+## `Sessions MCP` — 外部进程写库不等于界面可见，attachment EOF 也不等于 Agent 退出
+
+- Wrong approach: 把 `agentport-host` 的 attachment EOF（`SessionPollResult.closed`）当成"会话已结束"，用自己设的短静默窗口（~0.9 s）判定"任务完成"，并假设外部进程写库后侧栏会自己刷新。
+- Why it failed: Host 会驱逐不读取的客户端（队列滞回 20 s），而 MCP 只在工具调用期间 drain，所以一个跑 30 s 的任务在下一次 `wait_for_task` 会被报成 `exited/high`（实际 `working/hostAlive=true`）；Host 的 PTY 静默→idle 阈值是 3 s，900 ms 窗口会把还在跑的命令判成 `idle`；桌面端只有本进程的 `projects-changed`/`session-state` 事件，本机设备没有任何轮询（`Sidebar` 的 10 s 轮询只刷非活跃设备），所以外部写入的 Session 在侧栏里根本不出现。
+- Recognition signal: 同一进程里 `session_status` 显示 `working` 而 `wait_for_task` 返回 `exited/high`；等待耗时恰好等于自定义静默窗口；`agentport-cli` 建的会话在 GUI 里要等到用户点一下才出现。
+- Correct approach: 完成判定以 service 的 `SessionSummary.latest_status`（自带活体握手缓存）为准，只承认**比调用方 prompt 基线更新**的状态迁移，并要求 `needs_input` 一等返回；PTY 静默只在"从未见过 working"时兜底且标 `confidence: low`；EOF 只当作"重连"信号，`detach` 后继续。界面侧由 App 内观察者用 `PRAGMA data_version`（另一连接提交即变化，无锁）触发一次 `projects-changed` 并先 `ensure_live_session_monitors` 再广播。
+- Prevention: 读文本不要用 `replay_tail_bytes` 落在 1..=65536 —— service 会判定为 "small seed" 并改走 4 MiB + 屏幕模拟的渲染器引导路径；非渲染读取用 >64 KiB 的普通重放再自行裁剪。多进程共享的归属/状态文件必须"加锁 + 读-改-写合并"，否则第二个 MCP 进程会把第一个的条目整文件覆盖；判 `exited` 之前永远先看生命周期与 `hostAlive`。
+- Verified by: 独立评审复现了三条缺陷（EOF 误报 exited、0.96 s 误判 idle、重复 wait 必超时）；修复后 `scripts/test-agentport-mcp.py` 端到端断言"sleep 4 的命令不会在 3.5 s 前被判定完成且输出里有 END 标记"、重复 wait 0.0 s 返回、terminate 后报 `exited`/`ended`；真实调试 App 中由 MCP 创建的会话自动出现在侧栏并自动打开窗格，随后清理干净。
