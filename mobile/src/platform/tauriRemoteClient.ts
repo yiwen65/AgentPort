@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { diagTrace } from "./diag";
 import type {
   ConnectionState,
   HostProfileSummary,
@@ -49,7 +50,7 @@ export class TauriRemoteClient implements RemoteClient {
     if (import.meta.env?.VITE_SCROLL_DIAGNOSTICS !== "1") return Promise.resolve(() => undefined);
     this.outputTraceListener ??= listen<{ stage: string; offset: number; atMs: number }>(
       "agentport-mobile://output-trace",
-      ({ payload }) => { void invoke("mobile_diag_log", { line: `output_trace ${JSON.stringify(payload)}` }).catch(() => undefined); },
+      ({ payload }) => { diagTrace("output_trace", payload); },
     );
     return this.outputTraceListener;
   }

@@ -39,13 +39,8 @@ fn mobile_scaffold_status() -> ScaffoldStatus {
 /// stream event actually changes, so this stays quiet in steady state. The file
 /// is capped and rotated so a long-lived session cannot grow it without bound.
 #[tauri::command]
-fn mobile_diag_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
+fn write_diag_lines(app: &tauri::AppHandle, lines: impl IntoIterator<Item = String>) -> Result<(), String> {
     const MAX_BYTES: u64 = 512 * 1024;
-    let cleaned: String = line
-        .replace(['\n', '\r'], " ")
-        .chars()
-        .take(600)
-        .collect();
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("diag.log");
@@ -62,7 +57,21 @@ fn mobile_diag_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
         .open(&path)
         .map_err(|e| e.to_string())?;
     use std::io::Write;
-    writeln!(file, "{stamp} {cleaned}").map_err(|e| e.to_string())
+    for line in lines {
+        let cleaned: String = line.replace(['\n', '\r'], " ").chars().take(600).collect();
+        writeln!(file, "{stamp} {cleaned}").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn mobile_diag_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    write_diag_lines(&app, [line])
+}
+
+#[tauri::command]
+fn mobile_diag_log_batch(app: tauri::AppHandle, lines: Vec<String>) -> Result<(), String> {
+    write_diag_lines(&app, lines.into_iter().take(128))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -100,6 +109,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             mobile_scaffold_status,
             mobile_diag_log,
+            mobile_diag_log_batch,
             markdown_images::markdown_image_fetch,
             markdown_images::markdown_image_validate,
             file_download::mobile_file_download_start,

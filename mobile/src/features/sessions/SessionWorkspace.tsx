@@ -16,7 +16,7 @@ import {
 import { useMobileTerminalAppearance } from "../../terminal/terminalAppearance";
 import { decodeBase64Bytes, encodeBase64Utf8, outputBase64Of, sessionBatchId, sessionIdOf } from "./sessionProtocol";
 import { captureFirstSubmittedInput, createFirstInputCapture } from "./firstInput";
-import { diag } from "../../platform/diag";
+import { diag, diagTrace } from "../../platform/diag";
 import { createScrollDiagnostics, SCROLL_DIAGNOSTICS_ENABLED, type ScrollDiagnostics } from "../../terminal/scrollDiagnostics";
 import type { OpenSession, RunCursor, SessionAttachResult, SessionEventPayload, SessionStatus, TerminalGeometry } from "./types";
 
@@ -243,7 +243,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
     outputWriteInFlight.current = true;
     handle.write(mergeChunks(chunks, totalBytes), () => {
       if (SCROLL_DIAGNOSTICS_ENABLED && startOffset !== undefined) {
-        diag("output_trace", { stage: "js_parsed", offset: startOffset, bytes: totalBytes });
+        diagTrace("output_trace", { stage: "js_parsed", offset: startOffset, bytes: totalBytes });
       }
       outputWriteInFlight.current = false;
       if (pendingOutputChunks.current.length > 0) {
@@ -442,7 +442,7 @@ export function SessionWorkspace({ open, client, active = true, onSessionChanged
         const endOffset = event.cursor && typeof event.cursor === "object" && "offset" in event.cursor
           ? Number((event.cursor as { offset?: unknown }).offset) : -1;
         const offset = Number.isFinite(endOffset) ? endOffset - decoded.byteLength : -1;
-        diag("output_trace", { stage: "js_callback", offset, bytes: decoded.byteLength });
+        diagTrace("output_trace", { stage: "js_callback", offset, bytes: decoded.byteLength });
       }
       // xterm already owns the bounded scrollback. Coalesce bursts to one
       // renderer write per frame so mobile touch scrolling is not competing
