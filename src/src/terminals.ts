@@ -413,6 +413,11 @@ function concatByteChunks(chunks: Uint8Array[], byteLength: number): Uint8Array 
   return combined;
 }
 
+/** Background panes coalesce parser deliveries; only the focused pane stays live. */
+const BACKGROUND_RENDER_INTERVAL_MS = 250;
+const UNFOCUSED_WINDOW_RENDER_INTERVAL_MS = 1_000;
+const MAX_BACKGROUND_RENDER_BYTES = 1024 * 1024;
+
 /**
  * Owns xterm write ordering and parser-boundary callbacks for one Session.
  * A named drain is coalesced while pending and is automatically fenced when
@@ -437,6 +442,12 @@ class TerminalWriteCoordinator {
   private processingOutput = false;
   private freezeBuffer: Uint8Array[] | null = null;
   private freezeBytes = 0;
+  private renderForeground = true;
+  private renderIntervalMs = 0;
+  private renderTimer: number | null = null;
+  private renderQueue: Uint8Array[] = [];
+  private renderQueueBytes = 0;
+  private flushingRenderQueue = false;
 
   constructor(
     private readonly term: Terminal,
@@ -446,6 +457,8 @@ class TerminalWriteCoordinator {
   ) {}
 
   write(data: Uint8Array | string, callback?: () => void): number {
+    // Local writes and synchronized replays must not overtake queued PTY output.
+    this.flushRenderQueue();
     const sequence = ++this.writeSequence;
     if (typeof data === "string" ? data.length > 0 : data.byteLength > 0) {
       this.onMutation();
@@ -680,7 +693,7 @@ class TerminalWriteCoordinator {
     if (data.length === 0) return;
     this.onMutation();
     if (this.outputBatch === null) {
-      this.outputSink(data);
+      this.deliverOutput(data);
       return;
     }
     this.outputBatch.push(data);
@@ -707,9 +720,9 @@ class TerminalWriteCoordinator {
     this.flushingOutputBatch = true;
     try {
       if (batch.length > MAX_SYNCHRONIZED_WRITES_PER_OUTPUT) {
-        this.outputSink(concatByteChunks(batch, this.outputBatchBytes));
+        this.deliverOutput(concatByteChunks(batch, this.outputBatchBytes));
       } else {
-        for (const chunk of batch) this.outputSink(chunk);
+        for (const chunk of batch) this.deliverOutput(chunk);
       }
     } finally {
       this.flushingOutputBatch = previousFlush;
@@ -718,10 +731,75 @@ class TerminalWriteCoordinator {
     }
   }
 
+  /**
+   * Focused panes parse every output batch; background panes accumulate and
+   * deliver them at a bounded frame rate. A focus change flushes immediately,
+   * so the newly focused pane never shows stale output.
+   */
+  setRenderMode(foreground: boolean, intervalMs = 0): void {
+    if (this.renderTimer !== null) {
+      window.clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
+    this.renderForeground = foreground;
+    this.renderIntervalMs = Math.max(0, intervalMs);
+    if (foreground) this.flushRenderQueue();
+    else this.armRenderFlush();
+  }
+
+  private deliverOutput(data: Uint8Array): void {
+    if (this.renderForeground) {
+      this.outputSink(data);
+      return;
+    }
+    this.renderQueue.push(data.slice());
+    this.renderQueueBytes += data.byteLength;
+    if (this.renderQueueBytes >= MAX_BACKGROUND_RENDER_BYTES) {
+      this.flushRenderQueue();
+      return;
+    }
+    this.armRenderFlush();
+  }
+
+  private armRenderFlush(): void {
+    if (this.renderForeground || this.renderTimer !== null) return;
+    this.renderTimer = window.setTimeout(() => {
+      this.renderTimer = null;
+      this.flushRenderQueue();
+    }, Math.max(1, this.renderIntervalMs));
+  }
+
+  private flushRenderQueue(): void {
+    if (this.flushingRenderQueue) return;
+    if (this.renderTimer !== null) {
+      window.clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
+    if (this.renderQueue.length === 0) return;
+    this.flushingRenderQueue = true;
+    try {
+      if (this.renderQueue.length > MAX_SYNCHRONIZED_WRITES_PER_OUTPUT) {
+        const merged = concatByteChunks(this.renderQueue, this.renderQueueBytes);
+        this.renderQueue = [];
+        this.renderQueueBytes = 0;
+        this.outputSink(merged);
+      } else {
+        const chunks = this.renderQueue;
+        this.renderQueue = [];
+        this.renderQueueBytes = 0;
+        for (const chunk of chunks) this.outputSink(chunk);
+      }
+    } finally {
+      this.flushingRenderQueue = false;
+      if (this.renderQueue.length > 0) this.armRenderFlush();
+    }
+  }
+
   private runDeferredAction(action: DeferredTerminalAction) {
     // A parser drain/local write queued between PTY chunks must not overtake
     // output that this call has only batched locally.
     this.flushOutputBatch();
+    this.flushRenderQueue();
     if (action.kind === "write") {
       this.term.write(action.data, action.callback);
     } else {
@@ -883,12 +961,23 @@ class TerminalWriteCoordinator {
     else this.releaseFrame();
   }
 
+  /** Deliver throttled background output now, for example when a pane wakes. */
+  flushRenderPending() {
+    this.flushRenderQueue();
+  }
+
   reset() {
     this.discardDeferredOutput();
     for (const pending of [...this.allDrains]) this.discardDrain(pending);
     this.pendingDrains.clear();
     this.freezeBuffer = null;
     this.freezeBytes = 0;
+    if (this.renderTimer !== null) {
+      window.clearTimeout(this.renderTimer);
+      this.renderTimer = null;
+    }
+    this.renderQueue = [];
+    this.renderQueueBytes = 0;
   }
 }
 
@@ -975,6 +1064,7 @@ export interface TermHandle {
   container: HTMLDivElement | null;
   resizeObserver: ResizeObserver | null;
   active: boolean;
+  focused: boolean;
   hiddenOutput: Uint8Array[];
   hiddenOutputBytes: number;
   hiddenOutputOverflowed: boolean;
@@ -1566,6 +1656,7 @@ export function getOrCreateHandle(key: string): TermHandle {
     container: null,
     resizeObserver: null,
     active: activeSessionKey(getState()) === key,
+    focused: true,
     hiddenOutput: [],
     hiddenOutputBytes: 0,
     hiddenOutputOverflowed: false,
@@ -1657,6 +1748,8 @@ export function getOrCreateHandle(key: string): TermHandle {
     updateScrolledUp(handle);
   });
   handles.set(key, handle);
+  installWindowRenderFocus();
+  updateHandleRenderMode(handle);
   // Capture every completed selection: live TUIs repaint constantly and
   // xterm drops the selection when a redraw touches it, so the context menu
   // falls back to this snapshot (see paneContextItems / resolveCopySelection).
@@ -1907,6 +2000,8 @@ function flushHiddenOutput(handle: TermHandle) {
     offset += chunk.byteLength;
   }
   handle.writes.writeOutput(merged);
+  // Catch-up is immediate even when the pane remains in the background.
+  handle.writes.flushRenderPending();
   // Hidden bytes are only now visible to the parser; report them as rendered
   // and let the snapshot timer store a checkpoint that matches the screen.
   if (handle.logCursor) queueRenderedLogObservation(handle, handle.logCursor);
@@ -3404,6 +3499,53 @@ export function setTerminalActive(sessionId: string, active: boolean) {
       flushHiddenOutput(handle);
       scheduleAttachmentRetry(handle);
     }
+    updateHandleRenderMode(handle);
+  }
+}
+
+/** The focused pane renders every output batch; other visible panes coalesce. */
+export function setTerminalFocused(sessionId: string, focused: boolean) {
+  const handle = handles.get(sessionId);
+  if (!handle || handle.focused === focused) return;
+  handle.focused = focused;
+  updateHandleRenderMode(handle);
+}
+
+let windowRenderFocused = true;
+let windowRenderFocusInstalled = false;
+
+function refreshWindowRenderFocus() {
+  windowRenderFocused =
+    typeof document === "undefined" ||
+    (!document.hidden && document.hasFocus());
+  for (const handle of handles.values()) updateHandleRenderMode(handle);
+}
+
+function installWindowRenderFocus() {
+  if (
+    windowRenderFocusInstalled ||
+    typeof window === "undefined" ||
+    typeof document === "undefined"
+  )
+    return;
+  windowRenderFocusInstalled = true;
+  window.addEventListener("focus", refreshWindowRenderFocus);
+  window.addEventListener("blur", refreshWindowRenderFocus);
+  document.addEventListener("visibilitychange", refreshWindowRenderFocus);
+}
+
+function updateHandleRenderMode(handle: TermHandle) {
+  const visible = typeof document === "undefined" || !document.hidden;
+  const foreground =
+    handle.active && handle.focused && windowRenderFocused && visible;
+  const interval = foreground
+    ? 0
+    : windowRenderFocused && visible
+      ? BACKGROUND_RENDER_INTERVAL_MS
+      : UNFOCUSED_WINDOW_RENDER_INTERVAL_MS;
+  handle.writes.setRenderMode(foreground, interval);
+  if (handle.term.options.cursorBlink !== foreground) {
+    handle.term.options.cursorBlink = foreground;
   }
 }
 
@@ -4235,6 +4377,7 @@ export function disposeHandle(sessionId: string) {
   }
   handle.resizeObserver?.disconnect();
   clearPiStartupReadyTimer(handle);
+  handle.writes.reset();
   try {
     handle.term.dispose();
   } catch {

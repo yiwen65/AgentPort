@@ -61,6 +61,7 @@ import {
   scrollTerminalViewport,
   scrollToBottom,
   setTerminalActive,
+  setTerminalFocused,
   restoreDesktopTerminalSize,
 } from "../terminals";
 import {
@@ -410,6 +411,7 @@ function TerminalPane({
 
   useLayoutEffect(() => {
     setTerminalActive(sessionKey, visible);
+    setTerminalFocused(sessionKey, visible && focused);
     if (!visible) return;
     // Every visible split pane owns a live attachment. Focus is independent:
     // only one xterm textarea receives keyboard input, while all panes stream.

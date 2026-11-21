@@ -295,6 +295,7 @@ import {
   restoreDesktopTerminalSize,
   scrollTerminalViewport,
   setTerminalActive,
+  setTerminalFocused,
   writeMarker,
 } from "./terminals";
 import { bytesToB64 } from "./api";
@@ -402,6 +403,37 @@ describe("terminal renderer", () => {
       rendererFallbackReason: null,
     });
     rendererMocks.apiMock.listProjects.mockResolvedValue(getState().projects);
+  });
+
+  it("coalesces non-focused pane output and flushes immediately on focus", () => {
+    vi.useFakeTimers();
+    try {
+      mountTerminal("renderer-test", document.createElement("div"));
+      const terminal =
+        rendererMocks.terminals[rendererMocks.terminals.length - 1];
+      const handle = getHandle("renderer-test")!;
+      setTerminalActive("renderer-test", true);
+      setTerminalFocused("renderer-test", false);
+      terminal.write.mockClear();
+
+      const encoder = new TextEncoder();
+      handle.writes.writeOutput(encoder.encode("background"));
+      expect(terminal.write).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(260);
+      expect(terminal.write).toHaveBeenCalledTimes(1);
+      expect(new TextDecoder().decode(terminal.write.mock.calls[0][0])).toContain(
+        "background",
+      );
+
+      setTerminalFocused("renderer-test", true);
+      handle.writes.writeOutput(encoder.encode("focused"));
+      expect(terminal.write).toHaveBeenCalledTimes(2);
+      expect(new TextDecoder().decode(terminal.write.mock.calls[1][0])).toContain(
+        "focused",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses Unicode 11 width tables for modern emoji and combining text", () => {

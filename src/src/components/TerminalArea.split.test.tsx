@@ -83,6 +83,7 @@ vi.mock("../terminals", () => ({
   scrollTerminalViewport: vi.fn(),
   scrollToBottom: vi.fn(),
   setTerminalActive: setTerminalActiveMock,
+  setTerminalFocused: vi.fn(),
 }));
 
 vi.mock("./PiStructuredTimeline", () => ({

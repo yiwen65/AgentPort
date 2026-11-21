@@ -71,6 +71,7 @@ vi.mock("../terminals", () => ({
   scrollTerminalViewport: vi.fn(),
   scrollToBottom: vi.fn(),
   setTerminalActive: vi.fn(),
+  setTerminalFocused: vi.fn(),
   restoreDesktopTerminalSize: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../deviceSessions", () => ({

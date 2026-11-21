@@ -34,6 +34,7 @@ vi.mock("../terminals", () => ({
   scrollTerminalViewport: scrollTerminalViewportMock,
   scrollToBottom: vi.fn(),
   setTerminalActive: vi.fn(),
+  setTerminalFocused: vi.fn(),
 }));
 
 import { patchRuntime, setState } from "../store";
