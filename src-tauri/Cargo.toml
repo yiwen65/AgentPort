@@ -10,7 +10,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
 # v2 updater artifacts only: the v1-compatible `zip` feature is unused, and

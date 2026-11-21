@@ -100,32 +100,15 @@
   --segment-selected-bg: #4f6fd6;
   --segment-selected-text: #ffffff;
   --unread: #60a5fa;
-  /* Frosted source list: a single CSS glass layer over the transparent
-     window — backdrop-filter supplies the desktop blur, the veil owns the
-     tone: a heavy smoked tint, so the column stays deep glass whatever the
-     wallpaper, while the blur underneath supplies soft shapes. Layered
-     gradient adds depth: a light catch under the window chrome, gently
-     deepening toward the footer. `--sidebar-border` is the hairline
-     divider, `--sidebar-chip` the frosted quick-action pill. Platforms
-     without the glass stack override --sidebar-glass with a solid color
-     (see the data-vibrancy rules after the theme blocks). */
-  --sidebar-glass: rgba(13, 13, 19, 0.65);
-  --sidebar-glass-layers:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.05) 0%,
-      rgba(255, 255, 255, 0) 22%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.01) 0%,
-      rgba(0, 0, 0, 0.3) 100%
-    );
-  /* The tree surface's top stop, repeated flat so the title-bar backdrop can
-     continue the tree at its seam instead of compressing the full gradient
-     into 48px. */
-  --sidebar-top-layer-1: rgba(255, 255, 255, 0.05);
-  --sidebar-top-layer-2: rgba(255, 255, 255, 0.01);
+  /* Opaque source list: window transparency and backdrop blur are off by
+     default, so terminal repaints never force WindowServer to re-blend the
+     desktop. A solid smoked surface keeps the column readable without the
+     glass material. `--sidebar-border` is the hairline divider,
+     `--sidebar-chip` the quick-action pill. */
+  --sidebar-glass: #27272b;
+  --sidebar-glass-layers: none;
+  --sidebar-top-layer-1: transparent;
+  --sidebar-top-layer-2: transparent;
   --sidebar-border: rgba(255, 255, 255, 0.075);
   --sidebar-chip: rgba(32, 32, 39, 0.78);
   /* Frosted selection chip: inset top highlight + accent hairline ring, so
@@ -248,24 +231,12 @@
   --segment-selected-bg: #006edc;
   --segment-selected-text: #ffffff;
   --unread: #34c759;
-  /* Frosted source list (light): milky white veil kept thin so the crisp
-     desktop-blur material stays visible, with a porcelain-top to
-     misted-footer depth gradient; see the dark block and data-vibrancy
-     fallback notes. */
-  --sidebar-glass: rgba(250, 250, 253, 0.55);
-  --sidebar-glass-layers:
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.32) 0%,
-      rgba(255, 255, 255, 0) 24%
-    ),
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0) 55%,
-      rgba(196, 201, 218, 0.38) 100%
-    );
-  --sidebar-top-layer-1: rgba(255, 255, 255, 0.32);
-  --sidebar-top-layer-2: rgba(255, 255, 255, 0);
+  /* Opaque source list (light): no translucency or blur, so terminal output
+     never triggers a full-window backdrop recomposition. */
+  --sidebar-glass: #efefef;
+  --sidebar-glass-layers: none;
+  --sidebar-top-layer-1: transparent;
+  --sidebar-top-layer-2: transparent;
   --sidebar-border: rgba(17, 18, 23, 0.08);
   --sidebar-chip: rgba(255, 255, 255, 0.75);
   --sidebar-active-ring: rgba(0, 122, 255, 0.26);
@@ -308,23 +279,6 @@
   --sidebar-handle: rgba(17, 18, 23, 0.24);
 }
 
-/* Platforms without the glass stack keep a solid sidebar: translucency
-   without a blur behind it reads as dirt, not glass. The frontend sets
-   data-vibrancy in applyThemeSettings (macOS = on). */
-:root[data-vibrancy="off"][data-theme="dark"] {
-  --sidebar-glass: #27272b;
-  --sidebar-glass-layers: none;
-  --sidebar-top-layer-1: transparent;
-  --sidebar-top-layer-2: transparent;
-}
-
-:root[data-vibrancy="off"][data-theme="light"] {
-  --sidebar-glass: #efefef;
-  --sidebar-glass-layers: none;
-  --sidebar-top-layer-1: transparent;
-  --sidebar-top-layer-2: transparent;
-}
-
 /* ------------------------------------------------------------------ */
 /* Base                                                                */
 /* ------------------------------------------------------------------ */
@@ -345,7 +299,7 @@ body {
   font-family: var(--font-ui);
   font-size: 13px;
   color: var(--text);
-  background: transparent;
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
   user-select: none;
@@ -726,36 +680,10 @@ button {
   box-shadow: none;
 }
 
-/* The sidebar glass stays identical whether the pointer is inside or
-   outside: with the transparent window, backdrop-filter blurs the desktop
-   directly — no native material underlay (two glass layers only read as
-   fog). Theme-specific brightness protects text contrast while saturation
-   stays moderate so vivid wallpaper noise does not compete with rows. */
-:root[data-vibrancy="on"][data-theme="dark"] .sidebar {
-  backdrop-filter: blur(28px) saturate(1.4) brightness(0.82);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(0.82);
-}
-
-:root[data-vibrancy="on"][data-theme="light"] .sidebar {
-  backdrop-filter: blur(28px) saturate(1.4) brightness(1.08);
-  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(1.08);
-}
-
-/* Keep the glass behind the text, not around its strokes: fractional
+/* Keep the surface behind the text, not around its strokes: fractional
    shadows halo small CJK glyphs. Foreground color and weight own clarity. */
 .sidebar-scroll {
   text-shadow: none;
-}
-
-/* WKWebView recomputes the backdrop blur every frame while the window
-   moves, and the glass edge shimmers against the opaque workspace layer.
-Drop the filter mid-drag (body.is-window-dragging): the smoked tint
-alone carries the look for those few hundred milliseconds. The :root
-prefix gives this rule specificity (0,4,1), above the themed glass
-rules at (0,4,0), so source order cannot silently disable it. */
-:root[data-vibrancy="on"] body.is-window-dragging .sidebar {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 
 .sidebar.collapsed {
@@ -4047,9 +3975,9 @@ body.is-resizing-pane {
 }
 
 /* VSCode-like file tree column, docked to the panel's right edge so the
-   editor sits beside the terminal. Shares the sidebar's glass surface,
+   editor sits beside the terminal. Shares the sidebar's solid surface,
    hairline border and row treatment so both navigation columns read as one
-   design family across themes and vibrancy modes. Column width comes from
+   design family across themes. Column width comes from
    the panel's --doc-tree-width (sash-draggable, 184px default). */
 .doc-tree {
   flex: 0 0 var(--doc-tree-width, 240px);

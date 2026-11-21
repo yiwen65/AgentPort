@@ -4,14 +4,12 @@ import { describe, expect, it } from "vitest";
 
 const styles = readFileSync("src/styles.css", "utf8");
 
-describe("sidebar text clarity on glass", () => {
-  it("preserves translucent surfaces and backdrop blur in both themes", () => {
-    expect(styles).toContain("--sidebar-glass: rgba(13, 13, 19, 0.65);");
-    expect(styles).toContain("--sidebar-glass: rgba(250, 250, 253, 0.55);");
-    for (const theme of ["dark", "light"]) {
-      const rule = styles.split(`:root[data-vibrancy="on"][data-theme="${theme}"] .sidebar {`)[1]?.split("}")[0];
-      expect(rule).toContain("backdrop-filter: blur(28px)");
-    }
+describe("sidebar text clarity", () => {
+  it("keeps the sidebar opaque without a backdrop blur", () => {
+    expect(styles).toContain("--sidebar-glass: #27272b;");
+    expect(styles).toContain("--sidebar-glass: #efefef;");
+    expect(styles).not.toContain('data-vibrancy="on"');
+    expect(styles).not.toMatch(/\.sidebar[^{]*\{[^}]*backdrop-filter/);
   });
 
   it("removes text halos without enlarging session rows", () => {

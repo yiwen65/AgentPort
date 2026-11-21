@@ -5238,12 +5238,9 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 updater::startup_check(update_handle).await;
             });
-            // The sidebar glass is pure CSS now: the window stays
-            // transparent (tauri.conf.json) and `.sidebar` owns blur,
-            // saturation, and tint via backdrop-filter. A native
-            // NSVisualEffectView underlay was tried (Sidebar material:
-            // milky; UnderWindowBackground: desaturating) and removed —
-            // two stacked glass layers only ever read as fog.
+            // The window is opaque and the sidebar is a solid CSS surface:
+            // no native or CSS backdrop material is installed, so terminal
+            // repaints never re-blend the desktop in WindowServer.
             Ok(())
         })
         .manage(state)

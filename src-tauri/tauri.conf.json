@@ -10,14 +10,14 @@
     "frontendDist": "../src/dist"
   },
   "app": {
-    "macOSPrivateApi": true,
+    "macOSPrivateApi": false,
     "windows": [
       {
         "title": "AgentPort",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "dragDropEnabled": true,
-        "transparent": true,
+        "transparent": false,
         "width": 1200,
         "height": 800,
         "minWidth": 900,

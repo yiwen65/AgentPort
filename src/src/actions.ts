@@ -251,17 +251,10 @@ export function applyThemeSettings() {
   applyTerminalThemeCss(document.documentElement, st.terminalTheme, theme);
   delete document.documentElement.dataset.prepaintTheme;
   document.documentElement.dataset.motion = reduced ? "reduced" : "full";
-  // Keep the native window (and with it the sidebar's vibrancy material) on
-  // the same appearance as the web content; otherwise a manual theme
-  // override would mix a dark NSVisualEffectView with light chrome.
+  // Keep the native window on the same appearance as the web content;
+  // otherwise a manual theme override would leave a dark titlebar over
+  // light chrome.
   void setNativeTheme(theme);
-  // Frosted sidebar glass (CSS backdrop-filter over the transparent
-  // window) is only enabled on macOS. Elsewhere the sidebar keeps its
-  // solid surface — translucency without a blur behind it reads as dirt,
-  // not glass.
-  document.documentElement.dataset.vibrancy = /Mac/.test(navigator.userAgent)
-    ? "on"
-    : "off";
   try {
     localStorage.setItem("agentport-theme-mode", st.theme);
     localStorage.setItem("agentport-effective-theme", theme);
