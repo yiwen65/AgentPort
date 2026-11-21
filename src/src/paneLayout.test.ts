@@ -948,11 +948,14 @@ describe("optimal pane placement", () => {
     const plain = buildGridPlacementForSessions(layout, ["ses_9"], 1400, 900, 6)!;
     // Same grid and same cell sizes as a set: only which pane sits where
     // differs, because the planner still chose the shape.
-    const cells = (candidate: PaneLayout) =>
-      orderedLayoutSessionIds(candidate)
-        .map((id) => paneSessionSize(candidate.root, id, 1400, 900, 6)!)
+    const cells = (candidate: PaneLayout) => {
+      const root = candidate.root;
+      if (!root) return [];
+      return orderedLayoutSessionIds(candidate)
+        .map((id) => paneSessionSize(root, id, 1400, 900, 6)!)
         .map((size) => Math.round(size.width))
         .sort((a, b) => a - b);
+    };
     expect(cells(anchored)).toEqual(cells(plain));
     expect(orderedLayoutSessionIds(anchored).indexOf("ses_9")).toBe(
       orderedLayoutSessionIds(anchored).indexOf("ses_1") + 1,
