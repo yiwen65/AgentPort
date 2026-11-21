@@ -353,10 +353,6 @@ fn handoff_schema() -> Value {
                 "type": "string",
                 "description": "Complete Markdown handoff: summary, user intent/success criteria, outcomes, decisions/constraints, files/artifacts, commands/evidence, unresolved risks, and recommended continuation. Maximum 8 KiB."
             },
-            "roleId": {
-                "type": "string",
-                "description": "Optional enabled Role id chosen from the metadata in tools/list"
-            },
             "projectPath": { "type": "string" },
             "projectId": { "type": "string" },
             "title": { "type": "string" },
@@ -841,7 +837,7 @@ impl Toolbox {
         TOOLS
             .iter()
             .map(|tool| {
-                let description = if matches!(tool.name, "create_session" | "create_sessions" | "handoff") {
+                    let description = if matches!(tool.name, "create_session" | "create_sessions") {
                     format!("{}{}", tool.description, role_hint)
                 } else {
                     tool.description.to_string()
@@ -1322,6 +1318,12 @@ impl Toolbox {
     }
 
     fn handoff(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        if args.contains_key("roleId") {
+            return Err(ToolFailure::new(
+                "role_not_supported",
+                "handoff is a role-free one-shot transfer; remove roleId and delegate the handoff directly",
+            ));
+        }
         let raw = require_str(args, "handoff")?;
         let markdown = sanitize_handoff_markdown(&raw)?;
         let normalized = markdown != raw;
@@ -3083,6 +3085,13 @@ mod tests {
         assert_eq!(
             compact_handoff("bad\u{1b}[2J").unwrap_err().code,
             "invalid_handoff"
+        );
+        let mut role_args = Map::new();
+        role_args.insert("roleId".into(), Value::String("role_test".into()));
+        role_args.insert("handoff".into(), Value::String("handoff".into()));
+        assert_eq!(
+            test_support::toolbox().handoff(&role_args).unwrap_err().code,
+            "role_not_supported"
         );
         let role = RoleSnapshot {
             role_id: "role_test".into(),

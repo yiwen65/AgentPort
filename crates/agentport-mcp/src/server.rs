@@ -128,6 +128,7 @@ mod tests {
         assert!(handoff_description.contains("Canonical route"));
         assert!(handoff_description.contains("handoff-writer"));
         assert!(handoff_description.contains("docs/handoff"));
+        assert!(!handoff_description.contains("role_test"));
     }
 
     #[test]
