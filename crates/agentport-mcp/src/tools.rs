@@ -24,6 +24,10 @@ use crate::ops::{
 use crate::registry::{OwnedSession, Registry, RoleSnapshot};
 use crate::text;
 use crate::ui;
+use crate::wait_jobs::{
+    JobState, WaitRegistry, WaitSpec, DEFAULT_WAIT_GROUP_TIMEOUT_MS, MAX_WAIT_GROUP_ITEMS,
+    MAX_WAIT_GROUP_TIMEOUT_MS,
+};
 
 /// Keep a malformed or unexpectedly large batch from turning one synchronous
 /// MCP request into an unbounded amount of work. Session creation itself still
@@ -103,6 +107,21 @@ pub const TOOLS: &[ToolDef] = &[
         name: "wait_for_tasks",
         description: "Wait for several MCP-owned Sessions in one call under one shared request budget. Each item preserves the same state, confidence, evidence, reply and output fallback fields as wait_for_task; an error for one item does not hide the other results.",
         schema: wait_for_tasks_schema,
+    },
+    ToolDef {
+        name: "start_wait_group",
+        description: "Register waits for several independent Session turns without blocking this MCP request. Returns a waitGroupId immediately; use get_wait_group for independent states and final replies.",
+        schema: start_wait_group_schema,
+    },
+    ToolDef {
+        name: "get_wait_group",
+        description: "Read a nonblocking wait group. Completed items include the final reply; waiting items do not block this request.",
+        schema: get_wait_group_schema,
+    },
+    ToolDef {
+        name: "cancel_wait_group",
+        description: "Cancel background waiting for a wait group without stopping any Agent Session.",
+        schema: cancel_wait_group_schema,
     },
     ToolDef {
         name: "read_output",
@@ -395,6 +414,52 @@ fn wait_for_tasks_schema() -> Value {
     )
 }
 
+fn start_wait_group_schema() -> Value {
+    obj(
+        json!({
+            "tasks": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_WAIT_GROUP_ITEMS,
+                "description": "Independent MCP-owned Session turns to monitor concurrently.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "taskId": { "type": "string" },
+                        "sessionId": { "type": "string" },
+                        "sinceSequence": { "type": "integer" },
+                        "sinceRunOrdinal": { "type": "integer" }
+                    },
+                    "required": ["sessionId"],
+                    "additionalProperties": false
+                }
+            },
+            "timeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": MAX_WAIT_GROUP_TIMEOUT_MS,
+                "default": DEFAULT_WAIT_GROUP_TIMEOUT_MS,
+                "description": "Background wait deadline; this call itself returns immediately."
+            }
+        }),
+        json!(["tasks"]),
+    )
+}
+
+fn get_wait_group_schema() -> Value {
+    obj(
+        json!({ "waitGroupId": { "type": "string" } }),
+        json!(["waitGroupId"]),
+    )
+}
+
+fn cancel_wait_group_schema() -> Value {
+    obj(
+        json!({ "waitGroupId": { "type": "string" } }),
+        json!(["waitGroupId"]),
+    )
+}
+
 fn read_output_schema() -> Value {
     obj(
         json!({
@@ -584,6 +649,7 @@ pub struct Toolbox {
     /// that fact instead of waiting again, or a caller that polls twice would
     /// burn a full timeout on the second call.
     settled: std::collections::HashMap<String, SettledTurn>,
+    waits: WaitRegistry,
     root: PathBuf,
     parent_session_id: Option<String>,
     depth: u32,
@@ -616,6 +682,7 @@ impl Toolbox {
             created_here: std::collections::HashSet::new(),
             baselines: std::collections::HashMap::new(),
             settled: std::collections::HashMap::new(),
+            waits: WaitRegistry::default(),
             root: config.root,
             parent_session_id: config.parent_session_id,
             depth,
@@ -645,6 +712,9 @@ impl Toolbox {
             "send_prompt" => self.send_prompt(&args),
             "wait_for_task" => self.wait_for_task(&args),
             "wait_for_tasks" => self.wait_for_tasks(&args),
+            "start_wait_group" => self.start_wait_group(&args),
+            "get_wait_group" => self.get_wait_group(&args),
+            "cancel_wait_group" => self.cancel_wait_group(&args),
             "read_output" => self.read_output(&args),
             "cancel_turn" => self.cancel_turn(&args),
             "terminate_session" => self.terminate_session(&args),
@@ -1533,6 +1603,12 @@ impl Toolbox {
     fn send_prompt(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
+        if self.waits.is_active(&session_id) {
+            return Err(ToolFailure::new(
+                "wait_already_active",
+                "a background wait owns this Session turn; cancel or collect it before sending another prompt",
+            ));
+        }
         let raw = require_str(args, "text")?;
         let task = text::sanitize_prompt(&raw)
             .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
@@ -1623,9 +1699,40 @@ impl Toolbox {
         }))
     }
 
+    fn remember_wait_outcome(&mut self, session_id: &str, outcome: &crate::ops::WaitOutcome) {
+        // Only a real turn boundary clears the baseline and is remembered. A
+        // quiet-window verdict is a guess: caching it would turn silence into
+        // a confident "finished" on the next call.
+        if matches!(outcome.state, "idle" | "needs_input" | "exited")
+            && outcome.source != "quiet_window"
+            && outcome.confidence != "low"
+        {
+            self.baselines.remove(session_id);
+            self.settled.insert(
+                session_id.to_string(),
+                SettledTurn {
+                    state: outcome.state,
+                    source: outcome.source.clone(),
+                    confidence: outcome.confidence.clone(),
+                    evidence: outcome.evidence.clone(),
+                    reply: outcome.reply.clone(),
+                    reply_unavailable_reason: outcome.reply_unavailable_reason.clone(),
+                    tail_source: outcome.tail_source,
+                    fallback_reason: outcome.fallback_reason.clone(),
+                },
+            );
+        }
+    }
+
     fn wait_for_task(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
+        if self.waits.is_active(&session_id) {
+            return Err(ToolFailure::new(
+                "wait_already_active",
+                "a background wait already owns this Session turn; use get_wait_group",
+            ));
+        }
         // A stdio MCP request cannot outlive the client's own deadline. Clamp
         // even an explicitly oversized value so the caller receives a normal
         // `timeout` result and can continue the same turn with another wait.
@@ -1679,28 +1786,7 @@ impl Toolbox {
                         && summary.host_alive
                 })
                 .unwrap_or(false);
-        // Only a real turn boundary clears the baseline and is remembered. A
-        // quiet-window verdict is a guess: caching it would turn silence into
-        // a confident "finished" on the next call.
-        if matches!(outcome.state, "idle" | "needs_input" | "exited")
-            && outcome.source != "quiet_window"
-            && outcome.confidence != "low"
-        {
-            self.baselines.remove(&session_id);
-            self.settled.insert(
-                session_id.clone(),
-                SettledTurn {
-                    state: outcome.state,
-                    source: outcome.source.clone(),
-                    confidence: outcome.confidence.clone(),
-                    evidence: outcome.evidence.clone(),
-                    reply: outcome.reply.clone(),
-                    reply_unavailable_reason: outcome.reply_unavailable_reason.clone(),
-                    tail_source: outcome.tail_source,
-                    fallback_reason: outcome.fallback_reason.clone(),
-                },
-            );
-        }
+        self.remember_wait_outcome(&session_id, &outcome);
         Ok(json!({
             "sessionId": session_id,
             "state": outcome.state,
@@ -1806,6 +1892,179 @@ impl Toolbox {
             "succeeded": succeeded,
             "failed": tasks.len().saturating_sub(succeeded),
             "timeoutMs": timeout,
+        }))
+    }
+
+    fn start_wait_group(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let tasks = args
+            .get("tasks")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ToolFailure::new("invalid_arguments", "tasks must be an array"))?;
+        if tasks.is_empty() || tasks.len() > MAX_WAIT_GROUP_ITEMS {
+            return Err(ToolFailure::new(
+                "invalid_arguments",
+                format!("tasks must contain 1..={MAX_WAIT_GROUP_ITEMS} items"),
+            ));
+        }
+        let timeout = optional_u64(args, "timeoutMs")
+            .unwrap_or(DEFAULT_WAIT_GROUP_TIMEOUT_MS)
+            .clamp(1_000, MAX_WAIT_GROUP_TIMEOUT_MS);
+        let mut specs = Vec::new();
+        let mut errors = Vec::new();
+        for (index, task) in tasks.iter().enumerate() {
+            let Some(map) = task.as_object() else {
+                errors.push(json!({
+                    "index": index,
+                    "error": { "code": "invalid_arguments", "message": "each task must be an object" }
+                }));
+                continue;
+            };
+            let task_id = optional_str(map, "taskId");
+            let session_id = match require_str(map, "sessionId") {
+                Ok(value) => value,
+                Err(failure) => {
+                    errors.push(batch_item_failure(index, task_id.as_deref(), failure));
+                    continue;
+                }
+            };
+            if let Err(failure) = self.require_owned(&session_id) {
+                errors.push(batch_item_failure(index, task_id.as_deref(), failure));
+                continue;
+            }
+            let baseline = match optional_u64(map, "sinceSequence") {
+                Some(sequence) => Some(StatusMark {
+                    run_ordinal: optional_u64(map, "sinceRunOrdinal")
+                        .and_then(|value| i64::try_from(value).ok())
+                        .unwrap_or(i64::MIN),
+                    sequence: i64::try_from(sequence).unwrap_or(i64::MAX),
+                }),
+                None => self.baselines.get(&session_id).copied(),
+            };
+            let prompt_fence = self.ops.prompt_fence(&session_id);
+            specs.push(WaitSpec {
+                session_id,
+                task_id,
+                baseline,
+                prompt_fence,
+            });
+        }
+        if specs.is_empty() {
+            return Ok(json!({
+                "waitGroupId": Value::Null,
+                "state": "failed",
+                "allDone": true,
+                "results": [],
+                "errors": errors,
+            }));
+        }
+        let (group_id, items) = self
+            .waits
+            .start_group(self.ops.service_handle(), specs, timeout)?;
+        let mut results: Vec<Value> = items
+            .iter()
+            .map(|item| {
+                let mut value = json!({
+                    "sessionId": item.session_id,
+                    "state": "waiting",
+                });
+                if let Some(task_id) = &item.task_id {
+                    value["taskId"] = json!(task_id);
+                }
+                value
+            })
+            .collect();
+        results.extend(errors);
+        Ok(json!({
+            "waitGroupId": group_id,
+            "state": "waiting",
+            "allDone": false,
+            "timeoutMs": timeout,
+            "results": results,
+        }))
+    }
+
+    fn get_wait_group(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let group_id = require_str(args, "waitGroupId")?;
+        let snapshot = self.waits.snapshot(&group_id)?;
+        let group_id_value = snapshot.group_id.clone();
+        let all_done = snapshot.all_done;
+        let all_cancelled = all_done
+            && snapshot
+                .items
+                .iter()
+                .all(|item| matches!(item.state, JobState::Cancelled));
+        let mut results = Vec::with_capacity(snapshot.items.len());
+        for item in snapshot.items {
+            let mut value = match item.state {
+                JobState::Waiting => json!({
+                    "sessionId": item.session_id,
+                    "state": "waiting",
+                }),
+                JobState::Cancelling => json!({
+                    "sessionId": item.session_id,
+                    "state": "cancelling",
+                    "continuation": false,
+                }),
+                JobState::Cancelled => json!({
+                    "sessionId": item.session_id,
+                    "state": "cancelled",
+                    "continuation": false,
+                }),
+                JobState::Completed(Ok(outcome)) => {
+                    self.remember_wait_outcome(&item.session_id, &outcome);
+                    background_outcome_value(&item.session_id, &outcome)
+                }
+                JobState::Completed(Err(error)) => json!({
+                    "sessionId": item.session_id,
+                    "state": "failed",
+                    "error": { "code": error.code, "message": error.message },
+                }),
+            };
+            if let Some(task_id) = item.task_id {
+                value["taskId"] = json!(task_id);
+            }
+            results.push(value);
+        }
+        if all_done {
+            self.waits.release_sessions(&group_id_value)?;
+        }
+        Ok(json!({
+            "waitGroupId": group_id_value,
+            "state": if all_cancelled {
+                "cancelled"
+            } else if all_done {
+                "completed"
+            } else {
+                "waiting"
+            },
+            "allDone": all_done,
+            "results": results,
+        }))
+    }
+
+    fn cancel_wait_group(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let group_id = require_str(args, "waitGroupId")?;
+        let snapshot = self.waits.cancel(&group_id)?;
+        let mut results = Vec::with_capacity(snapshot.items.len());
+        for item in snapshot.items {
+            let mut value = json!({
+                "sessionId": item.session_id,
+                "state": match item.state {
+                    JobState::Completed(_) => "completed",
+                    JobState::Cancelled => "cancelled",
+                    JobState::Cancelling | JobState::Waiting => "cancelling",
+                },
+            });
+            if let Some(task_id) = item.task_id {
+                value["taskId"] = json!(task_id);
+            }
+            results.push(value);
+        }
+        Ok(json!({
+            "waitGroupId": snapshot.group_id,
+            "state": if snapshot.all_done { "cancelled" } else { "cancelling" },
+            "allDone": snapshot.all_done,
+            "results": results,
         }))
     }
 
@@ -2242,6 +2501,43 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn background_outcome_value(session_id: &str, outcome: &crate::ops::WaitOutcome) -> Value {
+    let state = match outcome.state {
+        "idle" => "completed",
+        "needs_input" => "needs_input",
+        "exited" => "failed",
+        "timeout" => "timeout",
+        other => other,
+    };
+    json!({
+        "sessionId": session_id,
+        "state": state,
+        "agentState": outcome.state,
+        "source": outcome.source,
+        "confidence": outcome.confidence,
+        "evidence": outcome.evidence,
+        "waitedMs": outcome.waited_ms,
+        "reply": outcome.reply,
+        "replyTruncated": outcome.reply_truncated,
+        "replyUnavailableReason": outcome.reply_unavailable_reason,
+        "outputTail": outcome.tail,
+        "outputSource": outcome.tail_source,
+        "outputFallbackReason": outcome.fallback_reason,
+        "outputIncomplete": outcome.incomplete,
+        "continuation": outcome.state == "timeout",
+        "stillRunning": if outcome.state == "timeout" {
+            Value::Null
+        } else {
+            Value::Bool(false)
+        },
+        "nextAction": if outcome.state == "timeout" {
+            json!("start_wait_group")
+        } else {
+            Value::Null
+        },
+    })
 }
 
 fn batch_timeout_continuation(session_id: &str, evidence: &str) -> Value {

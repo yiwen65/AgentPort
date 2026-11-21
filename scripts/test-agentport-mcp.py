@@ -102,6 +102,7 @@ def main() -> int:
     (project / "README.md").write_text("# mcp e2e\n")
     client = McpClient(binary, data_dir)
     session_id = None
+    parallel_ids = []
     try:
         print("initialize", flush=True)
         init = client.send(
@@ -137,6 +138,9 @@ def main() -> int:
             "close_pane",
             "create_sessions",
             "wait_for_tasks",
+            "start_wait_group",
+            "get_wait_group",
+            "cancel_wait_group",
             "archive_session",
             "delete_session",
         }
@@ -489,6 +493,108 @@ def main() -> int:
         )
         check(repeat_elapsed < 15.0, f"repeat wait stayed bounded ({repeat_elapsed:.1f}s)")
 
+        print("nonblocking parallel wait group")
+        fast, is_error = client.call(
+            "create_session", {"agent": args.agent, "projectId": project_id, "title": "parallel fast"}
+        )
+        check(not is_error, "fast parallel Session created")
+        slow, is_error = client.call(
+            "create_session", {"agent": args.agent, "projectId": project_id, "title": "parallel slow"}
+        )
+        check(not is_error, "slow parallel Session created")
+        parallel_ids = [fast["sessionId"], slow["sessionId"]]
+        client.call("send_prompt", {"sessionId": parallel_ids[0], "text": "echo GROUP-FAST-END"})
+        client.call("send_prompt", {"sessionId": parallel_ids[1], "text": "sleep 2; echo GROUP-SLOW-END"})
+        begun = time.monotonic()
+        group, is_error = client.call(
+            "start_wait_group",
+            {"tasks": [{"sessionId": parallel_id} for parallel_id in parallel_ids], "timeoutMs": 20000},
+        )
+        register_elapsed = time.monotonic() - begun
+        check(not is_error and group.get("waitGroupId"), "wait group registers")
+        check(register_elapsed < 2.0, f"wait group registration is nonblocking ({register_elapsed:.2f}s)")
+        group_id = group["waitGroupId"]
+        deadline = time.monotonic() + 25
+        snapshot = {}
+        while time.monotonic() < deadline:
+            snapshot, is_error = client.call("get_wait_group", {"waitGroupId": group_id})
+            check(not is_error, "wait group snapshot is readable")
+            if snapshot.get("allDone"):
+                break
+            time.sleep(0.5)
+        check(snapshot.get("allDone") is True, "parallel wait group completes independently")
+        group_text = json.dumps(snapshot)
+        check("GROUP-FAST-END" in group_text and "GROUP-SLOW-END" in group_text,
+              "parallel wait group returns both task outputs")
+        check(all(item.get("state") == "completed" for item in snapshot.get("results", [])),
+              "completed wait-group items use the documented state")
+        repeated_group, is_error = client.call("get_wait_group", {"waitGroupId": group_id})
+        check(not is_error and repeated_group.get("allDone") is True,
+              "terminal wait-group snapshots remain readable")
+        cancel_case, is_error = client.call(
+            "create_session", {"agent": args.agent, "projectId": project_id, "title": "parallel cancel"}
+        )
+        check(not is_error, "cancel parallel Session created")
+        cancel_id = cancel_case["sessionId"]
+        parallel_ids.append(cancel_id)
+        client.call("send_prompt", {"sessionId": cancel_id, "text": "sleep 10; echo CANCEL-END"})
+        cancel_group, is_error = client.call(
+            "start_wait_group", {"tasks": [{"sessionId": cancel_id}], "timeoutMs": 20000}
+        )
+        check(not is_error, "cancel wait group registered")
+        duplicate, is_error = client.call(
+            "start_wait_group", {"tasks": [{"sessionId": cancel_id}], "timeoutMs": 20000}
+        )
+        check(is_error and duplicate["error"]["code"] == "wait_already_active",
+              "duplicate background waits are rejected")
+        cancelled, is_error = client.call(
+            "cancel_wait_group", {"waitGroupId": cancel_group["waitGroupId"]}
+        )
+        check(not is_error, "background wait group cancellation is accepted")
+        check(cancelled.get("allDone") is False, "cancellation waits for the worker to unwind")
+        cancelled_done = {}
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            cancelled_done, is_error = client.call(
+                "get_wait_group", {"waitGroupId": cancel_group["waitGroupId"]}
+            )
+            check(not is_error, "cancelled wait group remains readable while unwinding")
+            if cancelled_done.get("allDone"):
+                break
+            time.sleep(0.2)
+        check(cancelled_done.get("allDone") is True, "cancelled wait group has no pending waiter")
+        deadline_case, is_error = client.call(
+            "create_session", {"agent": args.agent, "projectId": project_id, "title": "parallel deadline"}
+        )
+        check(not is_error, "deadline parallel Session created")
+        deadline_id = deadline_case["sessionId"]
+        parallel_ids.append(deadline_id)
+        client.call("send_prompt", {"sessionId": deadline_id, "text": "sleep 5; echo DEADLINE-END"})
+        deadline_group, is_error = client.call(
+            "start_wait_group", {"tasks": [{"sessionId": deadline_id}], "timeoutMs": 1000}
+        )
+        check(not is_error, "deadline wait group registered")
+        deadline_snapshot = {}
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            deadline_snapshot, is_error = client.call(
+                "get_wait_group", {"waitGroupId": deadline_group["waitGroupId"]}
+            )
+            check(not is_error, "deadline wait group is readable")
+            if deadline_snapshot.get("allDone"):
+                break
+            time.sleep(0.2)
+        check(deadline_snapshot.get("allDone") is True, "deadline wait group completes")
+        deadline_result = deadline_snapshot.get("results", [{}])[0]
+        check(
+            deadline_result.get("state") == "timeout"
+            and deadline_result.get("nextAction") == "start_wait_group",
+            "background deadline returns a restartable timeout",
+        )
+        for parallel_id in parallel_ids:
+            client.call("terminate_session", {"sessionId": parallel_id})
+        parallel_ids = []
+
         print("archive then delete")
         spare, is_error = client.call(
             "create_session",
@@ -549,6 +655,11 @@ def main() -> int:
         print("\nall MCP end-to-end checks passed")
         return 0
     finally:
+        for parallel_id in parallel_ids:
+            try:
+                client.call("terminate_session", {"sessionId": parallel_id})
+            except Exception:
+                pass
         if session_id is not None:
             try:
                 client.call("terminate_session", {"sessionId": session_id})

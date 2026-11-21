@@ -187,14 +187,17 @@ switched on in AgentPort.
 
 Delegation shape: create_session(agent, projectPath, prompt) opens a real AgentPort
 pane-sized Session and sends the first prompt once the CLI is ready. For several
-independent tasks prefer create_sessions once, then wait_for_tasks once; each
+independent tasks prefer create_sessions once, then start_wait_group once and
+poll get_wait_group; each item executes and completes independently. The older
+wait_for_tasks tool remains available for bounded synchronous compatibility and
 returns per-item state and the final reply. Single-task wait_for_task is the
 completion primitive: it returns idle | needs_input | exited | timeout with the
 current turn's reply when available. A timeout is a structured continuation point;
 call wait_for_task again for the same Session and do not use read_output to decide
 whether the turn finished. Each wait is capped below common client request deadlines.
 read_output is only bounded progress evidence; session_status.completion can carry a
-completed turn's final reply during recovery.
+completed turn's final reply during recovery. cancel_wait_group cancels only the
+background waiters, not the Agent Sessions.
 cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
 undone. To tidy up, archive_session hides a Session and keeps its history readable;

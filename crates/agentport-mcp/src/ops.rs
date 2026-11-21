@@ -421,6 +421,14 @@ impl SessionOps {
         self.service.as_ref()
     }
 
+    pub fn service_handle(&self) -> Arc<dyn RemoteService> {
+        Arc::clone(&self.service)
+    }
+
+    pub fn prompt_fence(&self, session_id: &str) -> Option<String> {
+        self.prompt_fences.get(session_id).cloned()
+    }
+
     fn next_batch_id(&mut self) -> String {
         self.batch_sequence += 1;
         format!(

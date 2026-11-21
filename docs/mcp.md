@@ -66,7 +66,9 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId`；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
 | `wait_for_task` | 等当前委派回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout`、依据和**本轮最终 `reply`**；`timeout` 是继续等待的结构化结果，应再次调用本工具，不要用 `read_output` 判断完成 |
-| `wait_for_tasks` | 一次等待多个 MCP-owned Session；每项返回与 `wait_for_task` 相同的 state/confidence/evidence/reply/fallback 字段（共享单次请求预算） |
+| `wait_for_tasks` | 一次同步等待多个 MCP-owned Session；兼容旧客户端，按共享预算返回各项结果 |
+| `start_wait_group` / `get_wait_group` | 注册并非阻塞地并行等待多个 Session；各项独立返回 `waiting` / `completed` / `needs_input` / `failed` / `cancelled` / `timeout` 和最终 reply |
+| `cancel_wait_group` | 取消后台等待，不停止 Agent Session |
 | `read_output` | 读取进度/输出证据：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）；不是回合完成信号 |
 | `cancel_turn` | 发 Ctrl-C，会话保留 |
 | `terminate_session` | 停止并清理整个进程组；会话记录仍在（可恢复） |
@@ -85,7 +87,7 @@ create_session  {agent: "claude", roleId: "role_implementer", projectPath: "/rep
 wait_for_task  {sessionId: "..."}  // 默认 45s；超时后继续调用本工具
 ```
 
-批量委派优先使用两次调用，减少模型轮次；`wait_for_tasks` 已返回每个 Session 的 `reply`，成功时不需要再调用 `read_output`。完成任务也不要自动 `terminate_session`，Session 会保留给用户查看或继续接管：
+批量委派优先使用非阻塞等待组，减少一个慢 Agent 对其他 Agent 的阻塞；`get_wait_group` 已返回每个完成 Session 的 `reply`，成功时不需要再调用 `read_output`。完成任务也不要自动 `terminate_session`，Session 会保留给用户查看或继续接管：
 
 ```text
 resolve_project {path: "/repo"}
@@ -95,13 +97,13 @@ create_sessions {
     {taskId: "tests", agent: "codex", projectId: "...", prompt: "run tests"}
   ]
 }
-wait_for_tasks {
+start_wait_group {
   tasks: [
     {taskId: "lint", sessionId: "...", sinceSequence: 12},
     {taskId: "tests", sessionId: "...", sinceSequence: 8}
-  ],
-  timeoutMs: 45000
+  ]
 }
+get_wait_group {waitGroupId: "..."}
 ```
 
 ## 语义与边界
@@ -143,7 +145,7 @@ MCP servers，此时打进去的字会被丢弃）。所以：
 `statusSequence` / `statusRunOrdinal`，MCP 同时保留完整的 run/sequence 基线，只承认**比它更新**的状态迁移，所以"发出任务后 0.9 秒就报空闲"
 这种误判不会再出现；也可以显式传配对的 `sinceSequence` + `sinceRunOrdinal`。
 
-每次同步等待最多 45 秒，低于常见 MCP 客户端的 60 秒请求期限。长任务返回 `state: "timeout"`、
+非阻塞等待组不会占用 MCP 请求；每个后台任务独立监控，调用 `get_wait_group` 读取结果。兼容模式的同步等待每次最多 45 秒，低于常见 MCP 客户端的 60 秒请求期限。长任务返回 `state: "timeout"`、
 `stillRunning` 和 `nextAction: "wait_for_task"`；保持同一个 Session 和 prompt，不要重新发送，也不要改用
 `read_output` 冒充完成判断，继续调用 `wait_for_task`，直到拿到本轮 `reply`。
 

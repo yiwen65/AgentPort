@@ -591,7 +591,7 @@ pub struct AttentionPollResult {
     pub next_cursor: Option<agentport_remote_protocol::AttentionCursor>,
 }
 
-pub trait RemoteService {
+pub trait RemoteService: Send + Sync {
     fn service_snapshot(&self) -> ServiceSnapshot;
     fn supported_agents(&self) -> Result<Vec<SupportedAgentSummary>> {
         Err(ServiceError::InvalidRequest)

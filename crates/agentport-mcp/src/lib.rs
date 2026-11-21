@@ -12,6 +12,7 @@ pub mod server;
 pub mod text;
 pub mod tools;
 pub mod ui;
+pub mod wait_jobs;
 
 /// Version reported in `serverInfo`; kept in step with the workspace.
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
