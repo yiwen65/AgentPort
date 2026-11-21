@@ -2316,7 +2316,7 @@ export default function DocumentPanel() {
   return (
     <aside
       ref={attachPanel}
-      className={`doc-panel${expanded ? " expanded" : ""}${collapsed ? " collapsed" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}${!treeOnly && !expanded && !collapsed && widthAuto ? ` auto-width${explorerOpen ? " with-tree" : ""}` : ""}`}
+      className={`doc-panel${expanded ? " expanded" : ""}${collapsed ? " collapsed" : ""}${explorerOpen ? " tree-open" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}${!treeOnly && !expanded && !collapsed && widthAuto ? ` auto-width${explorerOpen ? " with-tree" : ""}` : ""}`}
       data-doc-theme={readingTheme}
       style={panelStyle}
       aria-label={t("ui.document.label")}

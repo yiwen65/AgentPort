@@ -35,4 +35,12 @@ describe("expanded document panel layout", () => {
   it("does not shrink the expanded preview back to the docked measure", () => {
     expect(styles).not.toContain(".doc-panel.expanded .md-preview");
   });
+
+  it("keeps a folded viewer on the same surface as the file tree", () => {
+    const folded = ruleBody(".doc-panel.collapsed") ?? "";
+    expect(folded).toContain("background: var(--workspace-current)");
+    const treeFolded = ruleBody(".doc-panel.collapsed.tree-open") ?? "";
+    expect(treeFolded).toContain("background-color: var(--doc-tree-surface");
+    expect(styles).toContain(".doc-panel.collapsed .doc-panel-fold-toggle");
+  });
 });

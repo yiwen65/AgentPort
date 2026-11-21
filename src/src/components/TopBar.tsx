@@ -3,9 +3,11 @@
 
 import {
   findSession,
+  hasOpenDocuments,
   isLinuxFramelessChrome,
   openContextMenu,
   openDialog,
+  setState,
   useStore,
   type MenuItem,
 } from "../store";
@@ -44,6 +46,24 @@ function ExplorerToggleButton() {
       data-tauri-drag-region="false"
     >
       <IconFolder />
+    </button>
+  );
+}
+
+function DocumentPanelUnfoldButton() {
+  const { t } = useTranslation("shell");
+  const docPanelCollapsed = useStore((state) => state.docPanelCollapsed);
+  const hasDocuments = useStore((state) => hasOpenDocuments(state));
+  if (!docPanelCollapsed || !hasDocuments) return null;
+  return (
+    <button
+      className="window-control sidebar-toggle"
+      onClick={() => setState({ docPanelCollapsed: false })}
+      aria-label={t("ui.document.panelExpand")}
+      data-tip={t("ui.document.panelExpandTip")}
+      data-tauri-drag-region="false"
+    >
+      ›
     </button>
   );
 }
@@ -317,6 +337,7 @@ export default function TopBar() {
       </div>
       <div className="topbar-trailing" data-tauri-drag-region="false">
         {sidebarCollapsed ? <DevicePicker /> : null}
+        <DocumentPanelUnfoldButton />
         <ExplorerToggleButton />
         <button
           className="window-control sidebar-toggle"

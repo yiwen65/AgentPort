@@ -4423,6 +4423,14 @@ body.is-resizing-pane {
 .doc-panel.collapsed {
   flex: 0 0 40px;
   width: 40px;
+  background: var(--workspace-current);
+}
+
+.doc-panel.collapsed.tree-open {
+  background-color: var(--doc-tree-surface, var(--sidebar-glass));
+  background-image:
+    var(--doc-tree-glaze, none),
+    var(--sidebar-glass-layers, none);
 }
 
 .doc-panel.collapsed .doc-editor-column {
@@ -4435,6 +4443,7 @@ body.is-resizing-pane {
 }
 
 .doc-panel.collapsed .doc-panel-header > :not(.doc-panel-fold-toggle),
+.doc-panel.collapsed .doc-panel-fold-toggle,
 .doc-panel.collapsed .doc-panel-resize,
 .doc-panel.collapsed .doc-groups,
 .doc-panel.collapsed .doc-tree,
@@ -4443,7 +4452,7 @@ body.is-resizing-pane {
 }
 
 .doc-panel.collapsed .doc-panel-fold-toggle {
-  display: inline-flex;
+  display: none;
 }
 
 .doc-panel-resize {

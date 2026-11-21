@@ -25,7 +25,7 @@ vi.mock("./gitCenter", () => ({
 }));
 
 import TopBar from "./components/TopBar";
-import { setState } from "./store";
+import { getState, setState } from "./store";
 import type { PlatformInfo } from "./types";
 
 const platform = (os: string, windowDecorated: boolean): PlatformInfo => ({
@@ -41,7 +41,7 @@ describe("topbar frameless-Linux window controls", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     windowApi.isMaximized.mockResolvedValue(false);
-    setState({ platform: null });
+    setState({ platform: null, docPanelCollapsed: false, docGroups: [] });
   });
 
   afterEach(cleanup);
@@ -90,6 +90,16 @@ describe("topbar frameless-Linux window controls", () => {
     });
     fireEvent.doubleClick(header!);
     expect(windowApi.toggleMaximize).not.toHaveBeenCalled();
+  });
+
+  it("places the folded document viewer reopen control beside the file tree toggle", async () => {
+    setState({ docPanelCollapsed: true, docGroups: [{ tabs: [], activeTabId: null }] });
+    render(<TopBar />);
+
+    const unfold = await screen.findByRole("button", { name: "展开文档查看器" });
+    expect(unfold.nextElementSibling?.getAttribute("aria-label")).toBe("项目文件");
+    unfold.click();
+    expect(getState().docPanelCollapsed).toBe(false);
   });
 
   it("renders no window controls on macOS, decorated Linux, or unknown platforms", async () => {
