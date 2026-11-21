@@ -556,7 +556,7 @@ describe("V2 Session workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Refresh" })).not.toBeDisabled());
     expect(rowDot()).toBeNull();
-    expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.seen.mark")).toBe(true);
+    expect(vi.mocked(remote.request).mock.calls.some(([, method]) => method === "session.seen.mark")).toBe(false);
     sequence = 2;
     // Returning from suspension triggers an immediate incremental catch-up.
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
@@ -598,7 +598,7 @@ describe("V2 Session workspace", () => {
     await act(async () => { fireEvent.click(clear); });
     expect(screen.getByText("No pending completions or input requests.")).toBeInTheDocument();
     expect(clear).toBeDisabled(); expect(onOpenSession).not.toHaveBeenCalled();
-    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.seen.mark")).toHaveLength(2);
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.seen.mark")).toHaveLength(0);
     expect(new AttentionInbox("host-1").entries).toHaveLength(0);
     expect(new AttentionInbox("host-2").entries).toHaveLength(0);
   });

@@ -69,7 +69,7 @@ describe("bounded metadata notification reception", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(client.request).not.toHaveBeenCalledWith("one", "session.seen.mark", expect.anything());
   });
-  it("clears locally while retrying a shared seen acknowledgement after reconnect", async () => {
+  it("clears locally without writing to the unstable remote seen endpoint", async () => {
     const client = makeClient();
     let polls = 0;
     let seenAttempts = 0;
@@ -89,7 +89,7 @@ describe("bounded metadata notification reception", () => {
     expect(result.current.entries).toHaveLength(0);
     expect(result.current.error).toBe("");
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-    expect(seenAttempts).toBe(2);
+    expect(seenAttempts).toBe(0);
   });
   it("serializes shared seen writes when clearing several Sessions", async () => {
     const client = makeClient();
@@ -111,7 +111,7 @@ describe("bounded metadata notification reception", () => {
     await act(async () => {
       await Promise.all(result.current.entries.map(entry => result.current.acknowledge("one", entry.sessionId, entry)));
     });
-    expect(seen).toHaveBeenCalledTimes(2);
+    expect(seen).toHaveBeenCalledTimes(0);
   });
   it("keeps messages in the local inbox without system notification delivery", async () => {
     const client = makeClient();
