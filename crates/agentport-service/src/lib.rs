@@ -13,7 +13,7 @@ pub use project_directory::ProjectDirectoryError;
 use agentport_core::terminal_seed;
 
 use agentport_core::adapters::{self, capability, LaunchContext, ResumeContext};
-use agentport_core::agent_roles::AgentRole;
+use agentport_core::agent_roles::{AgentRole, AgentRoleMetadata};
 use agentport_core::db::Db;
 use agentport_core::diag::Diagnostics;
 use agentport_core::export::Exporter;
@@ -626,6 +626,11 @@ pub trait RemoteService: Send + Sync {
     /// parameters: roles are prompt context, not execution policy.
     fn list_agent_roles(&self) -> Result<Vec<AgentRole>> {
         Err(ServiceError::InvalidRequest)
+    }
+    /// Instruction-free metadata for the coordinating model's Role choice.
+    fn list_agent_role_metadata(&self) -> Result<Vec<AgentRoleMetadata>> {
+        self.list_agent_roles()
+            .map(|roles| roles.iter().map(AgentRoleMetadata::from).collect())
     }
     fn get_agent_role(&self, _id: &str) -> Result<AgentRole> {
         Err(ServiceError::InvalidRequest)
@@ -1475,6 +1480,10 @@ impl RemoteService for CoreService {
 
     fn list_agent_roles(&self) -> Result<Vec<AgentRole>> {
         self.db.list_agent_roles().map_err(Into::into)
+    }
+
+    fn list_agent_role_metadata(&self) -> Result<Vec<AgentRoleMetadata>> {
+        self.db.list_agent_role_metadata().map_err(Into::into)
     }
 
     fn get_agent_role(&self, id: &str) -> Result<AgentRole> {

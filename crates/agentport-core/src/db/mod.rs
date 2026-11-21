@@ -864,6 +864,20 @@ fn row_agent_role(r: &Row) -> rusqlite::Result<crate::agent_roles::AgentRole> {
     })
 }
 
+fn row_agent_role_metadata(
+    r: &Row,
+) -> rusqlite::Result<crate::agent_roles::AgentRoleMetadata> {
+    Ok(crate::agent_roles::AgentRoleMetadata {
+        id: r.get("id")?,
+        name: r.get("name")?,
+        description: r.get("description")?,
+        output_contract: r.get("output_contract")?,
+        enabled: r.get("enabled")?,
+        revision: r.get::<_, i64>("revision")? as u64,
+        built_in: r.get("built_in")?,
+    })
+}
+
 fn load_agent_role_tx(
     tx: &Transaction<'_>,
     id: &str,
@@ -1820,6 +1834,19 @@ impl Db {
              FROM agent_roles ORDER BY built_in DESC, name COLLATE NOCASE, id",
         )?;
         let rows = statement.query_map([], row_agent_role)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(CoreError::Sqlite)
+    }
+
+    /// Read only Role metadata so the MCP can show choices without loading
+    /// instruction bodies into the candidate-selection path.
+    pub fn list_agent_role_metadata(&self) -> Result<Vec<crate::agent_roles::AgentRoleMetadata>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT id,name,description,output_contract,enabled,revision,built_in
+             FROM agent_roles ORDER BY built_in DESC, name COLLATE NOCASE, id",
+        )?;
+        let rows = statement.query_map([], row_agent_role_metadata)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(CoreError::Sqlite)
     }
@@ -8113,6 +8140,9 @@ mod tests {
         let builtins = db.list_agent_roles().unwrap();
         assert_eq!(builtins.len(), 5);
         assert!(builtins.iter().all(|role| role.built_in && role.enabled));
+        let metadata = db.list_agent_role_metadata().unwrap();
+        assert_eq!(metadata.len(), 5);
+        assert!(metadata.iter().all(|role| role.description.len() > 0));
 
         let original = db.get_agent_role("role_reviewer").unwrap();
         let updated = db

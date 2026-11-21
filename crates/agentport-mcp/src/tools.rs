@@ -6,7 +6,7 @@
 //! everything that could type into a Session the user is driving stays out of
 //! v1: this is a delegation tool, not a remote control for the whole app.
 
-use agentport_core::agent_roles::AgentRole;
+use agentport_core::agent_roles::{AgentRole, AgentRoleMetadata};
 use agentport_core::models::AgentType;
 use agentport_remote_protocol::{
     AgentProbeAllParams, ProjectAddParams, RemoteAgentType, SessionCreateParams, SessionIdParams,
@@ -55,7 +55,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "list_roles",
-        description: "List the enabled Agent roles available for delegation. Returns only role metadata and summaries; the role instructions are applied by create_session and are not exposed here.",
+        description: "List enabled Agent Role metadata when needed. Delegation tools also expose enabled Role name/description metadata directly; pass a chosen roleId or omit it.",
         schema: list_roles_schema,
     },
     ToolDef {
@@ -239,7 +239,7 @@ fn create_session_schema() -> Value {
             },
             "roleId": {
                 "type": "string",
-                "description": "Optional enabled role id from list_roles. One role may be selected; omitted means no role preamble."
+                "description": "Optional enabled role id. The model chooses from the enabled Role metadata in the tool description; omit it when no Role applies."
             },
             "projectPath": {
                 "type": "string",
@@ -300,7 +300,7 @@ fn create_sessions_schema() -> Value {
                         },
                         "roleId": {
                             "type": "string",
-                            "description": "Optional enabled role id from list_roles; one role per task"
+                            "description": "Optional enabled role id; choose from the enabled Role metadata in the tool description, or omit it when no Role applies"
                         },
                         "projectPath": {
                             "type": "string",
@@ -605,6 +605,17 @@ fn public_role(role: AgentRole) -> Value {
     })
 }
 
+fn public_role_metadata(role: AgentRoleMetadata) -> Value {
+    json!({
+        "roleId": role.id,
+        "name": role.name,
+        "description": role.description,
+        "outputContract": role.output_contract,
+        "revision": role.revision,
+        "builtIn": role.built_in,
+    })
+}
+
 fn public_role_snapshot(role: &RoleSnapshot) -> Value {
     json!({
         "roleId": role.role_id,
@@ -703,6 +714,54 @@ impl Toolbox {
         self.depth
     }
 
+    /// Build the MCP tool registry with enabled Role metadata appended only to
+    /// delegation tools. The model can choose a role ID or omit it; this path
+    /// never loads full Role instructions.
+    pub fn tool_definitions(&self) -> Vec<Value> {
+        let role_hint = self
+            .ops
+            .service()
+            .list_agent_role_metadata()
+            .ok()
+            .map(|roles| {
+                roles
+                    .into_iter()
+                    .filter(|role| role.enabled)
+                    .map(|role| {
+                        format!(
+                            "- {}: {} — {}",
+                            role.id,
+                            compact_role_text(&role.name),
+                            compact_role_text(&role.description)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|roles| !roles.is_empty())
+            .map(|roles| {
+                format!(
+                    "\n\nEnabled Agent Roles (choose one by passing its roleId, or omit roleId if none applies):\n{}",
+                    roles.join("\n")
+                )
+            })
+            .unwrap_or_default();
+        TOOLS
+            .iter()
+            .map(|tool| {
+                let description = if matches!(tool.name, "create_session" | "create_sessions") {
+                    format!("{}{}", tool.description, role_hint)
+                } else {
+                    tool.description.to_string()
+                };
+                json!({
+                    "name": tool.name,
+                    "description": description,
+                    "inputSchema": (tool.schema)(),
+                })
+            })
+            .collect()
+    }
+
     pub fn call(&mut self, name: &str, args: &Value) -> TResult<Value> {
         let args = args
             .as_object()
@@ -744,12 +803,12 @@ impl Toolbox {
         let roles = self
             .ops
             .service()
-            .list_agent_roles()
+            .list_agent_role_metadata()
             .map_err(ToolFailure::from)?;
         let roles: Vec<Value> = roles
             .into_iter()
             .filter(|role| role.enabled)
-            .map(public_role)
+            .map(public_role_metadata)
             .collect();
         Ok(json!({ "roles": roles }))
     }
@@ -2655,6 +2714,7 @@ pub mod test_support {
         SecretAddParams, SessionAttachParams, SessionControlParams, SessionDetachParams,
         SessionInputParams, SessionPollParams, SessionStopParams, SessionStructuredPromptParams,
     };
+    use agentport_core::agent_roles::AgentRoleMetadata;
     use agentport_service::{
         BootSnapshot, Result as ServiceResult, SecretAddResult, ServiceError, SessionAttachResult,
         SessionControlResult, SessionInputResult, SessionPollResult, SessionStopResult,
@@ -2674,6 +2734,17 @@ pub mod test_support {
         }
         fn list_sessions(&self, _include_archived: bool) -> ServiceResult<Vec<SessionSummary>> {
             Ok(Vec::new())
+        }
+        fn list_agent_role_metadata(&self) -> ServiceResult<Vec<AgentRoleMetadata>> {
+            Ok(vec![AgentRoleMetadata {
+                id: "role_test".into(),
+                name: "Test Role".into(),
+                description: "Use for test delegation".into(),
+                output_contract: None,
+                enabled: true,
+                revision: 1,
+                built_in: false,
+            }])
         }
         fn attach_session(&self, _: SessionAttachParams) -> ServiceResult<SessionAttachResult> {
             Err(ServiceError::InvalidRequest)

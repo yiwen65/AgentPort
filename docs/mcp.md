@@ -59,11 +59,11 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | 工具 | 作用 |
 | --- | --- |
 | `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent；`probe: true` 会重新探测（较慢） |
-| `list_roles` | 只列出设置中**已启用**的角色 metadata（roleId、名称、说明、输出契约和 revision）；不会返回完整角色指令 |
+| `list_roles` | 查询设置中**已启用**的角色 metadata（roleId、名称、说明、输出契约和 revision）；不会返回完整角色指令。委派工具的 tools/list 描述也会直接携带这些 metadata |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等）。**通常用不到**：`create_session` 自己解析项目（显式 id/path → 否则当前工作目录；cwd 在已注册项目内时归到那个项目） |
 | `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence；完成后 `session_status.completion` 也会给本轮最终答复 |
-| `create_session` | 建单个 Session；可传一个 `roleId` 选择已启用角色；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
-| `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId`；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
+| `create_session` | 建单个 Session；模型可根据 tools/list 中的已启用 Role name/description 自行传 `roleId`，也可以省略；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
+| `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId` 或省略；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
 | `wait_for_task` | 等当前委派回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout`、依据和**本轮最终 `reply`**；`timeout` 是继续等待的结构化结果，应再次调用本工具，不要用 `read_output` 判断完成 |
 | `wait_for_tasks` | 一次同步等待多个 MCP-owned Session；兼容旧客户端，按共享预算返回各项结果 |
@@ -82,8 +82,9 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 单任务委派：
 
 ```text
-list_roles       {}
+tools/list       // create_session 描述中包含已启用 Role 的 name/description
 create_session  {agent: "claude", roleId: "role_implementer", projectPath: "/repo", title: "fix flaky test", prompt: "..."}
+// 如果没有 Role 适用，模型省略 roleId；list_roles 仅在需要刷新 metadata 时调用
 wait_for_task  {sessionId: "..."}  // 默认 45s；超时后继续调用本工具
 ```
 
@@ -112,8 +113,8 @@ get_wait_group {waitGroupId: "..."}
 一个 Agent 不应该能往你正在操作的窗格里打字。归属记录在 `<数据目录>/mcp/agent-sessions.json`。
 
 **角色**：角色在设置 → Agent 角色中全局管理。内置角色可编辑但不可删除，可恢复默认；DIY 角色新建时默认关闭。
-委派时显式传一个 `roleId`，不传则保持原行为；禁用、删除或不存在的 roleId 会在创建 Session 前拒绝，不会静默去掉角色。
-MCP 只返回已启用角色的摘要，创建时把当时的 roleId、revision 和完整内容快照写入归属记录。
+`tools/list` 会把所有已启用 Role 的 `roleId`、name、description 动态放入 `create_session` / `create_sessions` 的工具说明。模型自行判断传入哪个 `roleId`，或在没有合适 Role 时省略；不需要先调用 `list_roles`。这一步只返回 metadata，不加载完整指令。
+当模型传入 `roleId` 后，MCP 才按 ID 加载完整 Role 内容；创建时或第一次 `send_prompt` 时把当时的 roleId、revision 和完整内容快照写入归属记录，并只注入一次。禁用、删除或不存在的 roleId 会在创建/发送前拒绝，不会静默替换。
 角色指令以受约束的单行 delegation preamble 注入，只是行为指导，不能改变 AgentPort 的权限、Agent、工具、窗格、所有权或生命周期规则。
 角色编辑不会影响已有 Session。Generic Shell 不是对话型 Agent，不能安全应用角色，因此传 roleId 给 Shell 会被拒绝。
 

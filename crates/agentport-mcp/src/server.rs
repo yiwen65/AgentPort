@@ -46,11 +46,7 @@ impl Server {
             "initialize" => Ok(initialize_result(message.params.as_ref(), &self.version)),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({
-                "tools": TOOLS.iter().map(|tool| json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "inputSchema": (tool.schema)(),
-                })).collect::<Vec<_>>()
+                "tools": self.toolbox.tool_definitions()
             })),
             "tools/call" => self.call_tool(message.params.as_ref()),
             other => Err(RpcError::new(
@@ -111,6 +107,18 @@ mod tests {
         // Guardrails must not reappear as tools.
         assert!(!tools.iter().any(|tool| tool.name == "send_input"));
         assert!(!tools.iter().any(|tool| tool.name.contains("git")));
+
+        let mut server = Server::new(crate::tools::test_support::toolbox(), "0.0.0");
+        let response = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+            .unwrap();
+        let definitions = response["result"]["tools"].as_array().unwrap();
+        let create = definitions
+            .iter()
+            .find(|tool| tool["name"] == "create_session")
+            .unwrap();
+        assert!(create["description"].as_str().unwrap().contains("role_test"));
+        assert!(create["description"].as_str().unwrap().contains("Test Role"));
     }
 
     #[test]

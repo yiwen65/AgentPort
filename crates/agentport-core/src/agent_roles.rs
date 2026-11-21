@@ -27,6 +27,36 @@ pub struct AgentRole {
     pub built_in: bool,
 }
 
+/// Instruction-free metadata shown to the coordinating model before it
+/// chooses whether to pass a Role ID. Full instructions are loaded separately
+/// only after that explicit choice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRoleMetadata {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub output_contract: Option<String>,
+    pub enabled: bool,
+    pub revision: u64,
+    pub built_in: bool,
+}
+
+impl From<&AgentRole> for AgentRoleMetadata {
+    fn from(role: &AgentRole) -> Self {
+        Self {
+            id: role.id.clone(),
+            name: role.name.clone(),
+            description: role.description.clone(),
+            output_contract: role.output_contract.clone(),
+            enabled: role.enabled,
+            revision: role.revision,
+            built_in: role.built_in,
+        }
+    }
+}
+
 /// Editable role fields. The backend controls identity, enablement, revision
 /// and built-in status so UI/MCP callers cannot bypass lifecycle rules.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
