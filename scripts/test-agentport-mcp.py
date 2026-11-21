@@ -234,8 +234,11 @@ def main() -> int:
             },
         )
         check(not is_error and handoff.get("sessionId"), "handoff creates a Session")
-        check(handoff.get("promptSent"), "handoff sends the Markdown to the Agent")
+        check(handoff.get("promptSent"), f"handoff sends the Markdown to the Agent ({handoff})")
+        check(handoff.get("ready") is True, "handoff reports the Agent was ready")
         check(handoff.get("handoff", {}).get("direct") is True, "handoff reports direct delegation")
+        check(handoff.get("handoff", {}).get("transport") == "pty", "handoff reports PTY transport")
+        check(handoff.get("handoff", {}).get("formatPreserved") is False, "PTY handoff reports compact fallback")
         check(handoff.get("pane", {}).get("kind") == "split_pane", "handoff queues a split pane")
         handoff_id = handoff["sessionId"]
         check(not (data_dir / "docs" / "handoff").exists(), "handoff does not create a document")

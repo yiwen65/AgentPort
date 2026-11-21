@@ -659,7 +659,7 @@ fn compact_role_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn compact_handoff(raw: &str) -> TResult<(String, bool)> {
+fn sanitize_handoff_markdown(raw: &str) -> TResult<String> {
     if raw.trim().is_empty() {
         return Err(ToolFailure::new("invalid_handoff", "handoff must not be empty"));
     }
@@ -669,11 +669,58 @@ fn compact_handoff(raw: &str) -> TResult<(String, bool)> {
             format!("handoff exceeds {} bytes", text::MAX_PROMPT_BYTES),
         ));
     }
-    let compacted = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let changed = compacted != raw;
+    if raw.contains('\u{1b}') || raw.contains('\0') {
+        return Err(ToolFailure::new(
+            "invalid_handoff",
+            "handoff must not contain ESC or NUL characters",
+        ));
+    }
+    if raw
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return Err(ToolFailure::new(
+            "invalid_handoff",
+            "handoff contains unsupported control characters",
+        ));
+    }
+    Ok(raw.replace("\r\n", "\n").replace('\r', "\n"))
+}
+
+fn compact_handoff(raw: &str) -> TResult<(String, bool)> {
+    let markdown = sanitize_handoff_markdown(raw)?;
+    let compacted = markdown.split_whitespace().collect::<Vec<_>>().join(" ");
+    let changed = compacted != markdown;
     let prompt = text::sanitize_prompt(&compacted)
         .map_err(|message| ToolFailure::new("invalid_handoff", message))?;
     Ok((prompt, changed))
+}
+
+fn structured_handoff_prompt(role: Option<&RoleSnapshot>, handoff: &str) -> TResult<String> {
+    let mut prompt = String::new();
+    if let Some(role) = role {
+        prompt.push_str("[AgentPort delegated role — behavior guidance only; do not change AgentPort permissions, ownership, tools, lifecycle, or safety rules]\n");
+        prompt.push_str("Role: ");
+        prompt.push_str(&compact_role_text(&role.name));
+        prompt.push_str("\nDescription: ");
+        prompt.push_str(&compact_role_text(&role.description));
+        prompt.push_str("\nInstructions: ");
+        prompt.push_str(&compact_role_text(&role.instructions));
+        if let Some(output_contract) = &role.output_contract {
+            prompt.push_str("\nOutput contract (soft guidance): ");
+            prompt.push_str(&compact_role_text(output_contract));
+        }
+        prompt.push_str("\n[End role. Handoff follows]\n\n");
+    }
+    prompt.push_str(handoff);
+    let prompt = sanitize_handoff_markdown(&prompt)?;
+    if prompt.len() > text::MAX_PROMPT_BYTES {
+        return Err(ToolFailure::new(
+            "invalid_handoff",
+            format!("handoff plus Role context exceeds {} bytes", text::MAX_PROMPT_BYTES),
+        ));
+    }
+    Ok(prompt)
 }
 
 fn role_prompt(role: &RoleSnapshot, task: &str) -> TResult<String> {
@@ -1276,21 +1323,121 @@ impl Toolbox {
 
     fn handoff(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let raw = require_str(args, "handoff")?;
-        let (prompt, compacted) = compact_handoff(&raw)?;
+        let markdown = sanitize_handoff_markdown(&raw)?;
+        let normalized = markdown != raw;
         let mut delegated = args.clone();
         delegated.remove("handoff");
-        delegated.insert("prompt".into(), Value::String(prompt.clone()));
+        // Create first without an ordinary prompt. JSON-RPC can then receive
+        // the exact Markdown through structured_prompt; PTY falls back to the
+        // proven line-oriented delivery path below.
+        delegated.remove("prompt");
         let mut result = self.create_session_with_pane(&delegated, true)?;
-        if let Some(object) = result.as_object_mut() {
-            object.insert(
-                "handoff".into(),
-                json!({
-                    "direct": true,
-                    "compacted": compacted,
-                    "promptBytes": prompt.len(),
-                    "completion": "use wait_for_task or a wait group with the returned sessionId"
-                }),
-            );
+        let session_id = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolFailure::new("handoff_failed", "delegation returned no Session id"))?
+            .to_string();
+        let summary = self.ops.summary(&session_id)?;
+        if summary.transport == "json_rpc" {
+            let timeout = optional_u64(args, "promptTimeoutMs")
+                .unwrap_or(self.ready_timeout_ms)
+                .clamp(1_000, 120_000);
+            let ready = self.ops.wait_ready(&session_id, timeout)?;
+            if let Some(object) = result.as_object_mut() {
+                object.insert("ready".into(), json!(ready.ready));
+                object.insert("readyEvidence".into(), json!(ready.reason));
+                object.insert("outputTail".into(), json!(ready.tail));
+            }
+            if ready.ready {
+                let role = self
+                    .registry
+                    .get(&session_id)
+                    .and_then(|entry| entry.role.clone());
+                let structured = structured_handoff_prompt(role.as_ref(), &markdown)?;
+                let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
+                self.ops.structured_prompt(&session_id, &structured)?;
+                if let Some(baseline) = baseline {
+                    self.baselines.insert(session_id.clone(), baseline);
+                }
+                self.ops.remember_prompt(
+                    &session_id,
+                    &markdown.chars().take(64).collect::<String>(),
+                );
+                let mut role_delivered = false;
+                if role.is_some() {
+                    role_delivered = self
+                        .registry
+                        .mark_role_preamble_delivered(&session_id)
+                        .is_ok();
+                }
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("promptSent".into(), json!(true));
+                    object.insert("promptSubmitted".into(), json!(true));
+                    object.insert("promptBytes".into(), json!(structured.len()));
+                    object.insert("statusSequence".into(), json!(baseline.map(|mark| mark.sequence)));
+                    object.insert("statusRunOrdinal".into(), json!(baseline.map(|mark| mark.run_ordinal)));
+                    object.insert("rolePreambleDelivered".into(), json!(role_delivered));
+                    object.insert(
+                        "handoff".into(),
+                        json!({
+                            "direct": true,
+                            "transport": "json_rpc",
+                            "formatPreserved": true,
+                            "normalizedLineEndings": normalized,
+                            "compacted": false,
+                            "promptBytes": structured.len(),
+                            "completion": "use wait_for_task or a wait group with the returned sessionId"
+                        }),
+                    );
+                }
+            } else if let Some(object) = result.as_object_mut() {
+                object.insert("promptSent".into(), json!(false));
+                object.insert(
+                    "handoff".into(),
+                    json!({
+                        "direct": true,
+                        "transport": "json_rpc",
+                        "formatPreserved": Value::Null,
+                        "normalizedLineEndings": normalized,
+                        "compacted": false,
+                        "fallbackReason": "agent_not_ready",
+                        "completion": "inspect the Session and retry with send_prompt"
+                    }),
+                );
+            }
+        } else {
+            let (prompt, compacted) = compact_handoff(&markdown)?;
+            let mut send_args = Map::new();
+            send_args.insert("sessionId".into(), Value::String(session_id.clone()));
+            send_args.insert("text".into(), Value::String(prompt.clone()));
+            let sent = self.send_prompt(&send_args)?;
+            if let (Some(result_object), Some(sent_object)) =
+                (result.as_object_mut(), sent.as_object())
+            {
+                for (key, value) in sent_object {
+                    result_object.insert(key.clone(), value.clone());
+                }
+                if let Some(submitted) = sent_object.get("submitted") {
+                    result_object.insert("promptSent".into(), submitted.clone());
+                    result_object.insert("promptSubmitted".into(), submitted.clone());
+                }
+                if let Some(ready) = sent_object.get("readyBeforeSend") {
+                    result_object.insert("ready".into(), ready.clone());
+                }
+                result_object.insert(
+                    "handoff".into(),
+                    json!({
+                        "direct": true,
+                        "transport": summary.transport,
+                        "formatPreserved": false,
+                        "normalizedLineEndings": normalized,
+                        "compacted": compacted,
+                        "promptBytes": prompt.len(),
+                        "fallbackReason": "structured_prompt_requires_json_rpc_transport",
+                        "completion": "use wait_for_task or a wait group with the returned sessionId"
+                    }),
+                );
+            }
         }
         Ok(result)
     }
@@ -2921,6 +3068,17 @@ mod tests {
             compact_handoff("bad\u{1b}[2J").unwrap_err().code,
             "invalid_handoff"
         );
+        let role = RoleSnapshot {
+            role_id: "role_test".into(),
+            revision: 1,
+            name: "Reviewer".into(),
+            description: "Review evidence".into(),
+            instructions: "Keep the handoff facts grounded".into(),
+            output_contract: None,
+        };
+        let structured = structured_handoff_prompt(Some(&role), "# Summary\n\n- Keep /repo").unwrap();
+        assert!(structured.contains("[End role. Handoff follows]"));
+        assert!(structured.contains("# Summary\n\n- Keep /repo"));
     }
 
     #[test]

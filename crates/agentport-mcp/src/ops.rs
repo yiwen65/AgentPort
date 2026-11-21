@@ -7,7 +7,7 @@
 
 use agentport_remote_protocol::{
     RunCursor, SessionAttachParams, SessionControlKind, SessionControlParams, SessionDetachParams,
-    SessionInputParams, SessionPollParams, SessionStopParams,
+    SessionInputParams, SessionPollParams, SessionStopParams, SessionStructuredPromptParams,
 };
 use agentport_service::{
     RemoteService, ServiceError, SessionAttachResult, SessionEvent, SessionPollResult,
@@ -787,6 +787,16 @@ impl SessionOps {
     fn peek_stream(&mut self, session_id: &str) -> Option<String> {
         let outcome = self.read_stream(session_id, None, text::DEFAULT_READ_LINES).ok()?;
         (!outcome.lines.is_empty()).then(|| outcome.text())
+    }
+
+    pub fn structured_prompt(&mut self, session_id: &str, text: &str) -> TResult<()> {
+        let attachment_id = self.attach(session_id)?;
+        self.service
+            .structured_prompt(SessionStructuredPromptParams {
+                attachment_id,
+                text: zeroize::Zeroizing::new(text.to_owned()),
+            })
+            .map_err(ToolFailure::from)
     }
 
     pub fn send_bytes(&mut self, session_id: &str, bytes: &[u8]) -> TResult<u64> {
