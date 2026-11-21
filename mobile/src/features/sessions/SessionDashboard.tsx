@@ -19,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import type { ConnectionState, HostProfileSummary, RemoteClient, RemoteConnectionStateEvent } from "../../protocol/remoteClient";
 import { activeAgentSessions, compareActiveSessions, orderedVisibleAgents, quickStartParams, type SessionLayout } from "./sessionModel";
 import { useActiveSessionSnapshots } from "./useActiveSessionSnapshots";
+import { isUnreadIndicatorKind } from "./sessionRecent";
 import type { AgentPreferences, OpenSession, ProjectSummary, SessionSummary, SupportedAgent } from "./types";
 
 const DEVICE_KEY = "agentport-mobile-v2:selected-device";
@@ -537,10 +538,16 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
 
   // Mobile receipts belong to this phone, not the shared desktop unread bit.
   // Use the same durable inbox as Recent so old server snapshots cannot relight
-  // an acknowledged row, while a newer attention event can.
+  // an acknowledged row, while a newer attention event can. The blue
+  // indicator is narrower than the inbox: failures remain available in Recent
+  // but do not count as unread completed turns or approval requests.
   // A value-stable key preserves memoized rows when inbox polling publishes
   // unchanged entries. Keep the original Session objects and lists intact.
-  const unreadSessionKey = JSON.stringify(recent
+  const unreadIndicators = useMemo(
+    () => recent.filter(entry => isUnreadIndicatorKind(entry.kind)),
+    [recent],
+  );
+  const unreadSessionKey = JSON.stringify(unreadIndicators
     .filter(entry => entry.hostId === snapshot?.deviceId).map(entry => entry.sessionId).sort());
   const unreadSessionIds = useMemo(() => new Set<string>(JSON.parse(unreadSessionKey)), [unreadSessionKey]);
   const sessions = useMemo(() => snapshot?.sessions.filter(session => !session.archivedAt
@@ -761,7 +768,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         {!globalActivity ? <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#83d8ae" } as CSSProperties}
           aria-label={t("project.add")} aria-haspopup="dialog" title={selectedHost?.connectionState === "connected" ? t("project.add") : t("project.offline")}
           disabled={!selectedHost || selectedHost.connectionState !== "connected" || updateBusy} onClick={openProjectDialog}><Icon name="addProject" /></button> : null}
-        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#f7c66a" } as CSSProperties} disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{recent.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#f7c66a" } as CSSProperties} disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{unreadIndicators.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
         <button type="button" className="toolbar-icon-button toolbar-refresh" style={{ "--toolbar-color": "#71e6d1" } as CSSProperties} disabled={globalActivity ? connectedHosts.length === 0 || activity.refreshing : !selectedDeviceId || updateBusy} aria-busy={globalActivity ? activity.refreshing : updateBusy} onClick={() => globalActivity ? void activity.refresh(undefined, false) : void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
         <button
           type="button"
@@ -818,7 +825,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
         <ul className="v2-session-list active-agent-list">{active.map(({ host, session, stale }) => <SessionRow
           key={JSON.stringify([host.id, session.id])} session={session} host={host} showHost stale={stale} unavailable={stale}
           deviceTone={deviceTones.get(host.id)} agentMono={agentMono} sourceLabel={sourceLabel(host, session)}
-          unread={recent.some(entry => entry.hostId === host.id && entry.sessionId === session.id)}
+          unread={unreadIndicators.some(entry => entry.hostId === host.id && entry.sessionId === session.id)}
           onOpen={() => openActivity(host, session)} onActions={() => {
             if (activity.snapshots.get(host.id)?.error) return;
             updateWorkspace({ ...workspaceRef.current, recentOpen: false });

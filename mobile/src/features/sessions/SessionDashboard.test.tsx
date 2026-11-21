@@ -488,6 +488,22 @@ describe("V2 Session workspace", () => {
     expect(within(dialog).queryByRole("button", { name: "Dead agent" })).not.toBeInTheDocument();
   });
 
+  it("does not light unread dots for execution failures", async () => {
+    const inbox = new AttentionInbox("host-1");
+    inbox.ingest({ events: [{ sessionId: "attention", runId: "run", kind: "execution_failed",
+      cursor: { sessionId: "attention", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-02T00:02:00Z" } }] });
+    const remote = client();
+    render(<SessionDashboard client={remote} onOpenSession={vi.fn()} />);
+    await screen.findByRole("button", { name: "Approval task" });
+
+    expect(screen.getByRole("button", { name: "Recent sessions" }).querySelector(".toolbar-attention")).toBeNull();
+    expect(screen.getByRole("button", { name: "Approval task" }).closest("li")!.querySelector(".session-unread")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Recent sessions" }));
+    const dialog = screen.getByRole("dialog", { name: "Recent sessions" });
+    expect(within(dialog).getByRole("button", { name: /attention.*Execution failed/ })).toBeInTheDocument();
+  });
+
   it("clears an old Recent-opening error when retrying successfully", async () => {
     new AttentionInbox("host-1").ingest({ events: [{ sessionId: "attention", runId: "run", kind: "approval_requested",
       cursor: { sessionId: "attention", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-02T00:02:00Z" } }] }, new Map([["attention", "Approval task"]]));
