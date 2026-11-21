@@ -299,7 +299,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     return result;
   }, [snapshot?.deviceId, snapshot?.sessions, activity.snapshots]);
   const { entries: recent, error: notificationError, acknowledge, clearAll } = useAttentionInbox(client, hosts.map(host => host.id === recoveringHost
-    ? { ...host, connectionState: "reconnecting" as const } : host), pageVisible, authoritativeSessions);
+    ? { ...host, connectionState: "reconnecting" as const } : host), visible, authoritativeSessions);
   const updateBusy = recoveringHost === selectedDeviceId || updatingHosts.has(selectedDeviceId) || selectedHost?.connectionState === "connecting" || selectedHost?.connectionState === "reconnecting";
   const updateFailed = Boolean(snapshot?.error || updateErrorHost === selectedDeviceId);
 

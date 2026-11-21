@@ -430,7 +430,7 @@ describe("V2 Session workspace", () => {
     vi.mocked(remote.request).mockClear();
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(0);
-    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "attention.poll")).toHaveLength(6); // Three idle polls per connected Host, not twelve per Host.
+    expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "attention.poll")).toHaveLength(0); // Terminal pages own the transport while the dashboard is inactive.
     rerender(<SessionDashboard {...props} active />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(vi.mocked(remote.request).mock.calls.filter(([, method]) => method === "session.list")).toHaveLength(1);
