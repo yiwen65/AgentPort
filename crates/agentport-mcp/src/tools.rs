@@ -11,7 +11,7 @@ use agentport_core::models::AgentType;
 use agentport_remote_protocol::{
     AgentProbeAllParams, ProjectAddParams, RemoteAgentType, SessionCreateParams, SessionIdParams,
 };
-use agentport_service::RemoteService;
+use agentport_service::{RemoteService, SessionSummary};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,8 +66,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "session_status",
-        description: "Status of one Session this MCP created, plus the tail of its status history \
-                      (state, source, confidence, evidence).",
+        description: "Status of one Session this MCP created, plus the tail of its status history (state, source, confidence, evidence). When a completed turn is available, completion includes the final reply so recovery does not require read_output.",
         schema: session_status_schema,
     },
     ToolDef {
@@ -926,6 +925,85 @@ impl Toolbox {
         Ok(json!({ "sessions": owned, "mcpDepth": self.depth }))
     }
 
+    /// Surface a completed turn through the ordinary status read as well as
+    /// `wait_for_task`. This is the recovery path after a caller-side request
+    /// deadline: the Agent's hook/adapter completion event is already durable,
+    /// so the coordinator can receive the final reply without reading PTY
+    /// progress or sending another prompt.
+    fn completed_turn(&mut self, session_id: &str, summary: &SessionSummary) -> Option<Value> {
+        if let Some(previous) = self
+            .settled
+            .get(session_id)
+            .filter(|turn| turn.reply.is_some())
+        {
+            return Some(json!({
+                "state": previous.state,
+                "source": previous.source,
+                "confidence": previous.confidence,
+                "evidence": previous.evidence,
+                "reply": previous.reply,
+                "replyTruncated": false,
+                "replyUnavailableReason": previous.reply_unavailable_reason,
+                "outputSource": previous.tail_source,
+                "outputFallbackReason": previous.fallback_reason,
+                "continuation": false,
+                "alreadySettled": true,
+            }));
+        }
+
+        let baseline = self.baselines.get(session_id).copied()?;
+        let status = summary.latest_status.as_ref()?;
+        let mark = StatusMark {
+            run_ordinal: status.run_ordinal,
+            sequence: status.sequence,
+        };
+        if (mark.run_ordinal, mark.sequence) <= (baseline.run_ordinal, baseline.sequence) {
+            return None;
+        }
+        let turn_completed = summary.latest_attention_kind.as_deref() == Some("turn_completed")
+            || (status.state == "idle"
+                && matches!(status.source.as_str(), "hook" | "adapter"));
+        if !turn_completed {
+            return None;
+        }
+        let reply = self.ops.read_reply(session_id, text::MAX_READ_BYTES).ok()?;
+        if !reply.is_available() {
+            return None;
+        }
+        let evidence = if summary.latest_attention_kind.as_deref() == Some("turn_completed") {
+            "turn completion reported after the prompt".to_string()
+        } else {
+            "status moved to idle after the prompt".to_string()
+        };
+        self.baselines.remove(session_id);
+        self.settled.insert(
+            session_id.to_string(),
+            SettledTurn {
+                state: "idle",
+                source: status.source.clone(),
+                confidence: status.confidence.clone(),
+                evidence: evidence.clone(),
+                reply: Some(reply.text.clone()),
+                reply_unavailable_reason: None,
+                tail_source: reply.source,
+                fallback_reason: None,
+            },
+        );
+        Some(json!({
+            "state": "idle",
+            "source": status.source,
+            "confidence": status.confidence,
+            "evidence": evidence,
+            "reply": reply.text,
+            "replyTruncated": reply.truncated,
+            "replyUnavailableReason": Value::Null,
+            "outputSource": reply.source,
+            "outputFallbackReason": Value::Null,
+            "continuation": false,
+            "alreadySettled": false,
+        }))
+    }
+
     fn session_status(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
@@ -951,6 +1029,7 @@ impl Toolbox {
                 })
             })
             .collect();
+        let completion = self.completed_turn(&session_id, &summary);
         let role = self
             .registry
             .get(&session_id)
@@ -971,6 +1050,7 @@ impl Toolbox {
                 "occurredAt": status.occurred_at,
             })),
             "attention": summary.latest_attention_kind,
+            "completion": completion,
             "role": role,
             "history": recent,
         }))

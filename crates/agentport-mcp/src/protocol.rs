@@ -193,7 +193,8 @@ completion primitive: it returns idle | needs_input | exited | timeout with the
 current turn's reply when available. A timeout is a structured continuation point;
 call wait_for_task again for the same Session and do not use read_output to decide
 whether the turn finished. Each wait is capped below common client request deadlines.
-read_output is only bounded progress evidence.
+read_output is only bounded progress evidence; session_status.completion can carry a
+completed turn's final reply during recovery.
 cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
 undone. To tidy up, archive_session hides a Session and keeps its history readable;

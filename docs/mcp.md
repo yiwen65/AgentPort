@@ -61,7 +61,7 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent；`probe: true` 会重新探测（较慢） |
 | `list_roles` | 只列出设置中**已启用**的角色 metadata（roleId、名称、说明、输出契约和 revision）；不会返回完整角色指令 |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等）。**通常用不到**：`create_session` 自己解析项目（显式 id/path → 否则当前工作目录；cwd 在已注册项目内时归到那个项目） |
-| `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence |
+| `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence；完成后 `session_status.completion` 也会给本轮最终答复 |
 | `create_session` | 建单个 Session；可传一个 `roleId` 选择已启用角色；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
 | `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId`；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
@@ -160,8 +160,8 @@ MCP servers，此时打进去的字会被丢弃）。所以：
 | `transcript` | 读 Agent 自己的历史（Claude/Codex/Pi 的 JSONL），会话结束后仍然可读；没有历史时返回 `transcript-unavailable` + `fallbackReason` |
 
 `source: "reply"` 只给**本轮**助手的回答：从原生历史倒着走，必须匹配本次 prompt 的 user 消息，再跳过 tool 事件
-和 thinking；没有匹配的 prompt fence 时不会泄漏上一轮答案。`wait_for_task` 的 `reply` 字段就是这个东西；
-拿不到时给 `replyUnavailableReason`，并用 `outputTail`（screen/stream）作为进度证据兜底。
+和 thinking；没有匹配的 prompt fence 时不会泄漏上一轮答案。`wait_for_task` 的 `reply` 字段就是这个东西；`session_status.completion.reply` 是同一份恢复入口；拿不到时给
+`replyUnavailableReason`，并用 `outputTail`（screen/stream）作为进度证据兜底。
 
 返回 `{source, lines[], returnedLineCount, truncated, limited, nextCursor}`：`truncated` 表示为了 `limit`
 丢掉了更早的行，`limited` 表示 Host 无法兑现游标（日志轮转或 resync）；`incomplete: true` 表示有缺口，
