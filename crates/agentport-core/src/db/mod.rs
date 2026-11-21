@@ -1866,6 +1866,40 @@ impl Db {
                     now,
                 ],
             )?;
+            // Migrate the original localized preset labels and descriptions
+            // without replacing fields that users have edited.
+            let legacy_name = match role.id.as_str() {
+                "role_researcher" => Some("\u{7814}\u{7a76}\u{4e0e}\u{5206}\u{6790} / Research & Analysis"),
+                "role_implementer" => Some("\u{5b9e}\u{73b0}\u{4e0e}\u{4ea4}\u{4ed8} / Implementer"),
+                "role_reviewer" => Some("\u{4ee3}\u{7801}\u{5ba1}\u{67e5} / Reviewer"),
+                "role_tester" => Some("\u{6d4b}\u{8bd5}\u{4e0e}\u{9a8c}\u{8bc1} / Tester"),
+                "role_documenter" => Some("\u{6587}\u{6863}\u{4e0e}\u{6c9f}\u{901a} / Documenter"),
+                _ => None,
+            };
+            if let Some(legacy_name) = legacy_name {
+                tx.execute(
+                    "UPDATE agent_roles
+                     SET name=?2, revision=revision+1, updated_at=?3
+                     WHERE id=?1 AND built_in=1 AND name=?4",
+                    params![role.id, role.name, now, legacy_name],
+                )?;
+            }
+            let legacy_description = match role.id.as_str() {
+                "role_researcher" => Some("\u{8c03}\u{67e5}\u{80cc}\u{666f}\u{3001}\u{9a8c}\u{8bc1}\u{4e8b}\u{5b9e}\u{3001}\u{6bd4}\u{8f83}\u{65b9}\u{6848}\u{5e76}\u{6e05}\u{6670}\u{8bb0}\u{5f55}\u{4e0d}\u{786e}\u{5b9a}\u{6027}\u{3002}"),
+                "role_implementer" => Some("\u{628a}\u{5df2}\u{786e}\u{8ba4}\u{9700}\u{6c42}\u{8f6c}\u{5316}\u{4e3a}\u{6700}\u{5c0f}\u{3001}\u{53ef}\u{9a8c}\u{8bc1}\u{7684}\u{4ee3}\u{7801}\u{6539}\u{52a8}\u{3002}"),
+                "role_reviewer" => Some("\u{4ece}\u{6b63}\u{786e}\u{6027}\u{3001}\u{5b89}\u{5168}\u{6027}\u{3001}\u{56de}\u{5f52}\u{548c}\u{53ef}\u{7ef4}\u{62a4}\u{6027}\u{89d2}\u{5ea6}\u{5ba1}\u{67e5}\u{53d8}\u{66f4}\u{3002}"),
+                "role_tester" => Some("\u{8bbe}\u{8ba1}\u{5e76}\u{6267}\u{884c}\u{6709}\u{9488}\u{5bf9}\u{6027}\u{7684}\u{9a8c}\u{8bc1}\u{3001}\u{5b9a}\u{4f4d}\u{5931}\u{8d25}\u{5e76}\u{533a}\u{5206}\u{4ea7}\u{54c1}\u{95ee}\u{9898}\u{4e0e}\u{6d4b}\u{8bd5}\u{95ee}\u{9898}\u{3002}"),
+                "role_documenter" => Some("\u{628a}\u{6280}\u{672f}\u{884c}\u{4e3a}\u{3001}\u{4f7f}\u{7528}\u{65b9}\u{5f0f}\u{548c}\u{9650}\u{5236}\u{5199}\u{6210}\u{51c6}\u{786e}\u{3001}\u{53ef}\u{6267}\u{884c}\u{7684}\u{8bf4}\u{660e}\u{3002}"),
+                _ => None,
+            };
+            if let Some(legacy_description) = legacy_description {
+                tx.execute(
+                    "UPDATE agent_roles
+                     SET description=?2, revision=revision+1, updated_at=?3
+                     WHERE id=?1 AND built_in=1 AND description=?4",
+                    params![role.id, role.description, now, legacy_description],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())
