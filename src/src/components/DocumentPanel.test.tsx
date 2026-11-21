@@ -130,6 +130,7 @@ describe("DocumentPanel", () => {
       docGroups: [],
       activeDocGroupIndex: 0,
       docPanelExpanded: false,
+      docPanelCollapsed: false,
       docPanelWidth: 480,
       docPanelWidthAuto: true,
       docReadingMode: false,
@@ -172,6 +173,7 @@ describe("DocumentPanel", () => {
       docGroups: [],
       activeDocGroupIndex: 0,
       docPanelExpanded: false,
+      docPanelCollapsed: false,
       docPanelWidth: 480,
       docPanelWidthAuto: true,
       docReadingMode: false,
@@ -729,6 +731,26 @@ describe("DocumentPanel", () => {
     const panelStyle = container.querySelector(".doc-panel")?.getAttribute("style") ?? "";
     expect(panelStyle).toContain("width: 241px");
     expect(getState().docPanelExpanded).toBe(false);
+  });
+
+  it("folds the document viewer without closing its open tab", async () => {
+    const { container } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "报告.md" });
+
+    fireEvent.click(screen.getByLabelText("折叠文档查看器"));
+    await waitFor(() => {
+      expect(getState().docPanelCollapsed).toBe(true);
+      expect(getState().docGroups).toHaveLength(1);
+      expect(container.querySelector(".doc-panel")?.className).toContain("collapsed");
+      expect(container.querySelector(".doc-groups")).toBeNull();
+    });
+
+    fireEvent.click(screen.getByLabelText("展开文档查看器"));
+    await waitFor(() => {
+      expect(getState().docPanelCollapsed).toBe(false);
+      expect(screen.getByRole("tab", { name: "报告.md" })).toBeTruthy();
+      expect(container.querySelector(".doc-groups")).not.toBeNull();
+    });
   });
 
   it("splits into two groups and collapses when the second group empties", async () => {

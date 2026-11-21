@@ -309,7 +309,9 @@ function commitGroups(groups: DocumentGroup[], active: DocumentGroup | null): vo
     // closeDocument did the same): a tree-only panel keeping the expanded
     // flex class stretches full-width and leaves a blank area beside the
     // tree.
-    ...(kept.length === 0 ? { docPanelExpanded: false, docReadingMode: false } : {}),
+    ...(kept.length === 0
+      ? { docPanelExpanded: false, docPanelCollapsed: false, docReadingMode: false }
+      : {}),
   });
 }
 
@@ -338,6 +340,7 @@ export function openDocumentTarget(
     group.tabs[existing.tabIndex] = tab;
     group.activeTabId = tab.id;
     commitGroups(groups, group);
+    setState({ docPanelCollapsed: false });
     return;
   }
 
@@ -369,6 +372,7 @@ export function openDocumentTarget(
   }
   group.activeTabId = tab.id;
   commitGroups(groups, group);
+  setState({ docPanelCollapsed: false });
 }
 
 /** Explicit "open to the side" (tree context menu): pinned in the other
@@ -399,6 +403,7 @@ export function openDocumentTargetToSide(
     // The only open file cannot split against itself; just activate it.
     if (sideEmpty) {
       setActiveDocumentTab(existing.tab.id);
+      setState({ docPanelCollapsed: false });
       return;
     }
     const targetGroup = existing.groupIndex === 0 ? 1 : 0;
@@ -426,6 +431,7 @@ export function openDocumentTargetToSide(
   group.tabs.push(tab);
   group.activeTabId = tab.id;
   commitGroups(groups, group);
+  setState({ docPanelCollapsed: false });
 }
 
 export function setActiveDocumentTab(tabId: string): void {

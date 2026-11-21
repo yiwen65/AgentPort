@@ -4418,6 +4418,34 @@ body.is-resizing-pane {
   border-left: none;
 }
 
+/* Folded viewer: keep a narrow reopen rail and preserve the open document
+   tabs/draft while returning the terminal to the available workspace. */
+.doc-panel.collapsed {
+  flex: 0 0 40px;
+  width: 40px;
+}
+
+.doc-panel.collapsed .doc-editor-column {
+  flex: 0 0 40px;
+  width: 40px;
+}
+
+.doc-panel.collapsed .doc-panel-header {
+  padding: 6px;
+}
+
+.doc-panel.collapsed .doc-panel-header > :not(.doc-panel-fold-toggle),
+.doc-panel.collapsed .doc-panel-resize,
+.doc-panel.collapsed .doc-groups,
+.doc-panel.collapsed .doc-tree,
+.doc-panel.collapsed .doc-tree-resize {
+  display: none;
+}
+
+.doc-panel.collapsed .doc-panel-fold-toggle {
+  display: inline-flex;
+}
+
 .doc-panel-resize {
   position: absolute;
   left: -3px;

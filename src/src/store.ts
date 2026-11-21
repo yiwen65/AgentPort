@@ -428,6 +428,8 @@ export interface AppState {
   docTreeWidth: number;
   /** Whether the document viewer is expanded over the whole terminal page. */
   docPanelExpanded: boolean;
+  /** Whether the document viewer is folded to a compact reopen control. */
+  docPanelCollapsed: boolean;
   /** Immersive reading layout: full width, centered column, outline rail. */
   docReadingMode: boolean;
   /** Reading surface palette: follow the terminal, or a dedicated paper/night theme. */
@@ -658,6 +660,7 @@ const initialState: AppState = {
   docPanelWidthAuto: true,
   docTreeWidth: 240,
   docPanelExpanded: false,
+  docPanelCollapsed: false,
   docReadingMode: false,
   docReadingTheme: "terminal",
   docCodeLineNumbers: false,

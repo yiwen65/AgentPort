@@ -1616,7 +1616,8 @@ export default function TerminalArea() {
   );
   const hasProjects = useStore((state) => state.projects.length > 0);
   const docExpanded = useStore(
-    (state) => state.docPanelExpanded && hasOpenDocuments(state),
+    (state) =>
+      state.docPanelExpanded && !state.docPanelCollapsed && hasOpenDocuments(state),
   );
   // A Session outside the remembered split is shown as a temporary singleton.
   // The stored tree remains intact and reappears when one of its leaves is

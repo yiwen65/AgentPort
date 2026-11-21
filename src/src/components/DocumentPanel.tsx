@@ -361,10 +361,12 @@ function confirmDiscardTab(tabId: string): Promise<boolean> {
 function DocToolbar({
   tab,
   expanded,
+  collapsed,
   activeSession,
 }: {
   tab: DocumentTab | null;
   expanded: boolean;
+  collapsed: boolean;
   activeSession: SessionView | null;
 }) {
   const { t } = useTranslation("shell");
@@ -698,6 +700,25 @@ function DocToolbar({
         }}
       >
         <IconBook />
+      </button>
+      <button
+        className="btn small ghost doc-panel-fold-toggle"
+        data-tip={collapsed ? t("ui.document.panelExpandTip") : t("ui.document.panelCollapseTip")}
+        aria-label={collapsed ? t("ui.document.panelExpand") : t("ui.document.panelCollapse")}
+        aria-pressed={collapsed}
+        onClick={() =>
+          setState(
+            collapsed
+              ? { docPanelCollapsed: false }
+              : {
+                  docPanelCollapsed: true,
+                  docPanelExpanded: false,
+                  docReadingMode: false,
+                },
+          )
+        }
+      >
+        {collapsed ? "›" : "‹"}
       </button>
       <button
         className="btn small ghost"
@@ -1973,6 +1994,7 @@ export default function DocumentPanel() {
     panelObserver.current = observer;
   }, []);
   const expanded = useStore((state) => state.docPanelExpanded);
+  const collapsed = useStore((state) => state.docPanelCollapsed);
   const readingMode = useStore((state) => state.docReadingMode);
   const readingTheme = useStore((state) => state.docReadingTheme);
   const explorerOpen = useStore((state) => state.explorerOpen);
@@ -2294,7 +2316,7 @@ export default function DocumentPanel() {
   return (
     <aside
       ref={attachPanel}
-      className={`doc-panel${expanded ? " expanded" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}${!treeOnly && !expanded && widthAuto ? ` auto-width${explorerOpen ? " with-tree" : ""}` : ""}`}
+      className={`doc-panel${expanded ? " expanded" : ""}${collapsed ? " collapsed" : ""}${treeOnly ? " tree-only" : ""}${readingMode ? " reading" : ""}${!treeOnly && !expanded && !collapsed && widthAuto ? ` auto-width${explorerOpen ? " with-tree" : ""}` : ""}`}
       data-doc-theme={readingTheme}
       style={panelStyle}
       aria-label={t("ui.document.label")}
@@ -2327,8 +2349,13 @@ export default function DocumentPanel() {
       )}
       {hasDocs ? (
         <div className="doc-editor-column">
-          <DocToolbar tab={activeTab} expanded={expanded} activeSession={activeSession} />
-          <div className="doc-groups">
+          <DocToolbar
+            tab={activeTab}
+            expanded={expanded}
+            collapsed={collapsed}
+            activeSession={activeSession}
+          />
+          {!collapsed ? <div className="doc-groups">
             {groups.map((group, index) => (
               <DocGroupView
                 key={index}
@@ -2342,7 +2369,7 @@ export default function DocumentPanel() {
                 onDragPointerDown={beginTabDrag}
               />
             ))}
-          </div>
+          </div> : null}
         </div>
       ) : null}
       {hasDocs && explorerOpen ? (
