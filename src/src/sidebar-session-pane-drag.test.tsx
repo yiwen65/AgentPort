@@ -50,6 +50,7 @@ import Sidebar from "./components/Sidebar";
 import { SESSION_PANE_DND_MIME } from "./paneSessionDrag";
 import {
   orderedLayoutSessionIds,
+  PANE_GROUP_EXPANSION_STORAGE_KEY,
   singletonPaneLayout,
   splitPane,
 } from "./paneLayout";
@@ -110,6 +111,7 @@ function dataTransfer() {
 describe("sidebar Session pane drag", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem(PANE_GROUP_EXPANSION_STORAGE_KEY);
     const terminalLayout = splitPane(
       singletonPaneLayout(first.id),
       first.id,
@@ -173,6 +175,14 @@ describe("sidebar Session pane drag", () => {
     expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(2);
     fireEvent.click(view.getByRole("button", { name: "项目" }));
     expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(5);
+    fireEvent.click(view.getByRole("button", { name: "分屏分组" }));
+    expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(2);
+    expect(
+      view.getByRole("button", { name: /展开或收起分组：Third/ }).getAttribute(
+        "aria-expanded",
+      ),
+    ).toBe("false");
+    fireEvent.click(view.getByRole("button", { name: "项目" }));
     // Project-tree rows expose the owning agent in the row's bottom-right corner.
     expect(
       view.container.querySelectorAll(

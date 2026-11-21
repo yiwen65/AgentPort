@@ -9,6 +9,7 @@ import {
   chooseSplitPlacement,
   MIN_PANE_HEIGHT,
   MIN_PANE_WIDTH,
+  PANE_GROUP_EXPANSION_STORAGE_KEY,
   TERMINAL_LAYOUT_STORAGE_KEY,
   TERMINAL_LAYOUT_VERSION,
   emptyPaneLayout,
@@ -23,9 +24,12 @@ import {
   paneMinimumSize,
   paneSessionSize,
   normalizePaneGroupAccents,
+  paneGroupIdentity,
+  persistPaneGroupExpansion,
   persistTerminalLayout,
   persistTerminalLayouts,
   prunePaneLayout,
+  readPersistedPaneGroupExpansion,
   readPersistedTerminalLayout,
   readPersistedTerminalWorkspace,
   removePane,
@@ -472,6 +476,25 @@ describe("pane layout sanitization", () => {
 });
 
 describe("pane layout persistence", () => {
+  it("persists split-group fold state by canonical membership", () => {
+    const group = splitPane(
+      singletonPaneLayout("a"),
+      "a",
+      "b",
+      "right",
+      "persisted-split",
+    );
+    const key = paneGroupIdentity(group);
+    const sameGroup = { ...group, focusedSessionId: "b" };
+
+    expect(paneGroupIdentity(sameGroup)).toBe(key);
+    expect(persistPaneGroupExpansion({ [key]: false, stale: true })).toBe(true);
+    expect(readPersistedPaneGroupExpansion()).toEqual({ [key]: false });
+
+    window.localStorage.setItem(PANE_GROUP_EXPANSION_STORAGE_KEY, "not-json");
+    expect(readPersistedPaneGroupExpansion()).toEqual({});
+  });
+
   it("round-trips a versioned root, focus, ids, directions, and ratios", () => {
     let layout = splitPane(
       singletonPaneLayout("a"),

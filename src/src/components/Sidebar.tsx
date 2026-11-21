@@ -85,7 +85,10 @@ import {
   orderedLayoutSessionIds,
   layoutContains,
   paneGroupDeviceAccents,
+  paneGroupIdentity,
+  persistPaneGroupExpansion,
   persistTerminalLayouts,
+  readPersistedPaneGroupExpansion,
   type PaneGroupAccent,
   type PaneLayout,
 } from "../paneLayout";
@@ -2253,7 +2256,10 @@ function PaneGroupNode({
   deviceAccents: ReadonlyMap<string, PaneGroupAccent>;
 }) {
   const { t } = useTranslation("shell");
-  const [expanded, setExpanded] = useState(true);
+  const groupKey = paneGroupIdentity(group);
+  const [expanded, setExpanded] = useState(
+    () => readPersistedPaneGroupExpansion()[groupKey] !== false,
+  );
   const storeState = useShallowStore((state) => ({
     projects: state.projects,
     activeDevice: state.activeDevice,
@@ -2311,7 +2317,15 @@ function PaneGroupNode({
     >
       <div className="sidebar-group-heading">
         <button type="button" className="sidebar-group-fold" aria-expanded={expanded}
-          aria-label={t("sidebarGroups.fold", { title })} onClick={() => setExpanded(!expanded)}>
+          aria-label={t("sidebarGroups.fold", { title })} onClick={() => {
+            setExpanded((current) => {
+              const next = !current;
+              const persisted = readPersistedPaneGroupExpansion();
+              persisted[groupKey] = next;
+              persistPaneGroupExpansion(persisted);
+              return next;
+            });
+          }}>
           <IconChevron dir={expanded ? "down" : "right"} />
         </button>
         <button type="button" className="tree-row project sidebar-group-open" title={label}
@@ -2482,7 +2496,7 @@ export default function Sidebar({
           <div className="sidebar-groups-page">
             {groups.length ? groups.map((group, index) => (
               <PaneGroupNode
-                key={[...orderedLayoutSessionIds(group)].sort().join("/")}
+                key={paneGroupIdentity(group)}
                 group={group}
                 accent={groupAccents[index]}
                 deviceAccents={groupDeviceAccents}

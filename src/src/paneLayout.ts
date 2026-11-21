@@ -13,6 +13,9 @@ export const MAX_PANE_LAYOUT_DEPTH = 32;
 export const TERMINAL_LAYOUT_VERSION = 2;
 /** Global workspace layout: leaves may belong to different devices. */
 export const TERMINAL_LAYOUT_STORAGE_KEY = "agentport:global-terminal-layout:v1";
+/** Fold state for the split-groups sidebar view, keyed by group membership. */
+export const PANE_GROUP_EXPANSION_STORAGE_KEY =
+  "agentport:sidebar-pane-group-expansion:v1";
 /** Pre-multi-device key, still written under each device's namespace. */
 const LEGACY_TERMINAL_LAYOUT_STORAGE_KEY = "agentport-terminal-layout";
 
@@ -1214,6 +1217,52 @@ function browserStorage(): Storage | null {
     return typeof window === "undefined" ? null : window.localStorage;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Stable identity for a remembered group: membership survives focus, rename,
+ * and split-tree ordering changes while a changed group starts expanded.
+ */
+export function paneGroupIdentity(group: PaneLayout): string {
+  return JSON.stringify([...orderedLayoutSessionIds(group)].sort());
+}
+
+/** Restore only explicitly folded groups; new groups remain expanded. */
+export function readPersistedPaneGroupExpansion(
+  storage: Storage | null = browserStorage(),
+): Record<string, boolean> {
+  if (!storage) return {};
+  try {
+    const value: unknown = JSON.parse(
+      storage.getItem(PANE_GROUP_EXPANSION_STORAGE_KEY) ?? "null",
+    );
+    if (!Array.isArray(value)) return {};
+    return Object.fromEntries(
+      value
+        .filter((key): key is string => typeof key === "string")
+        .map((key) => [key, false]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function persistPaneGroupExpansion(
+  expandedGroups: Record<string, boolean>,
+  storage: Storage | null = browserStorage(),
+): boolean {
+  if (!storage) return false;
+  const collapsed = [...new Set(
+    Object.entries(expandedGroups)
+      .filter(([, expanded]) => expanded === false)
+      .map(([key]) => key),
+  )].sort();
+  try {
+    storage.setItem(PANE_GROUP_EXPANSION_STORAGE_KEY, JSON.stringify(collapsed));
+    return true;
+  } catch {
+    return false;
   }
 }
 
