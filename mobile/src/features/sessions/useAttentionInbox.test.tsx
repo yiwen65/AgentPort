@@ -53,6 +53,28 @@ describe("bounded metadata notification reception", () => {
     await act(async () => finish({ events: [{ sessionId: "s" }] }));
     expect(result.current.entries).toHaveLength(0);
   });
+  it("clears locally while retrying a shared seen acknowledgement after reconnect", async () => {
+    const client = makeClient();
+    let polls = 0;
+    let seenAttempts = 0;
+    vi.mocked(client.request).mockImplementation(async (_host, method) => {
+      if (method === "attention.poll") {
+        polls += 1;
+        return polls === 1 ? { events: [{ sessionId: "s", runId: "r", kind: "turn_completed", cursor: { sessionId: "s", runOrdinal: 1, sequence: 1, occurredAt: "2026-09-08T00:00:00Z" } }] } : { events: [] };
+      }
+      if (method === "session.list") return [{ id: "s", title: "Build" }];
+      if (method === "session.seen.mark" && ++seenAttempts === 1) throw { code: "host_not_connected", message: "Host is not connected" };
+      return undefined;
+    });
+    const { result } = renderHook(() => useAttentionInbox(client, hosts.slice(0, 1), true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.entries).toHaveLength(1);
+    await act(async () => { await result.current.acknowledge("one", "s", { runId: "r", runOrdinal: 1, sequence: 1 }); });
+    expect(result.current.entries).toHaveLength(0);
+    expect(result.current.error).toBe("");
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(seenAttempts).toBe(2);
+  });
   it("keeps messages in the local inbox without system notification delivery", async () => {
     const client = makeClient();
     let seq = 0;

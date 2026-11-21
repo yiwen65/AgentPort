@@ -20,6 +20,7 @@ export function useAttentionInbox(
   const [entries, setEntries] = useState<InboxEntry[]>([]);
   const [error, setError] = useState("");
   const errors = useRef(new Map<string, string>());
+  const pendingSeen = useRef(new Map<string, Map<string, SeenCursor>>());
   const titles = useRef(new Map<string, Map<string, string>>());
   const box = useCallback((host: string) => {
     let value = boxes.current.get(host);
@@ -33,6 +34,23 @@ export function useAttentionInbox(
     else errors.current.delete(host);
     setError([...errors.current.values()][0] ?? "");
   }, []);
+  const isHostNotConnected = (failure: unknown) => Boolean(failure && typeof failure === "object" && "code" in failure && (failure as { code?: unknown }).code === "host_not_connected");
+  const flushSeen = useCallback(async (hostId: string) => {
+    const pending = pendingSeen.current.get(hostId);
+    if (!pending?.size) return;
+    for (const [sessionId, cursor] of [...pending]) {
+      try {
+        await client.request<void>(hostId, "session.seen.mark", { sessionId, cursor });
+        if (pending.get(sessionId) === cursor) pending.delete(sessionId);
+      } catch (failure) {
+        // A reader reconnect can briefly lag the profile's connected phase.
+        // Keep the cursor queued and retry on the next successful poll.
+        if (!isHostNotConnected(failure)) report(hostId, failure);
+        return;
+      }
+    }
+    if (!pending.size) pendingSeen.current.delete(hostId);
+  }, [client, report]);
   const profiles = hosts.map(host => `${host.id}:${host.connectionState}`).sort().join("|");
   useEffect(() => {
     let changed = false;
@@ -81,6 +99,7 @@ export function useAttentionInbox(
           // rather than treating every short page as a complete baseline.
           const changed = inbox.ingest(result, names, 64);
           if (changed) publish();
+          void flushSeen(host.id);
           failures = 0;
           idle = result.events.length ? 0 : Math.min(idle + 1, 3);
           delay = result.events.length === 64 || inbox.pendingCount ? 250 : Math.min(30_000, 5_000 * 2 ** idle);
@@ -101,24 +120,17 @@ export function useAttentionInbox(
     return () => { controller.abort(); for (const timer of timers) clearTimeout(timer); };
     // Connection topology, not mutable profile labels or Dashboard selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, profiles, visible, box, publish, report]);
+  }, [client, profiles, visible, box, publish, report, flushSeen]);
   const acknowledge = useCallback(async (hostId: string, sessionId: string, cursor: SeenCursor) => {
-    try {
-      // Seen is shared on the Host. Commit the phone-local receipt only after
-      // the authoritative cursor has been acknowledged, so another device
-      // cannot keep showing a stale unread dot after a failed write.
-      await client.request<void>(hostId, "session.seen.mark", {
-        sessionId,
-        cursor: {
-          runId: cursor.runId,
-          runOrdinal: cursor.runOrdinal,
-          sequence: cursor.sequence,
-        },
-      });
-      if (box(hostId).acknowledge(sessionId, cursor)) publish();
-      report(hostId);
-    } catch (failure) { report(hostId, failure); }
-  }, [client, box, publish, report]);
+    let pending = pendingSeen.current.get(hostId);
+    if (!pending) { pending = new Map(); pendingSeen.current.set(hostId, pending); }
+    pending.set(sessionId, cursor);
+    // Clear the device-local inbox immediately. The shared Host acknowledgement
+    // is retried independently if the transport is between reconnect phases.
+    if (box(hostId).acknowledge(sessionId, cursor)) publish();
+    report(hostId);
+    await flushSeen(hostId);
+  }, [box, flushSeen, publish, report]);
   const clearAll = useCallback(async () => {
     await Promise.all(entries.map(entry => acknowledge(entry.hostId, entry.sessionId, entry)));
   }, [entries, acknowledge]);
