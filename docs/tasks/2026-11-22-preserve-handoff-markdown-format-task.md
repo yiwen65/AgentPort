@@ -135,7 +135,7 @@ The `handoff` MCP tool currently folds Markdown whitespace into one line before 
   - All checks pass and task changes are committed.
 - Verification method:
   - Task validator, Rust/frontend checks, E2E, Debug App restart/verification.
-- Validation evidence: `cargo test -p agentport-service --lib` passed 73 tests; `cargo check -p agentport-remote-bridge` passed; frontend build and i18n check passed; `cargo test -p agentport-mcp --lib` passed 42 tests; and final MCP E2E passed with PTY fallback assertions. Debug App restart and visual verification are recorded after the final commit.
+- Validation evidence: `cargo test -p agentport-service --lib` passed 73 tests; `cargo check -p agentport-remote-bridge` passed; frontend build and i18n check passed; `cargo test -p agentport-mcp --lib` passed 42 tests; and final MCP E2E passed with PTY fallback assertions. `python3 scripts/restart-debug-app.py` rebuilt/signed/opened the Debug App; PID 34469 was verified at the exact GUI path, and CUA confirmed a populated 1366×911 nonblank window.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -166,10 +166,11 @@ The `handoff` MCP tool currently folds Markdown whitespace into one line before 
 - 2026-11-22: Task document created in execute mode; implementation begins with handoff transport selection.
 - 2026-11-22: T-001 completed: added raw Markdown validation, JSON-RPC structured_prompt delivery, and PTY compact fallback with explicit format metadata.
 - 2026-11-22: T-002 completed: extended PTY E2E assertions and documentation.
+- 2026-11-22: T-003 completed: final validation passed; Debug App PID 34469 was visually verified nonblank.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: passed
-- Evidence: JSON-RPC handoff formatting preservation and PTY fallback metadata are implemented. Core MCP tests, Service tests, Remote Bridge check, frontend build/i18n, and MCP E2E passed. Debug App was rebuilt/signed/restarted and its nonblank rendering verified through CUA.
+- Evidence: JSON-RPC handoff formatting preservation and PTY fallback metadata are implemented in `b949152`. Core MCP tests, Service tests, Remote Bridge check, frontend build/i18n, and MCP E2E passed. Debug App was rebuilt/signed/restarted and its nonblank rendering verified through CUA.
 - Limitations: This host's standard E2E uses Generic Shell/PTY, so raw JSON-RPC formatting was verified by unit-level structured prompt construction and the existing Host/service structured-prompt contract; a live provider-specific JSON-RPC visual test was not available in the bounded E2E. Normal delegation paths remain unchanged.
