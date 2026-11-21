@@ -14,6 +14,14 @@ describe("durable device-local attention inbox", () => {
     expect(new AttentionInbox("h").entries[0].kind).toBe("execution_failed");
     expect(inbox.pendingCount).toBe(0);
   });
+  it("reconciles a completion cleared by another device", () => {
+    const inbox = new AttentionInbox("h"); inbox.ingest(page(event(1)), new Map([["s", "Build"]]));
+    expect(inbox.reconcile([{
+      id: "s", unreadAttention: false,
+      latestStatus: { runId: "r1", runOrdinal: 1, sequence: 1 },
+    } as any])).toBe(true);
+    expect(inbox.entries).toHaveLength(0);
+  });
   it("keeps metadata through restart independently of shared unread/current status", () => {
     const inbox = new AttentionInbox("h"); inbox.ingest(page(event(1)), new Map([["s", "Build"]]));
     expect(new AttentionInbox("h").entries).toEqual([expect.objectContaining({ sessionTitle: "Build", sequence: 1 })]);

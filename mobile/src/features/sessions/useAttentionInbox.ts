@@ -4,10 +4,18 @@ import { remoteErrorMessage } from "../../protocol/remoteError";
 import { AttentionInbox, type InboxEntry } from "./attentionInbox";
 import type { AttentionPollResult, SessionSummary } from "./types";
 
+type SeenCursor = { runId: string; runOrdinal: number; sequence: number };
+const EMPTY_SESSIONS_BY_HOST: ReadonlyMap<string, readonly SessionSummary[]> = new Map();
+
 /** Metadata-only incremental fallback. APNs is the background delivery path;
  * never keep a suspended WebView alive to poll. Each Host has one in-flight
  * request, one timer and exponential idle/error backoff (5s..30s / 60s). */
-export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummary[], visible: boolean) {
+export function useAttentionInbox(
+  client: RemoteClient,
+  hosts: HostProfileSummary[],
+  visible: boolean,
+  authoritativeSessions: ReadonlyMap<string, readonly SessionSummary[]> = EMPTY_SESSIONS_BY_HOST,
+) {
   const boxes = useRef(new Map<string, AttentionInbox>());
   const [entries, setEntries] = useState<InboxEntry[]>([]);
   const [error, setError] = useState("");
@@ -26,6 +34,14 @@ export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummar
     setError([...errors.current.values()][0] ?? "");
   }, []);
   const profiles = hosts.map(host => `${host.id}:${host.connectionState}`).sort().join("|");
+  useEffect(() => {
+    let changed = false;
+    for (const [hostId, sessions] of authoritativeSessions) {
+      try { changed = box(hostId).reconcile(sessions) || changed; }
+      catch (failure) { report(hostId, failure); }
+    }
+    if (changed) publish();
+  }, [authoritativeSessions, box, publish, report]);
   useEffect(() => {
     const retained = new Set(hosts.map(host => host.id));
     for (const id of boxes.current.keys()) if (!retained.has(id)) {
@@ -86,22 +102,25 @@ export function useAttentionInbox(client: RemoteClient, hosts: HostProfileSummar
     // Connection topology, not mutable profile labels or Dashboard selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, profiles, visible, box, publish, report]);
-  const acknowledge = useCallback((hostId: string, sessionId: string, cursor: { runOrdinal: number; sequence: number }) => {
-    try { if (box(hostId).acknowledge(sessionId, cursor)) publish(); report(hostId); }
-    catch (failure) { report(hostId, failure); }
-  }, [box, publish, report]);
-  const clearAll = useCallback(() => {
-    const displayed = new Map<string, InboxEntry[]>();
-    for (const entry of entries) {
-      const group = displayed.get(entry.hostId) ?? [];
-      group.push(entry); displayed.set(entry.hostId, group);
-    }
-    let changed = false;
-    for (const [hostId, group] of displayed) {
-      try { changed = box(hostId).acknowledgeMany(group) || changed; report(hostId); }
-      catch (failure) { report(hostId, failure); }
-    }
-    if (changed) publish();
-  }, [entries, box, report, publish]);
+  const acknowledge = useCallback(async (hostId: string, sessionId: string, cursor: SeenCursor) => {
+    try {
+      // Seen is shared on the Host. Commit the phone-local receipt only after
+      // the authoritative cursor has been acknowledged, so another device
+      // cannot keep showing a stale unread dot after a failed write.
+      await client.request<void>(hostId, "session.seen.mark", {
+        sessionId,
+        cursor: {
+          runId: cursor.runId,
+          runOrdinal: cursor.runOrdinal,
+          sequence: cursor.sequence,
+        },
+      });
+      if (box(hostId).acknowledge(sessionId, cursor)) publish();
+      report(hostId);
+    } catch (failure) { report(hostId, failure); }
+  }, [client, box, publish, report]);
+  const clearAll = useCallback(async () => {
+    await Promise.all(entries.map(entry => acknowledge(entry.hostId, entry.sessionId, entry)));
+  }, [entries, acknowledge]);
   return { entries, error, acknowledge, clearAll };
 }

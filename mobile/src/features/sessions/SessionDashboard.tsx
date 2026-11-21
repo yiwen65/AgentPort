@@ -292,8 +292,14 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
   // back into an initial-loading screen or move the rows every five seconds.
   const activityLoading = activity.initialLoading || connectedHosts.some(host => !activity.snapshots.has(host.id));
   const selectedHost = hosts.find((host) => host.id === selectedDeviceId);
+  const authoritativeSessions = useMemo(() => {
+    const result = new Map<string, readonly SessionSummary[]>();
+    if (snapshot?.deviceId) result.set(snapshot.deviceId, snapshot.sessions);
+    for (const [hostId, value] of activity.snapshots) result.set(hostId, value.sessions);
+    return result;
+  }, [snapshot?.deviceId, snapshot?.sessions, activity.snapshots]);
   const { entries: recent, error: notificationError, acknowledge, clearAll } = useAttentionInbox(client, hosts.map(host => host.id === recoveringHost
-    ? { ...host, connectionState: "reconnecting" as const } : host), pageVisible);
+    ? { ...host, connectionState: "reconnecting" as const } : host), pageVisible, authoritativeSessions);
   const updateBusy = recoveringHost === selectedDeviceId || updatingHosts.has(selectedDeviceId) || selectedHost?.connectionState === "connecting" || selectedHost?.connectionState === "reconnecting";
   const updateFailed = Boolean(snapshot?.error || updateErrorHost === selectedDeviceId);
 
@@ -536,11 +542,11 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
     if (selectedDeviceId) persistWorkspace(selectedDeviceId, next);
   }, [selectedDeviceId]);
 
-  // Mobile receipts belong to this phone, not the shared desktop unread bit.
-  // Use the same durable inbox as Recent so old server snapshots cannot relight
-  // an acknowledged row, while a newer attention event can. The blue
-  // indicator is narrower than the inbox: failures remain available in Recent
-  // but do not count as unread completed turns or approval requests.
+  // Keep the durable Recent cache local, but acknowledge its cursor on the
+  // Host so desktop and other mobile clients converge. Old server snapshots
+  // cannot relight an acknowledged row, while a newer attention event can.
+  // The blue indicator is narrower than the inbox: failures remain available
+  // in Recent but do not count as unread completed turns or approval requests.
   // A value-stable key preserves memoized rows when inbox polling publishes
   // unchanged entries. Keep the original Session objects and lists intact.
   const unreadIndicators = useMemo(

@@ -1,6 +1,6 @@
-import type { AttentionCursor, AttentionEvent, AttentionPollResult } from "./types";
+import type { AttentionCursor, AttentionEvent, AttentionPollResult, SessionSummary } from "./types";
 import { attentionEventKey, type AttentionNotificationSink } from "./attentionNotifications";
-import { RECEIPTS_KEY } from "./sessionRecent";
+import { isUnreadIndicatorKind, RECEIPTS_KEY } from "./sessionRecent";
 
 export const INBOX_PREFIX = "agentport-mobile:inbox:v1:";
 export const INBOX_LIMIT = 2048;
@@ -18,6 +18,12 @@ interface InboxState {
   pending: InboxEntry[];
 }
 const newer = (a: Receipt, b: Receipt) => a.runOrdinal > b.runOrdinal || (a.runOrdinal === b.runOrdinal && a.sequence > b.sequence);
+function statusCoversEntry(status: SessionSummary["latestStatus"], entry: InboxEntry): boolean {
+  return Boolean(status && (
+    status.runOrdinal > entry.runOrdinal ||
+    (status.runOrdinal === entry.runOrdinal && status.runId === entry.runId && status.sequence >= entry.sequence)
+  ));
+}
 const empty = (): InboxState => ({ version: 1, seeded: false, entries: {}, receipts: {}, received: {}, pending: [] });
 
 /** One durable transaction commits both the page and its cursor. Capacity or
@@ -31,8 +37,8 @@ export class AttentionInbox {
     this.state = raw ? JSON.parse(raw) : empty();
     this.state.received ??= {};
     if (!raw) {
-      // Preserve this phone's old acknowledgements, never the shared desktop
-      // unread bit or old download cursor (which did not persist an inbox).
+      // Preserve this phone's old acknowledgements and cursor. The shared
+      // unread bit is reconciled from authoritative Session summaries.
       const saved = storage.getItem(RECEIPTS_KEY);
       if (saved) {
         const receipts = JSON.parse(saved) as Record<string, Receipt>;
@@ -85,6 +91,25 @@ export class AttentionInbox {
     const previous = this.state.receipts[sessionId];
     if (previous && !newer(cursor, previous)) return false;
     return this.acknowledgeMany([{ sessionId, runOrdinal: cursor.runOrdinal, sequence: cursor.sequence }]);
+  }
+  /** Reconcile phone-local entries after another device marks the Session seen. */
+  reconcile(sessions: readonly SessionSummary[]): boolean {
+    const byId = new Map(sessions.map(session => [session.id, session]));
+    const entries = { ...this.state.entries };
+    const receipts = { ...this.state.receipts };
+    let changed = false;
+    for (const entry of Object.values(this.state.entries)) {
+      const session = byId.get(entry.sessionId);
+      if (!session || !isUnreadIndicatorKind(entry.kind) || session.unreadAttention !== false || !statusCoversEntry(session.latestStatus, entry)) continue;
+      delete entries[entry.sessionId];
+      const previous = receipts[entry.sessionId];
+      if (!previous || newer(entry, previous)) receipts[entry.sessionId] = { runOrdinal: entry.runOrdinal, sequence: entry.sequence };
+      changed = true;
+    }
+    if (!changed) return false;
+    this.commit({ ...this.state, entries, receipts,
+      pending: this.state.pending.filter(event => entries[event.sessionId] !== undefined) });
+    return true;
   }
   acknowledgeMany(displayed: readonly (Receipt & { sessionId: string })[]): boolean {
     if (!displayed.length) return false;
