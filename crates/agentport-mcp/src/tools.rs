@@ -98,7 +98,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "handoff",
-        description: "Canonical route for requests such as ‘handoff to codex’. Create a new split-pane Agent Session and provide context-only handoff information, not a task assignment. The target Agent must re-verify it, summarize understanding, and ask the user what next step they want; it must not execute the recommended continuation without user direction. This is a one-shot fire-and-forget handoff: it returns immediately and does not require wait_for_task or a wait group. Use this tool instead of the handoff-writer skill or writing docs/handoff files. No handoff document is written.",
+        description: "Canonical route for requests such as ‘handoff to codex’. Create a new split-pane Agent Session and provide a comprehensive, context-only handoff—not a task assignment. Before calling, compose a self-contained Markdown handoff following the handoff-writer contract: Session summary; user intent and success criteria; work completed and outcomes; key decisions, constraints, and rationale; files and artifacts; commands, validation, and evidence; unresolved items, risks, and unknowns; and recommended continuation. Record only supported facts, label Unverified/Unknown details, and tell the target Agent to re-verify, summarize understanding, and ask the user what next step they want. It must not execute the recommended continuation without user direction. This is a one-shot fire-and-forget handoff: it returns immediately and does not require wait_for_task or a wait group. Use this tool instead of the handoff-writer skill or writing docs/handoff files. No handoff document is written.",
         schema: handoff_schema,
     },
     ToolDef {
@@ -351,7 +351,7 @@ fn handoff_schema() -> Value {
             },
             "handoff": {
                 "type": "string",
-                "description": "Complete Markdown handoff: summary, user intent/success criteria, outcomes, decisions/constraints, files/artifacts, commands/evidence, unresolved risks, and recommended continuation. Maximum 8 KiB."
+                "description": "Complete, self-contained Markdown handoff following the handoff-writer contract. Include: # Session Handoff topic; Created and Workspace metadata; a next-agent context-only notice; ## Session summary; ## User intent and success criteria; ## Work completed and outcomes; ## Key decisions, constraints, and rationale; ## Files and artifacts; ## Commands, validation, and evidence; ## Unresolved items, risks, and unknowns; ## Recommended continuation. Record only verified facts, label Unverified/Unknown details, and make Recommended continuation guidance rather than an instruction. Maximum 8 KiB."
             },
             "projectPath": { "type": "string" },
             "projectId": { "type": "string" },

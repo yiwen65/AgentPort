@@ -202,8 +202,17 @@ background waiters, not the Agent Sessions.
 Handoff routing: when the user asks to hand off, transfer, or delegate the current
 context to a named Agent (for example, “handoff to codex”), call the `handoff` tool.
 Do not invoke a handoff-writer skill and do not write a `docs/handoff/` document for
-that request. `handoff` is a one-shot fire-and-forget transfer; it returns the new
-Session and pane metadata without collecting a final answer.
+that request. Before calling `handoff`, compose a complete self-contained Markdown
+handoff using this contract: `# Session Handoff: <topic>`; Created and Workspace
+metadata; a context-only next-agent notice; `## Session summary`; `## User intent and
+success criteria`; `## Work completed and outcomes`; `## Key decisions, constraints,
+and rationale`; `## Files and artifacts`; `## Commands, validation, and evidence`;
+`## Unresolved items, risks, and unknowns`; and `## Recommended continuation`.
+Use only supported facts, mark Unverified/Unknown details, and make the continuation
+a recommendation rather than a task instruction. The target Agent must re-verify,
+summarize understanding, and ask the user what next step they want. `handoff` is a
+one-shot fire-and-forget transfer; it returns the new Session and pane metadata
+without collecting a final answer.
 cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
 undone. To tidy up, archive_session hides a Session and keeps its history readable;
@@ -263,6 +272,14 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Handoff routing"));
+        assert!(result["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Session summary"));
+        assert!(result["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Recommended continuation"));
         let unknown = json!({ "protocolVersion": "1999-01-01" });
         let result = initialize_result(Some(&unknown), "0.0.0");
         assert_eq!(result["protocolVersion"], LATEST_PROTOCOL_VERSION);
