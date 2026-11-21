@@ -206,7 +206,7 @@
       "instructionsHint": "只有委派 Session 显式选择该角色时，这些指令才会被注入。",
       "outputContract": "输出契约（可选）",
       "outputContractHint": "仅作为回复结构的软性要求，MCP 不会强制校验格式。",
-      "builtIn": "内置 · 可编辑",
+      "builtIn": "内置",
       "custom": "自定义",
       "enabledLabel": "启用 {{name}}",
       "enabled": "已启用",

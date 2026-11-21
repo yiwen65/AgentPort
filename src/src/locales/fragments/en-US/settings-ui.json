@@ -206,7 +206,7 @@
       "instructionsHint": "These instructions are injected only when a delegated Session explicitly selects this role.",
       "outputContract": "Output contract (optional)",
       "outputContractHint": "A soft request for reply structure; MCP does not validate the format.",
-      "builtIn": "Built-in · editable",
+      "builtIn": "Built-in",
       "custom": "Custom",
       "enabledLabel": "Enable {{name}}",
       "enabled": "Enabled",
