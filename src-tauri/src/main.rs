@@ -87,7 +87,14 @@ struct AppState {
     >,
     // Keep local image download capabilities alive across open/chunk/finish calls.
     document_image_service: Arc<Mutex<Option<CoreService>>>,
+    /// MCP registration states, keyed by agent id. Reading one means launching
+    /// that Agent's CLI (`mcp list`), so the settings page must not pay for it
+    /// on every mount; a toggle refreshes its own entry.
+    mcp_registration_cache: Arc<Mutex<HashMap<String, (std::time::Instant, Value)>>>,
 }
+
+/// How long a cached MCP registration answer is trusted before re-probing.
+const MCP_REGISTRATION_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 
 type HostWriter = Arc<Mutex<std::os::unix::net::UnixStream>>;
 type AttachmentMap = Arc<Mutex<HashMap<String, RendererAttachment>>>;
@@ -1056,10 +1063,32 @@ async fn mcp_registrations(
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<Value>, String> {
     let paths = state.paths.clone();
+    let cache = state.mcp_registration_cache.clone();
     run_backend_blocking(move || {
         let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         let bin = mcp_sidecar_path();
         let installs = db.list_adapters().unwrap_or_default();
+        // Serve a recent answer instantly; only unknown or stale Agents cost a
+        // CLI launch.
+        let cached: HashMap<String, Value> = {
+            let guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+            installs
+                .iter()
+                .filter_map(|install| {
+                    let id = install.agent_type.as_str().to_string();
+                    guard
+                        .get(&id)
+                        .filter(|(at, _)| at.elapsed() < MCP_REGISTRATION_TTL)
+                        .map(|(_, value)| (id, value.clone()))
+                })
+                .collect()
+        };
+        if cached.len() == installs.len() {
+            return Ok(installs
+                .iter()
+                .filter_map(|install| cached.get(install.agent_type.as_str()).cloned())
+                .collect());
+        }
         // One status probe per Agent; provider CLIs are independent processes,
         // so fan out instead of paying their startup cost serially.
         let reports: Vec<agentport_core::mcp_setup::RegistrationReport> =
@@ -1078,10 +1107,15 @@ async fn mcp_registrations(
                     .filter_map(|handle| handle.join().ok())
                     .collect()
             });
-        reports
-            .into_iter()
-            .map(|report| serde_json::to_value(report).map_err(|error| error.to_string()))
-            .collect()
+        let mut values = Vec::with_capacity(reports.len());
+        let mut fresh = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+        for report in reports {
+            let id = report.agent.as_str().to_string();
+            let value = serde_json::to_value(report).map_err(|error| error.to_string())?;
+            fresh.insert(id, (std::time::Instant::now(), value.clone()));
+            values.push(value);
+        }
+        Ok(values)
     })
     .await
 }
@@ -1096,6 +1130,7 @@ async fn set_mcp_registration(
 ) -> std::result::Result<Value, String> {
     let agent_type: AgentType = agent.parse().map_err(|error| format!("{error}"))?;
     let paths = state.paths.clone();
+    let cache = state.mcp_registration_cache.clone();
     run_backend_blocking(move || {
         let db = Db::open_read(&paths).map_err(|error| error.to_string())?;
         let install = db
@@ -1109,7 +1144,10 @@ async fn set_mcp_registration(
             enabled,
         )
         .map_err(|error| error.to_string())?;
-        serde_json::to_value(report).map_err(|error| error.to_string())
+        let value = serde_json::to_value(report).map_err(|error| error.to_string())?;
+        let mut cached = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+        cached.insert(agent_type.as_str().to_string(), (std::time::Instant::now(), value.clone()));
+        Ok(value)
     })
     .await
 }
@@ -5121,6 +5159,7 @@ fn main() {
         notification_deduper: Mutex::new(NotificationDeduper::default()),
         probe_setup_cache: Arc::new(Mutex::new(HashMap::new())),
         document_image_service: Arc::new(Mutex::new(None)),
+        mcp_registration_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 
     tauri::Builder::default()

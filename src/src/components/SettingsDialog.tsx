@@ -350,6 +350,9 @@ function AdapterOrderIcon({ agent }: { agent: string }) {
   return <AgentIcon agent={agent} className="adapter-order-icon" size={18} />;
 }
 
+/** Last MCP registration answer, kept across mounts so a reopen never flickers. */
+let lastKnownMcpRegistrations: Record<string, McpRegistration> = {};
+
 function AdapterSection({
   agentOrder,
   agentHidden,
@@ -367,18 +370,31 @@ function AdapterSection({
   const [setupBusy, setSetupBusy] = useState(false);
   const [notificationRevision, setNotificationRevision] = useState(0);
   // MCP registration is per Agent and lives in that Agent's own config, so the
-  // panel reads it once on mount and after every toggle.
-  const [mcp, setMcp] = useState<Record<string, McpRegistration>>({});
+  // panel reads it once on mount and after every toggle. Seeding from the last
+  // answer keeps the switches from flickering through "off" while the first
+  // probe runs; `mcpLoaded` marks whether a real answer has arrived.
+  const [mcp, setMcp] = useState<Record<string, McpRegistration>>(
+    () => lastKnownMcpRegistrations,
+  );
+  const [mcpLoaded, setMcpLoaded] = useState(
+    () => Object.keys(lastKnownMcpRegistrations).length > 0,
+  );
   const [mcpBusy, setMcpBusy] = useState<string | null>(null);
 
   const loadMcp = useMemo(
     () => async () => {
       try {
         const reports = await api.mcpRegistrations();
-        setMcp(Object.fromEntries(reports.map((report) => [report.agent, report])));
+        const next = Object.fromEntries(
+          reports.map((report) => [report.agent, report]),
+        );
+        lastKnownMcpRegistrations = next;
+        setMcp(next);
+        setMcpLoaded(true);
       } catch {
-        // A failed probe leaves the switches disabled rather than guessing.
-        setMcp({});
+        // A failed probe leaves the switches disabled rather than guessing, but
+        // keeps whatever we knew before instead of claiming they are off.
+        setMcpLoaded(true);
       }
     },
     [],
@@ -392,7 +408,11 @@ function AdapterSection({
     setMcpBusy(agent);
     try {
       const report = await api.setMcpRegistration(agent, enable);
-      setMcp((current) => ({ ...current, [report.agent]: report }));
+      setMcp((current) => {
+        const next = { ...current, [report.agent]: report };
+        lastKnownMcpRegistrations = next;
+        return next;
+      });
       toast(
         enable
           ? t("settings:ui.adapters.mcpEnabled", { agent: agentDisplay(agent) })
@@ -538,6 +558,7 @@ function AdapterSection({
                 <td>
                   {(() => {
                     const report = mcp[a.agentType];
+                    const pending = !report && !mcpLoaded;
                     const supported = report
                       ? report.state !== "unsupported" && report.command !== null
                       : false;
@@ -555,8 +576,10 @@ function AdapterSection({
                           className="adapter-enabled-switch"
                           role="switch"
                           aria-checked={registered}
-                          disabled={!supported || mcpBusy === a.agentType}
-                          title={hint}
+                          aria-busy={pending || undefined}
+                          data-mcp-pending={pending ? "true" : undefined}
+                          disabled={pending || !supported || mcpBusy === a.agentType}
+                          title={pending ? t("settings:ui.adapters.mcpChecking") : hint}
                           aria-label={label}
                           onClick={() => void toggleMcp(a.agentType, !registered)}
                         />

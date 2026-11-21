@@ -188,7 +188,8 @@
       "mcpEnabled": "AgentPort MCP registered for {{agent}}",
       "mcpDisabled": "AgentPort MCP removed for {{agent}}",
       "mcpFailed": "Could not change the MCP registration for {{agent}}: {{detail}}",
-      "mcpUnknown": "could not read this Agent's MCP configuration"
+      "mcpUnknown": "could not read this Agent's MCP configuration",
+      "mcpChecking": "Reading the MCP registration…"
     },
     "commitAi": {
       "description": "Configure an OpenAI- or Anthropic-compatible service. AI features such as commit message generation in Git Center share this configuration.",

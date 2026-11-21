@@ -188,7 +188,8 @@
       "mcpEnabled": "已为 {{agent}} 注册 AgentPort MCP",
       "mcpDisabled": "已移除 {{agent}} 的 AgentPort MCP 注册",
       "mcpFailed": "{{agent}} 的 MCP 注册失败：{{detail}}",
-      "mcpUnknown": "无法读取该 Agent 的 MCP 配置"
+      "mcpUnknown": "无法读取该 Agent 的 MCP 配置",
+      "mcpChecking": "正在读取 MCP 注册状态…"
     },
     "commitAi": {
       "description": "配置 OpenAI 或 Anthropic 兼容服务；Git Center 的提交信息生成等 AI 功能共用此配置。",
