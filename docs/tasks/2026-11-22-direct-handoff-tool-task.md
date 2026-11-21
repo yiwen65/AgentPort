@@ -34,7 +34,7 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 | ID | Confirmed fact | Evidence |
 | --- | --- | --- |
 | F-001 | Existing `create_session_with_pane` already handles Agent validation, project resolution, Role selection, readiness, prompt delivery, ownership, and pane placement. | `crates/agentport-mcp/src/tools.rs:1226-1515`. |
-| F-002 | MCP prompts are bounded to 8 KiB and must be single-line/no ESC/control input because terminal submission semantics require one prompt line. | `crates/agentport-mcp/src/text.rs:74-103`; `ops.rs` delivery path. |
+| F-002 | Ordinary MCP prompts remain bounded to 8 KiB and single-line; handoff has a separate 256 KiB transport cap, with PTY fallback enforcing single-line input and JSON-RPC preserving Markdown. | `crates/agentport-mcp/src/text.rs`; `crates/agentport-mcp/src/tools.rs`; Host/service transport bounds. |
 | F-003 | Existing MCP tools return immediately for creation and use `wait_for_task`/wait groups for completion. | `tools.rs` tool registry and wait-group implementation; `docs/mcp.md`. |
 | F-004 | Existing delegation always queues a pane and stores MCP ownership before returning. | `tools.rs:create_session_with_pane`, `registry.rs`, and current MCP E2E. |
 | F-005 | The handoff-writer skill requires a self-contained handoff covering summary, intent/success criteria, outcomes, decisions/constraints, files/artifacts, commands/evidence, unresolved risks, and recommended continuation. | `/Users/w/.epi/agent/skills/wjskill-handoff-writer/SKILL.md`. |
@@ -45,7 +45,7 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 
 - Assumption: The caller/model supplies the complete Markdown handoff; MCP cannot infer the current conversation transcript from the JSON-RPC request, so it must not pretend to generate missing context.
 - Assumption: Handoff content is compacted by whitespace folding before delivery; headings, labels, paths, evidence, and ordering remain in the prompt while newlines become spaces to satisfy the terminal prompt contract.
-- Assumption: The raw handoff and compacted prompt both obey the existing 8 KiB bound; ESC/NUL/control input is rejected through the existing sanitizer.
+- Assumption: Handoff input and its transport wrapper are bounded by 256 KiB; PTY fallback is compacted to one line while JSON-RPC preserves Markdown; ESC/NUL/control input is rejected.
 - Open question: None after the user confirmed Markdown input, required explicit Agent, and immediate return.
 
 <!-- task-doc-section:acceptance-criteria -->
@@ -54,7 +54,7 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 - `tools/list` advertises `handoff` with a schema requiring `agent` and `handoff` Markdown.
 - Calling `handoff` creates an MCP-owned Session, sends the compacted handoff once, queues a split pane, and returns immediately without writing a handoff document.
 - The selected Agent is explicit; optional project/title/permission/worktree/role options follow existing delegation semantics.
-- Handoff content over 8 KiB, empty content, ESC, NUL, or unsupported control characters returns a structured error before Session creation.
+- Handoff content over 256 KiB, empty content, ESC, NUL, or unsupported control characters returns a structured error before Session creation.
 - The result identifies the direct handoff path and whether compaction occurred; it marks the transfer as one-shot and does not require completion polling.
 - Role selection remains explicit/model-owned, and Generic Shell rejects a selected Role as before.
 - Existing MCP tool, service, E2E, and delegation behavior remains green.
@@ -160,7 +160,7 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 - Markdown compaction can reduce readability; preserve section labels and ordering, and report `compacted=true` so the caller knows the transport representation changed.
 - Handoff contents may contain user-provided ESC/control data; sanitize before any Session creation and do not retry unknown delivery outcomes.
 - Direct delegation must not accidentally wait synchronously or create a document; reuse `create_session_with_pane` and add a focused E2E assertion.
-- Existing 8 KiB prompt and role preamble limits can make a valid handoff plus selected Role too large; return the existing structured invalid-prompt error before typing.
+- The 256 KiB host transport limit can still reject an oversized handoff; reject before typing and report the structured invalid-handoff error.
 - The final Debug App restart must use the prescribed script and must not stop Hosts, Connectors, or the release App.
 
 <!-- task-doc-section:execution-log -->

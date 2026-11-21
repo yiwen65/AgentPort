@@ -351,7 +351,7 @@ fn handoff_schema() -> Value {
             },
             "handoff": {
                 "type": "string",
-                "description": "Complete, self-contained Markdown handoff following the handoff-writer contract. Include: # Session Handoff topic; Created and Workspace metadata; a next-agent context-only notice; ## Session summary; ## User intent and success criteria; ## Work completed and outcomes; ## Key decisions, constraints, and rationale; ## Files and artifacts; ## Commands, validation, and evidence; ## Unresolved items, risks, and unknowns; ## Recommended continuation. Record only verified facts, label Unverified/Unknown details, and make Recommended continuation guidance rather than an instruction. Maximum 8 KiB."
+                "description": "Complete, self-contained Markdown handoff following the handoff-writer contract. Include: # Session Handoff topic; Created and Workspace metadata; a next-agent context-only notice; ## Session summary; ## User intent and success criteria; ## Work completed and outcomes; ## Key decisions, constraints, and rationale; ## Files and artifacts; ## Commands, validation, and evidence; ## Unresolved items, risks, and unknowns; ## Recommended continuation. Record only verified facts, label Unverified/Unknown details, and make Recommended continuation guidance rather than an instruction. Maximum 256 KiB transport payload."
             },
             "projectPath": { "type": "string" },
             "projectId": { "type": "string" },
@@ -655,14 +655,16 @@ fn compact_role_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+const MAX_HANDOFF_BYTES: usize = 256 * 1024;
+
 fn sanitize_handoff_markdown(raw: &str) -> TResult<String> {
     if raw.trim().is_empty() {
         return Err(ToolFailure::new("invalid_handoff", "handoff must not be empty"));
     }
-    if raw.len() > text::MAX_PROMPT_BYTES {
+    if raw.len() > MAX_HANDOFF_BYTES {
         return Err(ToolFailure::new(
             "invalid_handoff",
-            format!("handoff exceeds {} bytes", text::MAX_PROMPT_BYTES),
+            format!("handoff exceeds {MAX_HANDOFF_BYTES} bytes"),
         ));
     }
     if raw.contains('\u{1b}') || raw.contains('\0') {
@@ -689,10 +691,9 @@ fn compact_handoff(raw: &str) -> TResult<(String, bool)> {
     let markdown = sanitize_handoff_markdown(raw)?;
     let compacted = markdown.split_whitespace().collect::<Vec<_>>().join(" ");
     let changed = compacted != markdown;
-    let prompt = text::sanitize_prompt(&format!(
+    let prompt = sanitize_handoff_markdown(&format!(
         "{HANDOFF_CONTEXT_INSTRUCTION} Handoff content follows: {compacted}"
-    ))
-    .map_err(|message| ToolFailure::new("invalid_handoff", message))?;
+    ))?;
     Ok((prompt, changed))
 }
 
@@ -701,13 +702,37 @@ fn structured_handoff_prompt(handoff: &str) -> TResult<String> {
         "# Handoff Context\n\n{HANDOFF_CONTEXT_INSTRUCTION}\n\n## Handoff content follows\n\n{handoff}"
     );
     let prompt = sanitize_handoff_markdown(&prompt)?;
-    if prompt.len() > text::MAX_PROMPT_BYTES {
+    if prompt.len() > MAX_HANDOFF_BYTES {
         return Err(ToolFailure::new(
             "invalid_handoff",
-            format!("handoff context exceeds {} bytes", text::MAX_PROMPT_BYTES),
+            format!("handoff context exceeds {MAX_HANDOFF_BYTES} bytes"),
         ));
     }
     Ok(prompt)
+}
+
+fn validate_handoff_pty_prompt(raw: &str) -> TResult<String> {
+    if raw.len() > MAX_HANDOFF_BYTES {
+        return Err(ToolFailure::new(
+            "invalid_handoff",
+            format!("handoff exceeds {MAX_HANDOFF_BYTES} bytes"),
+        ));
+    }
+    if raw.contains('\n') || raw.contains('\r') {
+        return Err(ToolFailure::new(
+            "invalid_handoff",
+            "PTY handoff prompt must be a single line",
+        ));
+    }
+    if raw.contains('\u{1b}') || raw.contains('\0')
+        || raw.chars().any(|character| character.is_control())
+    {
+        return Err(ToolFailure::new(
+            "invalid_handoff",
+            "handoff contains unsupported control characters",
+        ));
+    }
+    Ok(raw.to_owned())
 }
 
 fn role_prompt(role: &RoleSnapshot, task: &str) -> TResult<String> {
@@ -1884,8 +1909,12 @@ impl Toolbox {
             ));
         }
         let raw = require_str(args, "text")?;
-        let task = text::sanitize_prompt(&raw)
-            .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+        let task = if one_shot_handoff {
+            validate_handoff_pty_prompt(&raw)?
+        } else {
+            text::sanitize_prompt(&raw)
+                .map_err(|message| ToolFailure::new("invalid_prompt", message))?
+        };
         let role = self
             .registry
             .get(&session_id)
@@ -3058,8 +3087,10 @@ mod tests {
         assert!(prompt.contains("context only"));
         assert!(prompt.contains("# Summary - Keep /repo - Run tests"));
         assert_eq!(compact_handoff("   ").unwrap_err().code, "invalid_handoff");
+        let larger_than_prompt_limit = compact_handoff(&"x".repeat(text::MAX_PROMPT_BYTES + 1)).unwrap();
+        assert!(larger_than_prompt_limit.0.len() > text::MAX_PROMPT_BYTES);
         assert_eq!(
-            compact_handoff(&"x".repeat(text::MAX_PROMPT_BYTES + 1))
+            compact_handoff(&"x".repeat(MAX_HANDOFF_BYTES + 1))
                 .unwrap_err()
                 .code,
             "invalid_handoff"
