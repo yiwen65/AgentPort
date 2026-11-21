@@ -7,6 +7,8 @@
     "rename": "Rename group",
     "name": "Group name",
     "fold": "Expand or collapse group: {{title}}",
+    "expandAll": "Expand all split groups",
+    "collapseAll": "Collapse all split groups",
     "empty": "No split groups yet",
     "hint": "Drag a Session onto another terminal to create a split group."
   },

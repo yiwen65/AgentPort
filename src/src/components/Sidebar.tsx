@@ -2250,16 +2250,16 @@ function PaneGroupNode({
   group,
   accent,
   deviceAccents,
+  expanded,
+  onToggle,
 }: {
   group: PaneLayout;
   accent?: PaneGroupAccent;
   deviceAccents: ReadonlyMap<string, PaneGroupAccent>;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const { t } = useTranslation("shell");
-  const groupKey = paneGroupIdentity(group);
-  const [expanded, setExpanded] = useState(
-    () => readPersistedPaneGroupExpansion()[groupKey] !== false,
-  );
   const storeState = useShallowStore((state) => ({
     projects: state.projects,
     activeDevice: state.activeDevice,
@@ -2317,15 +2317,7 @@ function PaneGroupNode({
     >
       <div className="sidebar-group-heading">
         <button type="button" className="sidebar-group-fold" aria-expanded={expanded}
-          aria-label={t("sidebarGroups.fold", { title })} onClick={() => {
-            setExpanded((current) => {
-              const next = !current;
-              const persisted = readPersistedPaneGroupExpansion();
-              persisted[groupKey] = next;
-              persistPaneGroupExpansion(persisted);
-              return next;
-            });
-          }}>
+          aria-label={t("sidebarGroups.fold", { title })} onClick={onToggle}>
           <IconChevron dir={expanded ? "down" : "right"} />
         </button>
         <button type="button" className="tree-row project sidebar-group-open" title={label}
@@ -2400,7 +2392,33 @@ export default function Sidebar({
   const sidebarViewMode = useStore((state) => state.sidebarViewMode);
   const activeAgentsView = sidebarViewMode === "activeAgents";
   const [groupsPage, setGroupsPage] = useState(false);
+  const [paneGroupExpansionRevision, setPaneGroupExpansionRevision] =
+    useState(0);
   const groups = useStore((state) => state.terminalLayoutGroups);
+  const paneGroupExpansion = useMemo(
+    () => readPersistedPaneGroupExpansion(),
+    [groups, paneGroupExpansionRevision],
+  );
+  const togglePaneGroup = (groupKey: string) => {
+    const persisted = readPersistedPaneGroupExpansion();
+    persisted[groupKey] = persisted[groupKey] !== false ? false : true;
+    persistPaneGroupExpansion(persisted);
+    setPaneGroupExpansionRevision((revision) => revision + 1);
+  };
+  const allGroupsCollapsed =
+    groups.length > 0 &&
+    groups.every(
+      (group) => paneGroupExpansion[paneGroupIdentity(group)] === false,
+    );
+  const toggleAllPaneGroups = () => {
+    const collapse = !allGroupsCollapsed;
+    persistPaneGroupExpansion(
+      Object.fromEntries(
+        groups.map((group) => [paneGroupIdentity(group), !collapse]),
+      ),
+    );
+    setPaneGroupExpansionRevision((revision) => revision + 1);
+  };
   const groupAccents = useMemo(
     () => normalizePaneGroupAccents(groups).groups.map((group) => group.accent),
     [groups],
@@ -2500,6 +2518,8 @@ export default function Sidebar({
                 group={group}
                 accent={groupAccents[index]}
                 deviceAccents={groupDeviceAccents}
+                expanded={paneGroupExpansion[paneGroupIdentity(group)] !== false}
+                onToggle={() => togglePaneGroup(paneGroupIdentity(group))}
               />
             )) : <div className="empty-state"><div>{t("shell:sidebarGroups.empty")}</div><p>{t("shell:sidebarGroups.hint")}</p></div>}
           </div>
@@ -2568,10 +2588,14 @@ export default function Sidebar({
           <IconPlus />
         </button>
         <span className="sidebar-footer-spacer" />
-        {activeAgentsView || showGroups ? null : (
+        {activeAgentsView ? null : (
           <button
             className="sidebar-footer-action collapse-projects"
-            onClick={() =>
+            onClick={() => {
+              if (showGroups) {
+                toggleAllPaneGroups();
+                return;
+              }
               update((state) => {
                 const collapse = !allCollapsed;
                 const expandedProjects = Object.fromEntries(
@@ -2590,16 +2614,20 @@ export default function Sidebar({
                   revealedProjects: {},
                   revealedWorktrees: {},
                 };
-              })
-            }
-            disabled={projects.length === 0}
+              });
+            }}
+            disabled={showGroups ? groups.length === 0 : projects.length === 0}
             aria-label={
-              allCollapsed
-                ? t("shell:ui.sidebar.expandAll")
-                : t("shell:ui.sidebar.collapseAll")
+              showGroups
+                ? allGroupsCollapsed
+                  ? t("shell:sidebarGroups.expandAll")
+                  : t("shell:sidebarGroups.collapseAll")
+                : allCollapsed
+                  ? t("shell:ui.sidebar.expandAll")
+                  : t("shell:ui.sidebar.collapseAll")
             }
           >
-            <IconCollapseProjects collapsed={allCollapsed} />
+            <IconCollapseProjects collapsed={showGroups ? allGroupsCollapsed : allCollapsed} />
           </button>
         )}
       </div>

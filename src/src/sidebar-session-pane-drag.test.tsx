@@ -182,6 +182,14 @@ describe("sidebar Session pane drag", () => {
         "aria-expanded",
       ),
     ).toBe("false");
+    fireEvent.click(
+      view.getByRole("button", { name: "折叠所有分屏分组" }),
+    );
+    expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(0);
+    fireEvent.click(
+      view.getByRole("button", { name: "展开所有分屏分组" }),
+    );
+    expect(view.container.querySelectorAll(".tree-row.session")).toHaveLength(4);
     fireEvent.click(view.getByRole("button", { name: "项目" }));
     // Project-tree rows expose the owning agent in the row's bottom-right corner.
     expect(

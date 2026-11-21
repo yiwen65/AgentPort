@@ -7,6 +7,8 @@
     "rename": "重命名分组",
     "name": "分组名称",
     "fold": "展开或收起分组：{{title}}",
+    "expandAll": "展开所有分屏分组",
+    "collapseAll": "折叠所有分屏分组",
     "empty": "暂无分屏分组",
     "hint": "将 Session 拖到另一终端上，即可创建分屏分组。"
   },
