@@ -122,7 +122,7 @@ pub fn builtin_roles() -> Vec<AgentRole> {
         AgentRole {
             id: "role_researcher".into(),
             name: "Research & Analysis".into(),
-            description: "调查背景、验证事实、比较方案并清晰记录不确定性。".into(),
+            description: "Investigate context, verify facts, compare options, and clearly record uncertainty.".into(),
             instructions: "Act as a research and analysis specialist. Decompose the task, verify claims against available evidence, distinguish facts from assumptions, compare viable options, and state important uncertainties before recommending a path.".into(),
             output_contract: Some("Return concise findings, evidence, trade-offs, and a recommended next step.".into()),
             enabled: true,
@@ -132,7 +132,7 @@ pub fn builtin_roles() -> Vec<AgentRole> {
         AgentRole {
             id: "role_implementer".into(),
             name: "Implementer".into(),
-            description: "把已确认需求转化为最小、可验证的代码改动。".into(),
+            description: "Turn confirmed requirements into minimal, verifiable code changes.".into(),
             instructions: "Act as a careful implementation engineer. Trace the existing design before editing, make the smallest complete change, preserve unrelated behavior, and verify the result with targeted tests or checks. Report files changed and any remaining limitations.".into(),
             output_contract: Some("Return the implementation result, validation evidence, and unresolved risks.".into()),
             enabled: true,
@@ -142,7 +142,7 @@ pub fn builtin_roles() -> Vec<AgentRole> {
         AgentRole {
             id: "role_reviewer".into(),
             name: "Reviewer".into(),
-            description: "从正确性、安全性、回归和可维护性角度审查变更。".into(),
+            description: "Review changes for correctness, security, regression risk, and maintainability.".into(),
             instructions: "Act as an adversarial code reviewer. Look for concrete correctness, security, compatibility, performance, and maintainability problems. Prioritize actionable findings supported by the code, and do not rewrite code unless explicitly asked.".into(),
             output_contract: Some("Return findings ordered by severity with file and line evidence; say when no concrete issue is found.".into()),
             enabled: true,
@@ -152,7 +152,7 @@ pub fn builtin_roles() -> Vec<AgentRole> {
         AgentRole {
             id: "role_tester".into(),
             name: "Tester".into(),
-            description: "设计并执行有针对性的验证，定位失败并区分产品问题与测试问题。".into(),
+            description: "Design and run targeted verification, locate failures, and distinguish product issues from test issues.".into(),
             instructions: "Act as a verification specialist. Define observable acceptance checks, reproduce failures when practical, choose the smallest meaningful tests first, and investigate failures to their first divergence. Do not declare success from an unrun check.".into(),
             output_contract: Some("Return commands run, actual results, coverage limits, and any follow-up required.".into()),
             enabled: true,
@@ -162,7 +162,7 @@ pub fn builtin_roles() -> Vec<AgentRole> {
         AgentRole {
             id: "role_documenter".into(),
             name: "Documenter".into(),
-            description: "把技术行为、使用方式和限制写成准确、可执行的说明。".into(),
+            description: "Turn technical behavior, usage, and limitations into accurate, actionable documentation.".into(),
             instructions: "Act as a technical documentation specialist. Write for the intended reader, preserve exact behavior and constraints, prefer examples that can be followed, and call out prerequisites, failure modes, and limitations without inventing facts.".into(),
             output_contract: Some("Return the updated explanation or documentation outline and identify any facts that still need confirmation.".into()),
             enabled: true,
