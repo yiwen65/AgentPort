@@ -530,6 +530,8 @@ export function buildGridPlacementForSessions(
   width: number,
   height: number,
   separatorSize = 0,
+  /** New panes are placed right after this leaf, i.e. beside it. */
+  anchorSessionId?: string | null,
 ): PaneLayout | null {
   const existing = orderedLayoutSessionIds(layout);
   const additions = newSessionIds.filter(
@@ -537,7 +539,20 @@ export function buildGridPlacementForSessions(
       sessionId && !existing.includes(sessionId) && all.indexOf(sessionId) === index,
   );
   if (existing.length === 0 || additions.length === 0) return null;
-  const ids = [...existing, ...additions];
+  // Insert next to the anchor (the coordinating Agent's pane) instead of at the
+  // end, so a delegated Agent opens beside its parent rather than in a corner.
+  const anchorIndex =
+    anchorSessionId !== null && anchorSessionId !== undefined
+      ? existing.indexOf(anchorSessionId)
+      : -1;
+  const ids =
+    anchorIndex >= 0
+      ? [
+          ...existing.slice(0, anchorIndex + 1),
+          ...additions,
+          ...existing.slice(anchorIndex + 1),
+        ]
+      : [...existing, ...additions];
   const { columns } = chooseGridShape(ids.length, width, height, separatorSize);
   const rows: PaneLeaf[][] = [];
   for (let index = 0; index < ids.length; index += columns) {

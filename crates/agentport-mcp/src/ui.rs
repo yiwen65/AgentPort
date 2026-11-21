@@ -69,10 +69,14 @@ pub fn queue_path(root: &Path) -> PathBuf {
 }
 
 /// Append one batch placement command. Returns the command id so a caller can correlate it.
+#[allow(clippy::too_many_arguments)]
 pub fn enqueue_batch(
     root: &Path,
     session_ids: Vec<String>,
     focus: bool,
+    // The coordinating Agent's Session: new panes are inserted beside it. The
+    // grid shape itself is still chosen by the layout planner.
+    anchor_session_id: Option<&str>,
     now: &str,
 ) -> io::Result<String> {
     let Some(first) = session_ids.first().cloned() else {
@@ -87,7 +91,7 @@ pub fn enqueue_batch(
             kind: "batch_pane",
             session_id: &first,
             direction: None,
-            target_session_id: None,
+            target_session_id: anchor_session_id,
             session_ids: Some(session_ids),
             focus,
         },
@@ -201,6 +205,7 @@ mod tests {
             dir.path(),
             vec!["ses_1".into(), "ses_2".into(), "ses_3".into()],
             true,
+            Some("ses_parent"),
             "2026-11-20T00:00:03Z",
         )
         .unwrap();
@@ -209,6 +214,9 @@ mod tests {
             serde_json::from_str(body.lines().next().unwrap()).unwrap();
         assert_eq!(command["kind"], "batch_pane");
         assert_eq!(command["sessionId"], "ses_1");
+        // The anchor rides along so the renderer can insert beside the parent;
+        // the grid shape is still the layout planner's decision.
+        assert_eq!(command["targetSessionId"], "ses_parent");
         assert_eq!(
             command["sessionIds"],
             serde_json::json!(["ses_1", "ses_2", "ses_3"])

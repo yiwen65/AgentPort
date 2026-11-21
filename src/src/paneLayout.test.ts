@@ -911,6 +911,55 @@ describe("optimal pane placement", () => {
     }
   });
 
+  it("places a delegated pane right after its anchor", () => {
+    let layout = singletonPaneLayout("ses_parent");
+    layout = buildGridPlacementForSessions(layout, ["ses_a"], 1400, 900, 6)!;
+    layout = buildGridPlacementForSessions(layout, ["ses_b"], 1400, 900, 6)!;
+    // A new worker anchored at the parent sits beside it, not at the end.
+    const anchored = buildGridPlacementForSessions(
+      layout,
+      ["ses_child"],
+      1400,
+      900,
+      6,
+      "ses_parent",
+    )!;
+    const order = orderedLayoutSessionIds(anchored);
+    expect(order.indexOf("ses_child")).toBe(order.indexOf("ses_parent") + 1);
+    // The grid shape still covers every pane.
+    expect(order).toHaveLength(4);
+  });
+
+  it("anchoring never changes the grid shape", () => {
+    // Build eight panes, then add the ninth both ways: the shape must stay 3x3
+    // because the optimal-layout rule decides columns/rows, not the anchor.
+    let layout = singletonPaneLayout("ses_1");
+    for (let index = 2; index <= 8; index += 1) {
+      layout = buildGridPlacementForSessions(layout, [`ses_${index}`], 1400, 900, 6)!;
+    }
+    const anchored = buildGridPlacementForSessions(
+      layout,
+      ["ses_9"],
+      1400,
+      900,
+      6,
+      "ses_1",
+    )!;
+    const plain = buildGridPlacementForSessions(layout, ["ses_9"], 1400, 900, 6)!;
+    // Same grid and same cell sizes as a set: only which pane sits where
+    // differs, because the planner still chose the shape.
+    const cells = (candidate: PaneLayout) =>
+      orderedLayoutSessionIds(candidate)
+        .map((id) => paneSessionSize(candidate.root, id, 1400, 900, 6)!)
+        .map((size) => Math.round(size.width))
+        .sort((a, b) => a - b);
+    expect(cells(anchored)).toEqual(cells(plain));
+    expect(orderedLayoutSessionIds(anchored).indexOf("ses_9")).toBe(
+      orderedLayoutSessionIds(anchored).indexOf("ses_1") + 1,
+    );
+    expect(orderedLayoutSessionIds(plain).indexOf("ses_9")).toBe(8);
+  });
+
   it("still reports an incremental candidate for explicit splits", () => {
     const planned = chooseSplitPlacement(
       singletonPaneLayout("ses_1"),

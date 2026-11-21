@@ -179,7 +179,7 @@ describe("openSessionForExternalAgent", () => {
         toasts: [],
         archivingSessionIds: [],
       });
-      expect(splitSessionForExternalAgent("ses_agent", direction, null)).toBe(true);
+      expect(splitSessionForExternalAgent(direction, "ses_agent", null)).toBe(true);
       const ids = orderedLayoutSessionIds(getState().terminalLayout);
       expect(ids).toContain("ses_old");
       expect(ids).toContain("ses_agent");
@@ -208,7 +208,7 @@ describe("openSessionForExternalAgent", () => {
       archivingSessionIds: [],
     });
     expect(
-      splitSessionForExternalAgent("ses_agent", "down", "ses_old", false),
+      splitSessionForExternalAgent("down", "ses_agent", "ses_old", false),
     ).toBe(true);
     const ids = orderedLayoutSessionIds(getState().terminalLayout);
     expect(ids).toHaveLength(3);
@@ -235,7 +235,7 @@ describe("openSessionForExternalAgent", () => {
       toasts: [],
       archivingSessionIds: [],
     });
-    expect(splitSessionForExternalAgent("ses_old", "down", null)).toBe(true);
+    expect(splitSessionForExternalAgent("down", "ses_old", null)).toBe(true);
     expect(orderedLayoutSessionIds(getState().terminalLayout)).toHaveLength(2);
     expect(getState().activeSessionId).toBe("ses_old");
   });

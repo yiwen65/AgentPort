@@ -193,7 +193,7 @@ def main() -> int:
 
         print("a wrong agent id answers with the selectable ones")
         wrong, is_error = client.call(
-            "create_session", {"agent": "definitely-not-an-agent", "pane": "none"}
+            "create_session", {"agent": "definitely-not-an-agent"}
         )
         check(is_error and wrong["error"]["code"] == "unknown_agent", "unknown agent rejected")
         check(
@@ -205,7 +205,7 @@ def main() -> int:
         cwd = os.getcwd()
         implicit, is_error = client.call(
             "create_session",
-            {"agent": args.agent, "title": "implicit project", "pane": "none"},
+            {"agent": args.agent, "title": "implicit project"},
         )
         check(not is_error, "create_session without a project argument works")
         check(
@@ -229,7 +229,19 @@ def main() -> int:
         check(created["promptSent"], "first prompt sent after the ready gate")
         check(
             created.get("pane", {}).get("kind") == "split_pane",
-            "delegation places the Session in a new pane by default",
+            "delegation always places the Session in a new pane",
+        )
+        check(
+            created["pane"].get("direction") in (None, ""),
+            "placement is automatic: the intent carries no forced axis",
+        )
+        refused_pane, is_error = client.call(
+            "create_session",
+            {"agent": args.agent, "projectId": project_id, "pane": "none"},
+        )
+        check(
+            is_error and refused_pane["error"]["code"] == "pane_not_optional",
+            "opting out of the pane is refused",
         )
         # Delegation is unattended: the default must be the Agent's own
         # full-permission mode, not the CLI's interactive prompts.
@@ -355,14 +367,15 @@ def main() -> int:
         )
         quiet, is_error = client.call(
             "create_session",
-            {"agent": args.agent, "projectId": project_id, "title": "no pane", "pane": "none"},
+            {"agent": args.agent, "projectId": project_id, "title": "auto pane"},
         )
-        check(not is_error and "pane" not in quiet, "pane=none queues nothing")
+        check(not is_error and quiet.get("pane", {}).get("kind") == "split_pane",
+              "every created Session queues a pane")
         client.call("terminate_session", {"sessionId": quiet["sessionId"]})
         after = len(
             [line for line in (data_dir / "mcp" / "ui-commands.jsonl").read_text().splitlines() if line.strip()]
         )
-        check(after == before, "and writes no command")
+        check(after == before + 1, "and exactly one command is written")
         pane, is_error = client.call("open_pane", {"sessionId": session_id})
         check(not is_error and pane["queued"], "open_pane queued")
         queue = data_dir / "mcp" / "ui-commands.jsonl"
@@ -440,7 +453,7 @@ def main() -> int:
         print("archive then delete")
         spare, is_error = client.call(
             "create_session",
-            {"agent": args.agent, "projectId": project_id, "title": "archive me", "pane": "none"},
+            {"agent": args.agent, "projectId": project_id, "title": "archive me"},
         )
         check(not is_error, "a Session to tidy up exists")
         spare_id = spare["sessionId"]

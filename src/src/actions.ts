@@ -63,9 +63,7 @@ import { i18n } from "./i18n";
 import { applyTerminalThemeCss } from "./terminalThemes";
 import {
   assignPaneGroupAccent,
-  buildGridPlacement,
   buildGridPlacementForSessions,
-  chooseSplitPlacement,
   focusPane,
   isHorizontalPaneSplitDirection,
   isPaneSplitDirection,
@@ -791,8 +789,10 @@ export function openSessionForExternalAgent(
  * Session in the ordinary view — the intent must never leave a blank workspace.
  */
 export function splitSessionForExternalAgent(
+  // `auto` lets the layout planner place the pane; an axis forces a split of the
+  // target pane (used by explicit `split_pane` requests).
+  direction: PaneSplitDirection | "auto",
   sessionId: string,
-  direction: PaneSplitDirection,
   targetSessionId: string | null,
   focus = true,
 ): boolean {
@@ -800,7 +800,7 @@ export function splitSessionForExternalAgent(
   if (!findSession(state.projects, sessionId)) {
     void refreshProjects().then(() => {
       if (findSession(getState().projects, sessionId)) {
-        splitSessionForExternalAgent(sessionId, direction, targetSessionId, focus);
+        splitSessionForExternalAgent(direction, sessionId, targetSessionId, focus);
       }
     });
     return false;
@@ -810,57 +810,50 @@ export function splitSessionForExternalAgent(
   if (layoutContains(layout, key)) {
     return openSessionForExternalAgent(sessionId, focus);
   }
-  // Placement: the whole layout decides. Splitting the focused pane every time
-  // turns a wide window into a row of slivers (nine delegated Agents became nine
-  // ~90px columns). Without an explicit target the layout is rebuilt on the grid
-  // shape that keeps every pane as large as the workspace allows — 2 → two
-  // columns, 4 → 2x2, 9 → 3x3 — and the new Session takes the next cell.
-  const workspaceRect = targetSessionId ? null : paneWorkspaceRect();
-  if (workspaceRect) {
-    const rebuilt = buildGridPlacement(
-      layout,
-      key,
-      workspaceRect.width,
-      workspaceRect.height,
-      PANE_SEPARATOR_SIZE,
-    );
-    if (rebuilt && rebuilt.root) {
-      const previous = plainActiveId(layout.focusedSessionId ?? activeSessionKey(state));
-      const focusedKey = focus ? key : layout.focusedSessionId ?? activeSessionKey(state);
-      commitPaneLayout(
-        { ...rebuilt, focusedSessionId: focusedKey },
-        {
-          maximizedSessionId: null,
-          acknowledgeFocused: focus,
-          previousLayout: layout,
-          movingSessionId: key,
-        },
-      );
-      if (!focus && previous) selectSession(previous);
-      return true;
-    }
-  }
-  const planned = workspaceRect
-    ? chooseSplitPlacement(
+  const anchorKey = targetSessionId ? activeKeyFor(targetSessionId) : null;
+
+  // Automatic placement: rebuild the whole layout on the grid that keeps every
+  // pane as large as the workspace allows (2 → two columns, 4 → 2x2, 9 → 3x3)
+  // and put the new pane right after its anchor, i.e. beside the coordinating
+  // Agent rather than wherever the cursor happens to be.
+  if (direction === "auto") {
+    const workspaceRect = paneWorkspaceRect();
+    if (workspaceRect) {
+      const rebuilt = buildGridPlacementForSessions(
         layout,
+        [key],
         workspaceRect.width,
         workspaceRect.height,
         PANE_SEPARATOR_SIZE,
-      )
-    : null;
+        anchorKey,
+      );
+      if (rebuilt && rebuilt.root) {
+        const previous = plainActiveId(layout.focusedSessionId ?? activeSessionKey(state));
+        const focusedKey = focus ? key : layout.focusedSessionId ?? activeSessionKey(state);
+        commitPaneLayout(
+          { ...rebuilt, focusedSessionId: focusedKey },
+          {
+            maximizedSessionId: null,
+            acknowledgeFocused: focus,
+            previousLayout: layout,
+            movingSessionId: key,
+          },
+        );
+        if (!focus && previous) selectSession(previous);
+        return true;
+      }
+    }
+  }
+
+  // Explicit axis (or no measurable workspace): split the anchor/focused pane.
   const targetKey =
-    (targetSessionId ? activeKeyFor(targetSessionId) : null) ??
-    planned?.sessionId ??
-    layout.focusedSessionId ??
-    activeSessionKey(state);
+    anchorKey ?? layout.focusedSessionId ?? activeSessionKey(state);
   if (!targetKey || targetKey === key) {
     return openSessionForExternalAgent(sessionId, focus);
   }
-  // `focus: false` must keep the pane the user was in, which is not necessarily
-  // the split target.
-  const requested = planned?.direction ?? direction;
-  // The planned axis should fit, but a pane can be an awkward shape: try the
-  // other axis before giving up.
+  const requested: PaneSplitDirection =
+    direction === "auto" ? "right" : direction;
+  // A pane can be an awkward shape: try the other axis before giving up.
   const other: PaneSplitDirection = isHorizontalPaneSplitDirection(requested)
     ? "down"
     : "right";
@@ -885,6 +878,7 @@ export function splitSessionForExternalAgent(
 export function splitSessionsForExternalAgent(
   sessionIds: readonly string[],
   focus = true,
+  anchorSessionId: string | null = null,
 ): boolean {
   const state = getState();
   const uniqueKeys = [...new Set(sessionIds)]
@@ -903,12 +897,15 @@ export function splitSessionsForExternalAgent(
 
   const workspaceRect = paneWorkspaceRect();
   if (workspaceRect && layout.root) {
+    // The grid shape (how many columns/rows) is always the planner's decision;
+    // `anchorSessionId` only orders the new panes next to their parent.
     const rebuilt = buildGridPlacementForSessions(
       layout,
       additions,
       workspaceRect.width,
       workspaceRect.height,
       PANE_SEPARATOR_SIZE,
+      anchorSessionId ? activeKeyFor(anchorSessionId) : null,
     );
     if (rebuilt?.root) {
       const previous = plainActiveId(
@@ -936,7 +933,7 @@ export function splitSessionsForExternalAgent(
   for (const key of additions) {
     const plain = plainActiveId(key);
     if (!plain) continue;
-    inserted = splitSessionForExternalAgent(plain, "right", null, focus) || inserted;
+    inserted = splitSessionForExternalAgent("right", plain, null, focus) || inserted;
   }
   return inserted;
 }
@@ -963,6 +960,7 @@ export function applyExternalPaneCommand(command: ExternalPaneCommand): boolean 
     return splitSessionsForExternalAgent(
       command.sessionIds ?? [command.sessionId],
       command.focus !== false,
+      command.targetSessionId ?? null,
     );
   }
   switch (command.kind) {
@@ -970,8 +968,8 @@ export function applyExternalPaneCommand(command: ExternalPaneCommand): boolean 
       return openSessionForExternalAgent(command.sessionId, command.focus !== false);
     case "split_pane":
       return splitSessionForExternalAgent(
+        isPaneSplitDirection(command.direction) ? command.direction : "auto",
         command.sessionId,
-        isPaneSplitDirection(command.direction) ? command.direction : "right",
         command.targetSessionId ?? null,
         command.focus !== false,
       );

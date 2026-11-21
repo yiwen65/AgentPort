@@ -230,12 +230,6 @@ fn create_session_schema() -> Value {
                 "description": "bypass (default) launches the Agent with its own full-permission flag so a delegated task never stops to ask; auto relaxes approvals less aggressively; native keeps the CLI's own prompts but will block on them when nobody is watching."
             },
             "worktreeId": { "type": "string" },
-            "pane": {
-                "type": "string",
-                "enum": ["auto", "split-right", "split-down", "open", "none"],
-                "default": "auto",
-                "description": "Where the new Session appears in the desktop layout. auto (default) lets the renderer rebuild the layout on the grid that keeps every pane as large as possible, so several delegated Agents form a grid instead of a row of slivers; split-right/split-down force an axis next to the focused pane; open follows the ordinary open/focus rules; none leaves the layout alone. The layout is owned by the renderer, so this is a queued intent."
-            },
             "promptTimeoutMs": {
                 "type": "integer",
                 "minimum": 1000,
@@ -292,12 +286,6 @@ fn create_sessions_schema() -> Value {
                             "default": "bypass"
                         },
                         "worktreeId": { "type": "string" },
-                        "pane": {
-                            "type": "string",
-                            "enum": ["auto", "none"],
-                            "default": "auto",
-                            "description": "auto batches pane placement into one balanced renderer update; none leaves the layout unchanged. Use create_session for explicit split-right/split-down/open placement."
-                        },
                         "promptTimeoutMs": {
                             "type": "integer",
                             "minimum": 1000,
@@ -976,26 +964,18 @@ impl Toolbox {
         let prompt_timeout = optional_u64(args, "promptTimeoutMs")
             .unwrap_or(self.ready_timeout_ms)
             .clamp(1_000, 120_000);
-        // Delegation places the new Session in its own pane by default: a
-        // coordinator that has to call split_pane separately is one call more
-        // expensive and forgets the pane the first time it matters.
-        let pane = optional_str(args, "pane").unwrap_or_else(|| "auto".into());
-        let pane_direction = match pane.as_str() {
-            // `auto` asks the renderer for the best placement; the intent stays
-            // a split, only the axis is left to the layout planner.
-            "auto" => None,
-            "split-right" => Some("right"),
-            "split-down" => Some("down"),
-            "open" | "none" => None,
-            other => {
+        // Placement is part of delegating, not an option: every delegated
+        // Session appears in the parent's layout, anchored beside the pane the
+        // coordinating Agent is running in.
+        if let Some(pane) = optional_str(args, "pane") {
+            if matches!(pane.as_str(), "none" | "open") {
                 return Err(ToolFailure::new(
-                    "invalid_arguments",
-                    format!(
-                        "pane must be auto, split-right, split-down, open or none (got {other})"
-                    ),
-                ))
+                    "pane_not_optional",
+                    "a delegated Session always gets a pane; drop the pane argument (the layout \
+                     planner picks the best placement)",
+                ));
             }
-        };
+        }
 
         // Only refuse from a cache that actually has entries: a fresh data
         // directory has probed nothing yet, and the service probes on launch.
@@ -1147,22 +1127,17 @@ impl Toolbox {
         // the renderer can resolve it when it drains the queue. Batch callers
         // defer this until all successful items have been created.
         if queue_pane {
-            match pane.as_str() {
-                "none" => {}
-                "open" => {
-                    result["pane"] = self.queue_pane(ui::PaneIntent::open(&session_id, true))?;
-                }
-                _ => {
-                    result["pane"] = self.queue_pane(ui::PaneIntent {
-                        kind: "split_pane",
-                        session_id: &session_id,
-                        direction: pane_direction,
-                        target_session_id: None,
-                        session_ids: None,
-                        focus: true,
-                    })?;
-                }
-            }
+            // Placement is part of delegating, not an option, and the parent
+            // Session (the one running this MCP) anchors the new pane so it
+            // opens next to the coordinator.
+            result["pane"] = self.queue_pane(ui::PaneIntent {
+                kind: "split_pane",
+                session_id: &session_id,
+                direction: None,
+                target_session_id: self.parent_session_id.as_deref(),
+                session_ids: None,
+                focus: true,
+            })?;
         }
 
         Ok(result)
@@ -1209,21 +1184,16 @@ impl Toolbox {
                         }
                     }
                     let map = &map;
-                    let pane = optional_str(map, "pane").unwrap_or_else(|| "auto".into());
-                    let outcome = if matches!(pane.as_str(), "auto" | "none") {
-                        self.create_session_with_pane(map, false)
-                    } else {
-                        Err(ToolFailure::new(
-                            "invalid_arguments",
-                            "batch task pane must be auto or none; use create_session for explicit pane placement",
-                        ))
-                    };
+                    if optional_str(map, "pane").is_some_and(|pane| pane == "none") {
+                        return Err(ToolFailure::new(
+                            "pane_not_optional",
+                            "a delegated Session always gets a pane; drop the pane argument",
+                        ));
+                    }
+                    let outcome = self.create_session_with_pane(map, false);
                     if let Ok(value) = &outcome {
-                        if pane != "none" {
-                            if let Some(session_id) = value.get("sessionId").and_then(Value::as_str)
-                            {
-                                pane_sessions.push(session_id.to_string());
-                            }
+                        if let Some(session_id) = value.get("sessionId").and_then(Value::as_str) {
+                            pane_sessions.push(session_id.to_string());
                         }
                     }
                     outcome
@@ -1274,7 +1244,13 @@ impl Toolbox {
     }
 
     fn queue_batch_pane(&self, session_ids: &[String]) -> TResult<Value> {
-        let command_id = ui::enqueue_batch(&self.root, session_ids.to_vec(), true, &now_rfc3339())
+        let command_id = ui::enqueue_batch(
+            &self.root,
+            session_ids.to_vec(),
+            true,
+            self.parent_session_id.as_deref(),
+            &now_rfc3339(),
+        )
             .map_err(|error| {
                 ToolFailure::new(
                     "ui_queue_failed",
