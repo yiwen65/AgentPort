@@ -141,8 +141,8 @@ export function useAttentionInbox(
     // is retried independently if the transport is between reconnect phases.
     if (box(hostId).acknowledge(sessionId, cursor)) publish();
     report(hostId);
-    await flushSeen(hostId);
-  }, [box, flushSeen, publish, report]);
+    if (visible) await flushSeen(hostId);
+  }, [box, flushSeen, publish, report, visible]);
   const clearAll = useCallback(async () => {
     await Promise.all(entries.map(entry => acknowledge(entry.hostId, entry.sessionId, entry)));
   }, [entries, acknowledge]);

@@ -53,6 +53,12 @@ describe("bounded metadata notification reception", () => {
     await act(async () => finish({ events: [{ sessionId: "s" }] }));
     expect(result.current.entries).toHaveLength(0);
   });
+  it("does not send shared seen writes while the dashboard is inactive", async () => {
+    const client = makeClient();
+    const { result } = renderHook(() => useAttentionInbox(client, hosts.slice(0, 1), false));
+    await act(async () => { result.current.acknowledge("one", "s", { runId: "r", runOrdinal: 1, sequence: 1 }); });
+    expect(client.request).not.toHaveBeenCalledWith("one", "session.seen.mark", expect.anything());
+  });
   it("clears locally while retrying a shared seen acknowledgement after reconnect", async () => {
     const client = makeClient();
     let polls = 0;
