@@ -18,4 +18,15 @@ describe("sidebar text clarity", () => {
     expect(styles).toMatch(/\.tree-row\.session\s*\{[^}]*font-size: 13px;[^}]*font-weight: 500;/);
     expect(styles).toMatch(/\.tree-row\.project\s*\{[^}]*font-size: 13px;[^}]*font-weight: 600;/);
   });
+
+  it("uses spacing rather than divider rules between project rows", () => {
+    const groups = styles.match(
+      /\.tree-project \+ \.tree-project\s*\{([\s\S]*?)\n\}/,
+    )?.[1];
+    expect(groups).toContain("margin-top: 4px");
+    expect(groups).not.toContain("border-top");
+    expect(styles).toMatch(
+      /\.tree-project \+ \.tree-project\.unpinned-start\s*\{[^}]*margin-top: 14px;/,
+    );
+  });
 });

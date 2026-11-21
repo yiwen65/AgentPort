@@ -763,7 +763,7 @@ button {
 }
 
 .tree-project {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   position: relative;
   transition: opacity 0.12s ease;
 }
@@ -797,22 +797,14 @@ body.is-project-dragging .tree-row.project {
   transition: none;
 }
 
-/* Hairline between project groups: full-bleed across the glass so each repo
-   reads as its own section of the source list. */
+/* Projects breathe as a single continuous list. Spacing replaces hard rules,
+   while the pinned → unpinned transition keeps a slightly larger pause. */
 .tree-project + .tree-project {
-  border-top: 1px solid var(--sidebar-border);
-  padding-top: 7px;
+  margin-top: 4px;
 }
 
 .tree-project + .tree-project.unpinned-start {
-  margin-top: 9px;
-  border-top-width: 2px;
-  border-top-color: color-mix(
-    in srgb,
-    var(--accent) 42%,
-    var(--sidebar-border)
-  );
-  padding-top: 9px;
+  margin-top: 14px;
 }
 
 .tree-project-header {
@@ -859,7 +851,7 @@ body.is-project-dragging .tree-row.project {
 .tree-row.project {
   flex: 1;
   min-width: 0;
-  min-height: 30px;
+  min-height: 32px;
   padding-left: 7px;
   padding-right: 7px;
   font-size: 13px;
