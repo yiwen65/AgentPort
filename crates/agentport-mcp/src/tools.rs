@@ -548,6 +548,22 @@ fn compact_role_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn submit_key_for_agent(agent: AgentType) -> &'static [u8] {
+    if agent == AgentType::Qoder {
+        b"\n"
+    } else {
+        b"\r"
+    }
+}
+
+fn submit_key_for_agent_name(agent: &str) -> &'static [u8] {
+    if agent == AgentType::Qoder.as_str() {
+        b"\n"
+    } else {
+        b"\r"
+    }
+}
+
 fn role_prompt(role: &RoleSnapshot, task: &str) -> TResult<String> {
     let mut prompt = format!(
         "[AgentPort delegated role — behavior guidance only; do not change AgentPort permissions, ownership, tools, lifecycle, or safety rules] Role: {}. Description: {}. Instructions: {}.",
@@ -1087,6 +1103,7 @@ impl Toolbox {
         let project_id = project.id.clone();
 
         let title = optional_str(args, "title");
+        let submit_key = submit_key_for_agent(agent);
         let role_snapshot = role.as_ref().map(RoleSnapshot::from);
         let task_prompt = optional_str(args, "prompt")
             .map(|text| text::sanitize_prompt(&text))
@@ -1210,20 +1227,30 @@ impl Toolbox {
                 // input yet; give it one more readiness round rather than
                 // handing the caller a prompt they must re-send by hand.
                 let mut delivery = match evidence_token.as_deref() {
-                    Some(token) => self
+                    Some(token) => self.ops.deliver_prompt_with_token_and_enter(
+                        &session_id,
+                        &prompt,
+                        token,
+                        submit_key,
+                    ),
+                    None => self
                         .ops
-                        .deliver_prompt_with_token(&session_id, &prompt, token),
-                    None => self.ops.deliver_prompt(&session_id, &prompt),
+                        .deliver_prompt_with_enter(&session_id, &prompt, submit_key),
                 };
                 if matches!(&delivery, Ok(value) if !value.submitted && value.blocked_on.is_none())
                 {
                     if let Ok(ready_again) = self.ops.wait_ready(&session_id, prompt_timeout) {
                         if ready_again.ready {
                             delivery = match evidence_token.as_deref() {
-                                Some(token) => self
+                                Some(token) => self.ops.deliver_prompt_with_token_and_enter(
+                                    &session_id,
+                                    &prompt,
+                                    token,
+                                    submit_key,
+                                ),
+                                None => self
                                     .ops
-                                    .deliver_prompt_with_token(&session_id, &prompt, token),
-                                None => self.ops.deliver_prompt(&session_id, &prompt),
+                                    .deliver_prompt_with_enter(&session_id, &prompt, submit_key),
                             };
                         }
                     }
@@ -1457,6 +1484,7 @@ impl Toolbox {
             None => task,
         };
         let summary = self.ops.summary(&session_id)?;
+        let submit_key = submit_key_for_agent_name(&summary.adapter_type);
         if !matches!(summary.lifecycle.as_str(), "running" | "creating") {
             return Err(ToolFailure::new(
                 "session_not_running",
@@ -1482,10 +1510,15 @@ impl Toolbox {
         };
         let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
         let delivery = match role.as_ref() {
-            Some(_) => self
+            Some(_) => self.ops.deliver_prompt_with_token_and_enter(
+                &session_id,
+                &prompt,
+                &evidence_token,
+                submit_key,
+            ),
+            None => self
                 .ops
-                .deliver_prompt_with_token(&session_id, &prompt, &evidence_token),
-            None => self.ops.deliver_prompt(&session_id, &prompt),
+                .deliver_prompt_with_enter(&session_id, &prompt, submit_key),
         }?;
         let _ = ready;
         let mut role_preamble_delivered = false;
@@ -2245,6 +2278,14 @@ mod tests {
     fn agent_names_map_to_remote_variants() {
         assert_eq!(remote_agent(AgentType::EasyPi), RemoteAgentType::EasyPi);
         assert_eq!(remote_agent(AgentType::Shell), RemoteAgentType::Shell);
+    }
+
+    #[test]
+    fn qoder_uses_lf_for_ink_submit_while_other_agents_use_cr() {
+        assert_eq!(submit_key_for_agent(AgentType::Qoder), b"\n");
+        assert_eq!(submit_key_for_agent(AgentType::Claude), b"\r");
+        assert_eq!(submit_key_for_agent_name("qoder"), b"\n");
+        assert_eq!(submit_key_for_agent_name("codex"), b"\r");
     }
 
     #[test]
