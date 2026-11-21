@@ -83,10 +83,10 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 单任务委派：
 
 ```text
-tools/list       // create_session 与 handoff 描述中包含已启用 Role 的 name/description
+tools/list       // create_session/create_sessions 描述中包含已启用 Role 的 name/description；handoff 不包含 Role
 handoff         {agent: "claude", projectPath: "/repo", title: "continue handoff", handoff: "# Session Handoff ..."}  // 一次性移交，不等待结果
 create_session  {agent: "claude", roleId: "role_implementer", projectPath: "/repo", title: "fix flaky test", prompt: "..."}
-// 如果没有 Role 适用，模型省略 roleId；list_roles 仅在需要刷新 metadata 时调用
+// 如果没有 Role 适用，模型省略 roleId；handoff 永远不传 roleId；list_roles 仅在需要刷新 metadata 时调用
 wait_for_task  {sessionId: "..."}  // 默认 45s；超时后继续调用本工具
 ```
 
