@@ -5877,6 +5877,7 @@ body.is-resizing-pane {
   z-index: 30;
   display: flex;
   gap: 4px;
+  width: max-content;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -5885,6 +5886,7 @@ body.is-resizing-pane {
 }
 
 .doc-goto-input {
+  flex: 0 0 90px;
   width: 90px;
   height: 22px;
   padding: 0 8px;

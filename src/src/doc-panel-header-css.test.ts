@@ -46,6 +46,13 @@ describe("document panel header tab strip", () => {
     expect(settings).toContain("right: auto");
   });
 
+  it("keeps the go-to-line field wide enough for keyboard entry", () => {
+    const popup = styles.match(/^\.doc-goto-line\s*\{([\s\S]*?)\n\}/m)?.[1];
+    expect(popup).toContain("width: max-content");
+    const input = styles.match(/^\.doc-goto-input\s*\{([\s\S]*?)\n\}/m)?.[1];
+    expect(input).toContain("flex: 0 0 90px");
+  });
+
   it("moves Quote Selection to its own row in narrow editor columns", () => {
     const compact = styles.match(/@container doc-editor \(max-width: 560px\)\s*\{\s*\.doc-quote\s*\{([\s\S]*?)\n  \}/)?.[1];
     expect(compact).toContain("order: 1");
