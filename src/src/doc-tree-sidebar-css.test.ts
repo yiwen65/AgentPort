@@ -12,7 +12,9 @@ function ruleBody(selector: string): string | undefined {
 describe("document tree sidebar design language", () => {
   it("shares the sidebar glass surface tokens", () => {
     const tree = ruleBody(".doc-tree");
-    expect(tree).toContain("background-color: var(--sidebar-glass)");
+    expect(tree).toContain(
+      "background-color: var(--doc-tree-surface, var(--sidebar-glass))",
+    );
     expect(tree).toContain("var(--doc-tree-glaze, none)");
     expect(tree).toContain("var(--sidebar-glass-layers, none)");
     expect(tree).toContain("border-left: 1px solid var(--sidebar-border)");
@@ -32,7 +34,7 @@ describe("document tree sidebar design language", () => {
   });
 
   it("keeps file-state colors readable across themes and subordinate to selection", () => {
-    expect(styles).toContain("--doc-git-modified: #d7b568;");
+    expect(styles).toContain("--doc-git-modified: #d5b56b;");
     expect(styles).toContain("--doc-git-modified: #8a6200;");
     expect(styles).toContain("--doc-git-added: #7acb84;");
     expect(styles).toContain("--doc-git-added: #2f7d42;");
@@ -71,15 +73,17 @@ describe("document tree sidebar design language", () => {
       /\.topbar > \.topbar-tree-backdrop\s*\{([\s\S]*?)\n\}/,
     )?.[1];
     expect(backdrop).toContain("width: var(--doc-tree-topbar-width, 0px)");
-    expect(backdrop).toContain("background-color: var(--sidebar-glass)");
+    expect(backdrop).toContain(
+      "background-color: var(--doc-tree-surface, var(--sidebar-glass))",
+    );
     expect(backdrop).toContain("var(--sidebar-top-layer-1, transparent)");
     expect(backdrop).toContain("var(--sidebar-top-layer-2, transparent)");
     expect(backdrop).toContain("z-index: 0");
     // No vertical rule in the title bar: the tree's own edge starts at the
     // panel top, below the bar.
     expect(backdrop).not.toContain("border-left");
-    // The title bar uses the same restrained glaze stops as the tree surface.
-    expect(styles).toContain("--sidebar-top-layer-1: rgba(255, 255, 255, 0.045)");
+    // The neutral surface intentionally has no decorative gradient stops.
+    expect(styles).toContain("--sidebar-top-layer-1: transparent");
   });
 
   it("collapses header actions out of layout until they are shown", () => {

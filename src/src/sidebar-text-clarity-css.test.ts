@@ -6,8 +6,8 @@ const styles = readFileSync("src/styles.css", "utf8");
 
 describe("sidebar text clarity", () => {
   it("keeps the sidebar opaque without a backdrop blur", () => {
-    expect(styles).toContain("--sidebar-glass: #20242d;");
-    expect(styles).toContain("--sidebar-glass: #f1f3f8;");
+    expect(styles).toContain("--sidebar-glass: #292a2f;");
+    expect(styles).toContain("--sidebar-glass: #f4f4f5;");
     expect(styles).not.toContain('data-vibrancy="on"');
     expect(styles).not.toMatch(/\.sidebar[^{]*\{[^}]*backdrop-filter/);
   });
