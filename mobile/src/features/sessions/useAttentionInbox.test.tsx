@@ -75,6 +75,28 @@ describe("bounded metadata notification reception", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     expect(seenAttempts).toBe(2);
   });
+  it("serializes shared seen writes when clearing several Sessions", async () => {
+    const client = makeClient();
+    let polled = false;
+    const seen = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(client.request).mockImplementation(async (_host, method) => {
+      if (method === "attention.poll") {
+        if (polled) return { events: [] };
+        polled = true;
+        return { events: [1, 2].map(sequence => ({ sessionId: `s${sequence}`, runId: "r", kind: "turn_completed" as const,
+          cursor: { sessionId: `s${sequence}`, runOrdinal: 1, sequence, occurredAt: "2026-09-08T00:00:00Z" } })) };
+      }
+      if (method === "session.list") return [{ id: "s1", title: "One" }, { id: "s2", title: "Two" }];
+      if (method === "session.seen.mark") { seen(); return undefined; }
+      return undefined;
+    });
+    const { result } = renderHook(() => useAttentionInbox(client, hosts.slice(0, 1), true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => {
+      await Promise.all(result.current.entries.map(entry => result.current.acknowledge("one", entry.sessionId, entry)));
+    });
+    expect(seen).toHaveBeenCalledTimes(2);
+  });
   it("keeps messages in the local inbox without system notification delivery", async () => {
     const client = makeClient();
     let seq = 0;

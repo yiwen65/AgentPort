@@ -21,6 +21,7 @@ export function useAttentionInbox(
   const [error, setError] = useState("");
   const errors = useRef(new Map<string, string>());
   const pendingSeen = useRef(new Map<string, Map<string, SeenCursor>>());
+  const seenFlushes = useRef(new Map<string, Promise<void>>());
   const titles = useRef(new Map<string, Map<string, string>>());
   const box = useCallback((host: string) => {
     let value = boxes.current.get(host);
@@ -35,21 +36,32 @@ export function useAttentionInbox(
     setError([...errors.current.values()][0] ?? "");
   }, []);
   const isHostNotConnected = (failure: unknown) => Boolean(failure && typeof failure === "object" && "code" in failure && (failure as { code?: unknown }).code === "host_not_connected");
-  const flushSeen = useCallback(async (hostId: string) => {
-    const pending = pendingSeen.current.get(hostId);
-    if (!pending?.size) return;
-    for (const [sessionId, cursor] of [...pending]) {
-      try {
-        await client.request<void>(hostId, "session.seen.mark", { sessionId, cursor });
-        if (pending.get(sessionId) === cursor) pending.delete(sessionId);
-      } catch (failure) {
-        // A reader reconnect can briefly lag the profile's connected phase.
-        // Keep the cursor queued and retry on the next successful poll.
-        if (!isHostNotConnected(failure)) report(hostId, failure);
-        return;
+  const flushSeen = useCallback((hostId: string): Promise<void> => {
+    const active = seenFlushes.current.get(hostId);
+    if (active) return active;
+    let task!: Promise<void>;
+    task = (async () => {
+      for (;;) {
+        const pending = pendingSeen.current.get(hostId);
+        if (!pending?.size) return;
+        for (const [sessionId, cursor] of [...pending]) {
+          try {
+            await client.request<void>(hostId, "session.seen.mark", { sessionId, cursor });
+            if (pending.get(sessionId) === cursor) pending.delete(sessionId);
+          } catch (failure) {
+            // A reader reconnect can briefly lag the profile's connected phase.
+            // Keep the cursor queued and retry on the next successful poll.
+            if (!isHostNotConnected(failure)) report(hostId, failure);
+            return;
+          }
+        }
+        if (!pending.size) pendingSeen.current.delete(hostId);
       }
-    }
-    if (!pending.size) pendingSeen.current.delete(hostId);
+    })().finally(() => {
+      if (seenFlushes.current.get(hostId) === task) seenFlushes.current.delete(hostId);
+    });
+    seenFlushes.current.set(hostId, task);
+    return task;
   }, [client, report]);
   const profiles = hosts.map(host => `${host.id}:${host.connectionState}`).sort().join("|");
   useEffect(() => {
