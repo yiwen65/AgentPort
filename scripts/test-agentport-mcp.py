@@ -189,6 +189,19 @@ def main() -> int:
             print("  skip (no agentport-cli next to the MCP binary)")
 
 
+        print("create_session resolves its project by itself")
+        cwd = os.getcwd()
+        implicit, is_error = client.call(
+            "create_session",
+            {"agent": args.agent, "title": "implicit project", "pane": "none"},
+        )
+        check(not is_error, "create_session without a project argument works")
+        check(
+            implicit["projectPath"].rstrip("/") == cwd.rstrip("/"),
+            f"it defaults to the server's working directory ({implicit['projectPath']})",
+        )
+        client.call("terminate_session", {"sessionId": implicit["sessionId"]})
+
         print("create_session + first prompt")
         created, is_error = client.call(
             "create_session",

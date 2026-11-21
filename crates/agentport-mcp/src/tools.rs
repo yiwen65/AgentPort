@@ -44,8 +44,9 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "resolve_project",
-        description: "Resolve an absolute directory to an AgentPort project, registering it when \
-                      it is not known yet. Use this before create_session when you only know a path.",
+        description: "Map a directory to a project id, registering it if it is unknown. Usually \
+                      unnecessary: create_session resolves its project itself (and defaults to \
+                      your working directory). Use it only to inspect where a path would land.",
         schema: resolve_project_schema,
     },
     ToolDef {
@@ -193,8 +194,14 @@ fn create_session_schema() -> Value {
                 "type": "string",
                 "description": "Agent id from list_agents, e.g. claude, codex, pi, easy-pi, shell"
             },
-            "projectPath": { "type": "string", "description": "Absolute project directory" },
-            "projectId": { "type": "string", "description": "Existing AgentPort project id" },
+            "projectPath": {
+                "type": "string",
+                "description": "Optional. Omit to delegate in your own working directory; pass it only for another checkout."
+            },
+            "projectId": {
+                "type": "string",
+                "description": "Optional existing project id; prefer projectPath or omitting it."
+            },
             "title": { "type": "string" },
             "prompt": {
                 "type": "string",
@@ -227,6 +234,14 @@ fn create_session_schema() -> Value {
 fn create_sessions_schema() -> Value {
     obj(
         json!({
+            "projectPath": {
+                "type": "string",
+                "description": "Optional project directory for every task; defaults to your own working directory"
+            },
+            "projectId": {
+                "type": "string",
+                "description": "Optional existing project id for every task; a task may override it"
+            },
             "tasks": {
                 "type": "array",
                 "maxItems": MAX_BATCH_ITEMS,
@@ -242,8 +257,14 @@ fn create_sessions_schema() -> Value {
                             "type": "string",
                             "description": "Agent id from list_agents, e.g. claude, codex, pi, easy-pi, shell"
                         },
-                        "projectPath": { "type": "string", "description": "Absolute project directory" },
-                        "projectId": { "type": "string", "description": "Existing AgentPort project id" },
+                        "projectPath": {
+                            "type": "string",
+                            "description": "Absolute project directory; omit to inherit the batch project or your working directory"
+                        },
+                        "projectId": {
+                            "type": "string",
+                            "description": "Existing project id; omit to inherit the batch project"
+                        },
                         "title": { "type": "string" },
                         "prompt": {
                             "type": "string",
@@ -309,6 +330,14 @@ fn wait_for_task_schema() -> Value {
 fn wait_for_tasks_schema() -> Value {
     obj(
         json!({
+            "projectPath": {
+                "type": "string",
+                "description": "Optional project directory for every task; defaults to your own working directory"
+            },
+            "projectId": {
+                "type": "string",
+                "description": "Optional existing project id for every task; a task may override it"
+            },
             "tasks": {
                 "type": "array",
                 "maxItems": MAX_BATCH_ITEMS,
@@ -445,6 +474,14 @@ struct SettledTurn {
     reply_unavailable_reason: Option<String>,
     tail_source: &'static str,
     fallback_reason: Option<String>,
+}
+
+/// A create call's project, after resolution or registration.
+struct ResolvedProject {
+    id: String,
+    root_path: String,
+    /// Registered by this call rather than found.
+    created: bool,
 }
 
 /// Everything a tool call needs. One instance lives for the whole stdio
@@ -598,6 +635,66 @@ impl Toolbox {
             })
             .collect();
         Ok(json!({ "agents": entries }))
+    }
+
+    /// Project for a create call: `projectId`, then `projectPath`, then the
+    /// server's own working directory (the Agent's cwd).
+    fn resolve_target_project(&mut self, args: &Map<String, Value>) -> TResult<ResolvedProject> {
+        if let Some(id) = optional_str(args, "projectId") {
+            let projects = self.ops.service().list_projects().map_err(ToolFailure::from)?;
+            let project = projects
+                .into_iter()
+                .find(|project| project.id == id)
+                .ok_or_else(|| ToolFailure::new("unknown_project", format!("no project {id}")))?;
+            return Ok(ResolvedProject {
+                id: project.id,
+                root_path: project.root_path,
+                created: false,
+            });
+        }
+        let path = match optional_str(args, "projectPath") {
+            Some(path) => path,
+            None => std::env::current_dir()
+                .ok()
+                .and_then(|dir| dir.to_str().map(str::to_string))
+                .ok_or_else(|| {
+                    ToolFailure::new(
+                        "missing_project",
+                        "pass projectPath: this server could not read its own working directory",
+                    )
+                })?,
+        };
+        self.register_project(&path)
+    }
+
+    /// Resolve a directory to a project, registering it when it is unknown.
+    fn register_project(&mut self, path: &str) -> TResult<ResolvedProject> {
+        let normalized = agentport_core::paths::normalize_abs(path)
+            .map_err(|error| ToolFailure::new("invalid_path", error.to_string()))?;
+        let projects = self.ops.service().list_projects().map_err(ToolFailure::from)?;
+        if let Some(existing) = projects
+            .iter()
+            .find(|project| project.root_path == normalized)
+        {
+            return Ok(ResolvedProject {
+                id: existing.id.clone(),
+                root_path: existing.root_path.clone(),
+                created: false,
+            });
+        }
+        let added = self
+            .ops
+            .service()
+            .add_project(ProjectAddParams {
+                path: normalized,
+                name: None,
+            })
+            .map_err(ToolFailure::from)?;
+        Ok(ResolvedProject {
+            id: added.project.id,
+            root_path: added.project.root_path,
+            created: !added.focused_existing,
+        })
     }
 
     fn resolve_project(&mut self, args: &Map<String, Value>) -> TResult<Value> {
@@ -775,29 +872,11 @@ impl Toolbox {
         // that relaxes approvals; a delegated Session has no other actor to ask.
         let risk_ack = permission != "native";
 
-        let project_id = match (
-            optional_str(args, "projectId"),
-            optional_str(args, "projectPath"),
-        ) {
-            (Some(id), _) => id,
-            (None, Some(path)) => {
-                let resolved = self.resolve_project(&{
-                    let mut map = Map::new();
-                    map.insert("path".into(), Value::String(path));
-                    map
-                })?;
-                resolved["projectId"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string()
-            }
-            (None, None) => {
-                return Err(ToolFailure::new(
-                    "missing_project",
-                    "pass projectId or projectPath",
-                ))
-            }
-        };
+        // The project is resolved here, never by the caller: an explicit id or
+        // path wins, otherwise the Session lands in the directory the Agent is
+        // already working in, which is what "delegate this here" means.
+        let project = self.resolve_target_project(args)?;
+        let project_id = project.id.clone();
 
         let title = optional_str(args, "title");
         let prompt = optional_str(args, "prompt")
@@ -877,6 +956,8 @@ impl Toolbox {
             "sessionId": session_id,
             "agent": agent.as_str(),
             "title": title,
+            "projectId": project.id,
+            "projectPath": project.root_path,
             "permissionMode": permission,
             // Agents without a permission flag (Pi, Shell) fall back to their
             // native behaviour; say so instead of implying a flag was applied.
@@ -999,6 +1080,11 @@ impl Toolbox {
             ));
         }
 
+        // One project for the whole batch: the caller states it once instead of
+        // repeating (or resolving) it per task.
+        let shared_project_path = optional_str(args, "projectPath");
+        let shared_project_id = optional_str(args, "projectId");
+
         let mut results = Vec::with_capacity(tasks.len());
         let mut pane_sessions = Vec::new();
         let mut succeeded = 0usize;
@@ -1008,6 +1094,17 @@ impl Toolbox {
             let task_id = task_map.and_then(|map| optional_str(map, "taskId"));
             let outcome = match task_map {
                 Some(map) => {
+                    let mut map = map.clone();
+                    if optional_str(&map, "projectPath").is_none()
+                        && optional_str(&map, "projectId").is_none()
+                    {
+                        if let Some(path) = shared_project_path.clone() {
+                            map.insert("projectPath".into(), Value::String(path));
+                        } else if let Some(id) = shared_project_id.clone() {
+                            map.insert("projectId".into(), Value::String(id));
+                        }
+                    }
+                    let map = &map;
                     let pane = optional_str(map, "pane").unwrap_or_else(|| "auto".into());
                     let outcome = if matches!(pane.as_str(), "auto" | "none") {
                         self.create_session_with_pane(map, false)

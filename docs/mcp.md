@@ -59,7 +59,7 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | 工具 | 作用 |
 | --- | --- |
 | `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent；`probe: true` 会重新探测（较慢） |
-| `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等） |
+| `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等）。**通常用不到**：`create_session` 自己解析项目 |
 | `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence |
 | `create_session` | 建单个 Session；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
 | `create_sessions` | 一次创建多个独立委派任务；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
