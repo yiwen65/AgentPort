@@ -192,7 +192,9 @@ returns per-item state and reply. Single-task wait_for_task returns idle | needs
 | exited | timeout with the evidence it used; read_output returns the bounded terminal tail.
 cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
-undone.
+undone. To tidy up, archive_session hides a Session and keeps its history readable;
+delete_session removes the Session *and* the Agent's transcript files, so it needs
+the confirm string 'delete <sessionId>' and only when the user asked for it.
 
 Do not enumerate before delegating: call create_session directly — the project resolves
 itself, and a wrong or unavailable agent id comes back with the ids that would work, so

@@ -396,8 +396,10 @@ impl SessionOps {
             .map_err(ToolFailure::from)
     }
 
+    /// Look up one Session, archived or not: internal callers (status, delete,
+    /// ownership checks) must still find a Session the user archived.
     pub fn summary(&self, session_id: &str) -> TResult<SessionSummary> {
-        let sessions = self.list_sessions(false)?;
+        let sessions = self.list_sessions(true)?;
         sessions
             .into_iter()
             .find(|session| session.id == session_id)

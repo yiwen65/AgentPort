@@ -124,6 +124,20 @@ pub const TOOLS: &[ToolDef] = &[
         schema: terminate_session_schema,
     },
     ToolDef {
+        name: "archive_session",
+        description: "Hide the Session from the sidebar and stop it. Its Agent transcript \
+                      stays readable and the user can unarchive it in AgentPort. Prefer this \
+                      over delete_session unless the user asked for a removal.",
+        schema: archive_session_schema,
+    },
+    ToolDef {
+        name: "delete_session",
+        description: "Permanently remove a Session this MCP created: stops it, deletes its Agent \
+                      transcript files and its AgentPort record. Irreversible. Requires the \
+                      confirm string \"delete <sessionId>\".",
+        schema: delete_session_schema,
+    },
+    ToolDef {
         name: "open_pane",
         description: "Ask the AgentPort desktop app to show this Session in the visible pane \
                       layout. Fails when the app is not running.",
@@ -456,6 +470,23 @@ fn close_pane_schema() -> Value {
     )
 }
 
+fn archive_session_schema() -> Value {
+    obj(json!({ "sessionId": { "type": "string" } }), json!(["sessionId"]))
+}
+
+fn delete_session_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "confirm": {
+                "type": "string",
+                "description": "Exactly \"delete <sessionId>\"; a boolean is not accepted because the removal is irreversible"
+            }
+        }),
+        json!(["sessionId", "confirm"]),
+    )
+}
+
 fn open_pane_schema() -> Value {
     obj(
         json!({
@@ -565,6 +596,8 @@ impl Toolbox {
             "read_output" => self.read_output(&args),
             "cancel_turn" => self.cancel_turn(&args),
             "terminate_session" => self.terminate_session(&args),
+            "archive_session" => self.archive_session(&args),
+            "delete_session" => self.delete_session(&args),
             "open_pane" => self.open_pane(&args),
             "split_pane" => self.split_pane(&args),
             "focus_pane" => self.focus_pane(&args),
@@ -781,10 +814,17 @@ impl Toolbox {
             .get("includeArchived")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let sessions = self.ops.list_sessions(include_archived)?;
+        // Prune and scope against the *complete* set: a default listing hides
+        // archived Sessions, and pruning from that view would quietly drop their
+        // ownership (breaking unarchive, delete and status afterwards).
+        let all = self.ops.list_sessions(true)?;
         let known: std::collections::HashSet<String> =
-            sessions.iter().map(|session| session.id.clone()).collect();
+            all.iter().map(|session| session.id.clone()).collect();
         self.registry.prune(&known);
+        let sessions: Vec<_> = all
+            .into_iter()
+            .filter(|session| include_archived || session.archived_at.is_none())
+            .collect();
         // The user's own Sessions are not this server's business: they are
         // neither addressable nor visible here.
         let owned: Vec<Value> = sessions
@@ -957,8 +997,10 @@ impl Toolbox {
             }
         };
 
-        if !self.selectable_agent_ids().iter().any(|id| id == agent.as_str()) {
-            let selectable = self.selectable_agent_ids();
+        // Only refuse from a cache that actually has entries: a fresh data
+        // directory has probed nothing yet, and the service probes on launch.
+        let selectable = self.selectable_agent_ids();
+        if !selectable.is_empty() && !selectable.iter().any(|id| id == agent.as_str()) {
             return Err(ToolFailure::new(
                 "agent_unavailable",
                 format!(
@@ -1577,6 +1619,102 @@ impl Toolbox {
             "stopped": true,
             "groupCleaned": group_cleaned,
         }))
+    }
+
+    /// Hide the Session: stop it and drop it out of the sidebar. Reversible in
+    /// the app, so it is the right way to tidy up without losing history.
+    fn archive_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        self.ops
+            .service()
+            .archive_session(SessionIdParams {
+                session_id: session_id.clone(),
+            })
+            .map_err(ToolFailure::from)?;
+        self.baselines.remove(&session_id);
+        self.settled.remove(&session_id);
+        self.ops.detach(&session_id);
+        let mut result = json!({
+            "sessionId": session_id,
+            "archived": true,
+            "historyPreserved": true,
+            "note": "the Agent transcript is untouched; unarchive it in AgentPort to see it again",
+        });
+        if let Ok(pane) = self.queue_pane(ui::PaneIntent {
+            kind: "close_pane",
+            session_id: &session_id,
+            direction: None,
+            target_session_id: None,
+            session_ids: None,
+            focus: false,
+        }) {
+            result["pane"] = pane;
+        }
+        Ok(result)
+    }
+
+    /// Remove the Session for good: stop, delete the Agent transcript files and
+    /// the AgentPort record. Guarded by a confirm string because nothing here
+    /// can be undone.
+    fn delete_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let expected = format!("delete {session_id}");
+        let confirm = optional_str(args, "confirm").unwrap_or_default();
+        if confirm != expected {
+            return Err(ToolFailure::new(
+                "confirmation_required",
+                format!(
+                    "delete_session needs confirm: \"{expected}\"; it removes the Agent's \
+                     transcript files and cannot be undone. Use archive_session to keep history."
+                ),
+            ));
+        }
+        // Drop the pane before the row disappears, so the renderer is never left
+        // showing a Session id it cannot resolve.
+        let pane = self
+            .queue_pane(ui::PaneIntent {
+                kind: "close_pane",
+                session_id: &session_id,
+                direction: None,
+                target_session_id: None,
+                session_ids: None,
+                focus: false,
+            })
+            .ok();
+        let summary = self.ops.summary(&session_id)?;
+        if summary.archived_at.is_none() {
+            // The service only deletes archived Sessions; archiving first also
+            // stops the Host under the same rollback guarantees.
+            self.ops
+                .service()
+                .archive_session(SessionIdParams {
+                    session_id: session_id.clone(),
+                })
+                .map_err(ToolFailure::from)?;
+        }
+        self.ops
+            .service()
+            .delete_archived_session(SessionIdParams {
+                session_id: session_id.clone(),
+            })
+            .map_err(ToolFailure::from)?;
+        self.ops.detach(&session_id);
+        self.created_here.remove(&session_id);
+        self.baselines.remove(&session_id);
+        self.settled.remove(&session_id);
+        let _ = self.registry.remove(&session_id);
+        let mut result = json!({
+            "sessionId": session_id,
+            "deleted": true,
+            "transcriptDeleted": true,
+            "irreversible": true,
+        });
+        if let Some(pane) = pane {
+            result["pane"] = pane;
+        }
+        Ok(result)
     }
 
     fn open_pane(&mut self, args: &Map<String, Value>) -> TResult<Value> {

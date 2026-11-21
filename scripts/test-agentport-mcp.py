@@ -136,6 +136,8 @@ def main() -> int:
             "close_pane",
             "create_sessions",
             "wait_for_tasks",
+            "archive_session",
+            "delete_session",
         }
         check(names == expected, f"exactly the v1 tool set ({len(names)} tools)")
         check("send_input" not in names, "raw byte input is not exposed")
@@ -434,6 +436,43 @@ def main() -> int:
             "repeat verdict stays low confidence for an Agent without turn signals",
         )
         check(repeat_elapsed < 15.0, f"repeat wait stayed bounded ({repeat_elapsed:.1f}s)")
+
+        print("archive then delete")
+        spare, is_error = client.call(
+            "create_session",
+            {"agent": args.agent, "projectId": project_id, "title": "archive me", "pane": "none"},
+        )
+        check(not is_error, "a Session to tidy up exists")
+        spare_id = spare["sessionId"]
+        archived, is_error = client.call("archive_session", {"sessionId": spare_id})
+        check(not is_error and archived["archived"], "archive_session succeeds")
+        check(
+            all(s["sessionId"] != spare_id for s in client.call("list_sessions", {})[0]["sessions"]),
+            "an archived Session leaves the default listing",
+        )
+        check(
+            any(s["sessionId"] == spare_id for s in client.call("list_sessions", {"includeArchived": True})[0]["sessions"]),
+            "and is still there with includeArchived",
+        )
+        refused, is_error = client.call("delete_session", {"sessionId": spare_id})
+        check(
+            is_error and refused["error"]["code"] == "confirmation_required",
+            "delete_session refuses without the confirm string",
+        )
+        wrong, is_error = client.call(
+            "delete_session", {"sessionId": spare_id, "confirm": "yes"}
+        )
+        check(is_error and wrong["error"]["code"] == "confirmation_required", "a loose confirm is refused")
+        removed, is_error = client.call(
+            "delete_session", {"sessionId": spare_id, "confirm": f"delete {spare_id}"}
+        )
+        check(not is_error and removed["deleted"], "delete_session removes it")
+        check(
+            all(s["sessionId"] != spare_id for s in client.call("list_sessions", {"includeArchived": True})[0]["sessions"]),
+            "and it is gone even with includeArchived",
+        )
+        gone, is_error = client.call("session_status", {"sessionId": spare_id})
+        check(is_error, "the deleted Session is no longer addressable")
 
         print("terminate_session")
         stopped, is_error = client.call(

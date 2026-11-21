@@ -68,7 +68,9 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `wait_for_tasks` | 一次等待多个 MCP-owned Session；每项返回与 `wait_for_task` 相同的 state/confidence/evidence/reply/fallback 字段 |
 | `read_output` | 按 `source` 读取：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）+ 行数与 `truncated`/`limited` 标注 |
 | `cancel_turn` | 发 Ctrl-C，会话保留 |
-| `terminate_session` | 停止并清理整个进程组，不可逆 |
+| `terminate_session` | 停止并清理整个进程组；会话记录仍在（可恢复） |
+| `archive_session` | 从侧栏移出并停止；历史保留，可在 App 里取消归档 |
+| `delete_session` | **彻底删除**：停进程 + 删 Agent 原生 transcript + 删会话记录；需要 `confirm: "delete <sessionId>"` |
 | `open_pane` | 请求桌面 App 把这个 Session 放进可见布局并聚焦 |
 | `split_pane` | 请求给这个 Session 新开一个窗格：`direction=right\|down`，`targetSessionId` 指定参照窗格（默认当前聚焦的），`focus` 决定是否夺焦 |
 | `focus_pane` | 请求聚焦这个 Session 的窗格（不在屏上就先放上去） |
