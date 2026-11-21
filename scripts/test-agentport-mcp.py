@@ -189,6 +189,16 @@ def main() -> int:
             print("  skip (no agentport-cli next to the MCP binary)")
 
 
+        print("a wrong agent id answers with the selectable ones")
+        wrong, is_error = client.call(
+            "create_session", {"agent": "definitely-not-an-agent", "pane": "none"}
+        )
+        check(is_error and wrong["error"]["code"] == "unknown_agent", "unknown agent rejected")
+        check(
+            args.agent in wrong["error"]["message"],
+            "the error names a selectable agent, so no list_agents round-trip is needed",
+        )
+
         print("create_session resolves its project by itself")
         cwd = os.getcwd()
         implicit, is_error = client.call(

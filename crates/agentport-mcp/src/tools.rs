@@ -37,9 +37,10 @@ pub struct ToolDef {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "list_agents",
-        description: "List the CLI Agents you can delegate to right now: installed on this machine \
-                      and not switched off in AgentPort's settings. Pass probe=true to re-detect \
-                      them (slower).",
+        description: "Which Agents you can delegate to right now. You do NOT need this before \
+                      create_session: a wrong or unavailable agent id comes back with the \
+                      selectable ids. Use it when the user asks what exists. probe=true re-detects \
+                      (slower).",
         schema: list_agents_schema,
     },
     ToolDef {
@@ -52,7 +53,8 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "list_sessions",
         description: "List the Sessions this MCP created, with lifecycle, status evidence and host \
-                      liveness. Sessions the user opened themselves are not listed.",
+                      liveness. You do NOT need this before delegating — create_session returns the \
+                      ids it made. Use it to find a Session you started earlier in this conversation.",
         schema: list_sessions_schema,
     },
     ToolDef {
@@ -192,7 +194,7 @@ fn create_session_schema() -> Value {
         json!({
             "agent": {
                 "type": "string",
-                "description": "Agent id from list_agents, e.g. claude, codex, pi, easy-pi, shell"
+                "description": "Agent id such as claude, codex, kimi, qoder, pi, easy-pi, omp, cursor-agent, grok, shell. A wrong or unavailable id returns the selectable ones."
             },
             "projectPath": {
                 "type": "string",
@@ -255,7 +257,7 @@ fn create_sessions_schema() -> Value {
                         },
                         "agent": {
                             "type": "string",
-                            "description": "Agent id from list_agents, e.g. claude, codex, pi, easy-pi, shell"
+                            "description": "Agent id such as claude, codex, kimi, qoder, pi, easy-pi, omp, cursor-agent, grok, shell"
                         },
                         "projectPath": {
                             "type": "string",
@@ -637,6 +639,28 @@ impl Toolbox {
         Ok(json!({ "agents": entries }))
     }
 
+    /// Agent ids a caller may delegate to right now: installed and not switched
+    /// off in AgentPort's settings. Used to answer a wrong guess in one step, so
+    /// nobody has to enumerate first.
+    fn selectable_agent_ids(&mut self) -> Vec<String> {
+        let hidden = self
+            .ops
+            .service()
+            .agent_preferences()
+            .map(|preferences| preferences.agent_hidden)
+            .unwrap_or_default();
+        self.ops
+            .service()
+            .supported_agents()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|agent| {
+                agent.install.is_some() && !hidden.iter().any(|hidden| hidden == &agent.agent)
+            })
+            .map(|agent| agent.agent)
+            .collect()
+    }
+
     /// Project for a create call: `projectId`, then `projectPath`, then the
     /// server's own working directory (the Agent's cwd).
     fn resolve_target_project(&mut self, args: &Map<String, Value>) -> TResult<ResolvedProject> {
@@ -858,21 +882,28 @@ impl Toolbox {
         }
         let live_owned = self.live_owned_count()?;
         if live_owned >= self.max_sessions {
+            let live_summary = self.live_owned_summary();
+            let limit = self.max_sessions;
             return Err(ToolFailure::new(
                 "too_many_sessions",
                 format!(
-                    "this MCP process already drives {live_owned} live Sessions (limit {}); finish or \
-                     reuse one, or terminate one only if it is actually finished or stuck",
-                    self.max_sessions
+                    "this MCP process already drives {live_owned} live Sessions (limit {}): {}; finish \
+                     or reuse one, or terminate one only if it is actually finished or stuck",
+                    limit,
+                    live_summary
                 ),
             ));
         }
 
         let agent_name = require_str(args, "agent")?;
         let agent: AgentType = agent_name.parse().map_err(|_| {
+            let selectable = self.selectable_agent_ids();
             ToolFailure::new(
                 "unknown_agent",
-                format!("unknown agent {agent_name}; call list_agents for valid ids"),
+                format!(
+                    "unknown agent {agent_name}; selectable Agents here: {}",
+                    selectable.join(", ")
+                ),
             )
         })?;
 
@@ -926,6 +957,18 @@ impl Toolbox {
             }
         };
 
+        if !self.selectable_agent_ids().iter().any(|id| id == agent.as_str()) {
+            let selectable = self.selectable_agent_ids();
+            return Err(ToolFailure::new(
+                "agent_unavailable",
+                format!(
+                    "{} is not selectable here (not installed, or switched off in AgentPort's \
+                     adapter settings); selectable Agents: {}",
+                    agent.display_name(),
+                    selectable.join(", ")
+                ),
+            ));
+        }
         let launch = self
             .ops
             .service()
@@ -1644,6 +1687,26 @@ impl Toolbox {
     /// The budget is per process (one server per agent window), so a second
     /// coordinator does not eat into this one's allowance; finished Sessions
     /// free their slot immediately.
+    /// `id "title"` for each live Session this process created, oldest first.
+    fn live_owned_summary(&mut self) -> String {
+        let Ok(sessions) = self.ops.list_sessions(false) else {
+            return "ids unavailable".into();
+        };
+        let live: Vec<String> = sessions
+            .iter()
+            .filter(|session| {
+                self.created_here.contains(&session.id)
+                    && matches!(session.lifecycle.as_str(), "running" | "creating")
+            })
+            .map(|session| format!("{} \"{}\"", session.id, session.title))
+            .collect();
+        if live.is_empty() {
+            "none".into()
+        } else {
+            live.join(", ")
+        }
+    }
+
     fn live_owned_count(&mut self) -> TResult<usize> {
         let sessions = self.ops.list_sessions(false)?;
         Ok(sessions

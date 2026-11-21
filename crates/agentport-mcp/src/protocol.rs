@@ -194,6 +194,11 @@ cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
 undone.
 
+Do not enumerate before delegating: call create_session directly — the project resolves
+itself, and a wrong or unavailable agent id comes back with the ids that would work, so
+there is no list_agents / list_sessions / resolve_project round-trip to perform. Reach
+for those only to answer the user's question or to find a Session you started earlier.
+
 Sessions are not disposable: a delegated Session keeps running after it answers,
 exactly like a terminal window the user is watching, and the user can read it,
 reply to it or take it over. Do not terminate one because its task finished. Leave
