@@ -1412,7 +1412,7 @@ impl Toolbox {
             let mut send_args = Map::new();
             send_args.insert("sessionId".into(), Value::String(session_id.clone()));
             send_args.insert("text".into(), Value::String(prompt.clone()));
-            let sent = self.send_prompt(&send_args)?;
+            let sent = self.send_prompt_with_mode(&send_args, true)?;
             if let (Some(result_object), Some(sent_object)) =
                 (result.as_object_mut(), sent.as_object())
             {
@@ -1885,6 +1885,14 @@ impl Toolbox {
     }
 
     fn send_prompt(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        self.send_prompt_with_mode(args, false)
+    }
+
+    fn send_prompt_with_mode(
+        &mut self,
+        args: &Map<String, Value>,
+        one_shot_handoff: bool,
+    ) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
         if self.waits.is_active(&session_id) {
@@ -1935,11 +1943,16 @@ impl Toolbox {
             self.ops.wait_ready(&session_id, SEND_READY_MS)?
         };
         let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
-        let delivery = match role.as_ref() {
-            Some(_) => self
-                .ops
-                .deliver_prompt_with_token(&session_id, &prompt, &evidence_token),
-            None => self.ops.deliver_prompt(&session_id, &prompt),
+        let delivery = if one_shot_handoff {
+            self.ops
+                .deliver_prompt_once(&session_id, &prompt, &evidence_token)
+        } else {
+            match role.as_ref() {
+                Some(_) => self
+                    .ops
+                    .deliver_prompt_with_token(&session_id, &prompt, &evidence_token),
+                None => self.ops.deliver_prompt(&session_id, &prompt),
+            }
         }?;
         let _ = ready;
         let mut role_preamble_delivered = false;

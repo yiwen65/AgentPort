@@ -239,6 +239,7 @@ def main() -> int:
         check(handoff.get("handoff", {}).get("direct") is True, "handoff reports direct delegation")
         check(handoff.get("handoff", {}).get("transport") == "pty", "handoff reports PTY transport")
         check(handoff.get("handoff", {}).get("formatPreserved") is False, "PTY handoff reports compact fallback")
+        check(handoff.get("promptAttempts", 99) <= 3, "handoff does not re-paste the body repeatedly")
         check(handoff.get("pane", {}).get("kind") == "split_pane", "handoff queues a split pane")
         handoff_id = handoff["sessionId"]
         check(not (data_dir / "docs" / "handoff").exists(), "handoff does not create a document")

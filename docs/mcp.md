@@ -114,7 +114,7 @@ get_wait_group {waitGroupId: "..."}
 **作用域**：只有本 MCP 创建的 Session 存在于此。用户自己开的 Session **既不列出也不可寻址**（不是"只读"，是不可见）；`list_agents` 同样只给已安装且未被设置关掉的 Agent ——
 一个 Agent 不应该能往你正在操作的窗格里打字。归属记录在 `<数据目录>/mcp/agent-sessions.json`。
 
-**handoff**：`handoff` 接收调用方已经整理好的完整 Markdown，直接创建新分屏 Agent Session；它不创建 handoff 文件，也不等待 Agent 完成。它是一次性移交，调用方不需要再通过 `wait_for_task` 或 wait group 获取结果。JSON-RPC Agent 通过 `structured_prompt` 原样保留 Markdown 换行；PTY/Shell 为兼容 TUI 使用单行压缩回退，并在结果的 `handoff.formatPreserved=false` 与 `fallbackReason` 中明确说明。`agent` 与 `handoff` 必填，内容沿用 8 KiB/控制字符限制。
+**handoff**：`handoff` 接收调用方已经整理好的完整 Markdown，直接创建新分屏 Agent Session；它不创建 handoff 文件，也不等待 Agent 完成。它是一次性移交，调用方不需要再通过 `wait_for_task` 或 wait group 获取结果。JSON-RPC Agent 通过 `structured_prompt` 原样保留 Markdown 换行；PTY/Shell 为兼容 TUI 使用单行压缩回退，并在结果的 `handoff.formatPreserved=false` 与 `fallbackReason` 中明确说明。PTY handoff 正文只发送一次，若 Enter 被 TUI 吞掉只重试 Enter，避免 Cursor 的 `[Pasted text #N]` 占位符重复累积。`agent` 与 `handoff` 必填，内容沿用 8 KiB/控制字符限制。
 
 **角色**：角色在设置 → Agent 角色中全局管理。内置角色可编辑但不可删除，可恢复默认；DIY 角色新建时默认关闭。
 `tools/list` 会把所有已启用 Role 的 `roleId`、name、description 动态放入 `create_session` / `create_sessions` 的工具说明。模型自行判断传入哪个 `roleId`，或在没有合适 Role 时省略；不需要先调用 `list_roles`。这一步只返回 metadata，不加载完整指令。

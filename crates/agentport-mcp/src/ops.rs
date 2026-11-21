@@ -651,6 +651,70 @@ impl SessionOps {
         })
     }
 
+    /// Deliver a one-shot handoff body without retyping it when the TUI hides
+    /// pasted text behind a placeholder. Cursor, for example, renders pasted
+    /// input as `[Pasted text #N ...]`, so the normal evidence check cannot see
+    /// the submitted token and would paste the entire handoff four times. The
+    /// body is written once; only Enter may be retried.
+    pub fn deliver_prompt_once(
+        &mut self,
+        session_id: &str,
+        text: &str,
+        evidence_token: &str,
+    ) -> TResult<PromptDelivery> {
+        let token: String = evidence_token.trim().chars().take(10).collect();
+        let mut bytes = self.send_bytes(session_id, text.as_bytes())?;
+        std::thread::sleep(ENTER_GAP);
+        let _ = self.drain(session_id);
+        if let Some(dialog) = self.peek_blocking_prompt(session_id) {
+            return Ok(PromptDelivery {
+                bytes,
+                submitted: false,
+                redrew: false,
+                enter_retries: 0,
+                blocked_on: Some(dialog),
+                attempts: 0,
+            });
+        }
+        for attempt in 0..=MAX_ENTER_RETRIES {
+            bytes += self.send_bytes(session_id, b"\r")?;
+            match self.await_turn_start(session_id, &token)? {
+                SubmitEvidence::Started => {
+                    return Ok(PromptDelivery {
+                        bytes,
+                        submitted: true,
+                        redrew: true,
+                        enter_retries: attempt,
+                        blocked_on: None,
+                        attempts: attempt + 1,
+                    })
+                }
+                SubmitEvidence::RedrewOnly => {
+                    return Ok(PromptDelivery {
+                        bytes,
+                        submitted: false,
+                        redrew: true,
+                        enter_retries: attempt,
+                        blocked_on: self.peek_blocking_prompt(session_id),
+                        attempts: attempt + 1,
+                    })
+                }
+                SubmitEvidence::Silent if attempt < MAX_ENTER_RETRIES => {
+                    std::thread::sleep(ENTER_GAP);
+                }
+                SubmitEvidence::Silent => {}
+            }
+        }
+        Ok(PromptDelivery {
+            bytes,
+            submitted: false,
+            redrew: false,
+            enter_retries: MAX_ENTER_RETRIES,
+            blocked_on: self.peek_blocking_prompt(session_id),
+            attempts: MAX_ENTER_RETRIES + 1,
+        })
+    }
+
     /// Is this Session still inside its startup window?
     ///
     /// Paint is not a readiness signal (Qoder draws its frame, then loads MCP
