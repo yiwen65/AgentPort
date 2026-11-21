@@ -50,19 +50,41 @@ vi.mock("./api", () => ({
 
 import Sidebar from "./components/Sidebar";
 import { getState, setState } from "./store";
-import type { ProjectView } from "./types";
+import type { ProjectView, SessionView } from "./types";
 
-function project(id: string, pinned = false): ProjectView {
+function project(
+  id: string,
+  pinned = false,
+  sessions: SessionView[] = [],
+): ProjectView {
   return {
     id,
     name: id.toUpperCase(),
     rootPath: `/tmp/${id}`,
     gitRootPath: null,
     pinned,
-    sessions: [],
+    sessions,
     worktrees: [],
   };
 }
+
+const sessionFor = (index: number): SessionView => ({
+  id: `ses_${index}`,
+  projectId: "a",
+  worktreeId: null,
+  title: `Session ${index}`,
+  adapter: "shell",
+  cwd: "/tmp/a",
+  lifecycle: "running",
+  agentSessionId: null,
+  resumePrecision: "unavailable",
+  permissionMode: "native",
+  transport: "pty",
+  unread: false,
+  status: null,
+  pinnedAt: null,
+  createdAt: `2026-01-01T00:${String(index).padStart(2, "0")}:00.000Z`,
+});
 
 function pointer(
   target: HTMLElement,
@@ -200,6 +222,29 @@ describe("Project drag ordering and pinning", () => {
       ),
     ).toEqual(["b"]);
     expect(saveProjectLayoutFlowMock).not.toHaveBeenCalled();
+  });
+
+  it("shows ten sessions first and expands the overflow row on demand", () => {
+    const sessions = Array.from({ length: 12 }, (_, index) => sessionFor(index));
+    setState({
+      projects: [project("a", false, sessions)],
+      expandedProjects: { a: true },
+    });
+    const view = render(<Sidebar collapsed={false} width={296} />);
+
+    expect(view.container.querySelectorAll("[data-pane-drag-label]")).toHaveLength(10);
+    const overflow = view.container.querySelector<HTMLButtonElement>(
+      ".session-overflow-toggle",
+    );
+    expect(overflow).not.toBeNull();
+    expect(overflow?.textContent).toBe("…");
+
+    fireEvent.click(overflow!);
+    expect(view.container.querySelectorAll("[data-pane-drag-label]")).toHaveLength(12);
+    expect(overflow?.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.click(overflow!);
+    expect(view.container.querySelectorAll("[data-pane-drag-label]")).toHaveLength(10);
   });
 
   it("an explicit click replaces a transient reveal and persists the collapse", () => {

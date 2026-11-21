@@ -78,6 +78,7 @@
       "readingBranch": "Reading branch…",
       "detachedAt": "Detached @ {{oid}}",
       "noRunningTasks": "No running tasks yet",
+      "moreSessions": "Show {{count}} more Sessions",
       "expandAll": "Expand all projects and Worktrees",
       "collapseAll": "Collapse all projects and Sessions",
       "quickLaunch": {

@@ -1942,6 +1942,7 @@ function ProjectNode({
       state.expandedProjects[p.id] !== false ||
       state.revealedProjects[p.id] === true,
   );
+  const [showAllSessions, setShowAllSessions] = useState(false);
   const order = useSessionOrder();
   const archiving = useStore((state) => state.archivingSessionIds);
   const activeDeviceKey = useStore((state) =>
@@ -2020,6 +2021,7 @@ function ProjectNode({
           onPointerCancel={(event) => onPointerCancel(p.id, event)}
           onClick={(event) => {
             if (consumeSuppressedClick(p.id, event)) return;
+            setShowAllSessions(false);
             update((state) => {
               const expandedProjects = {
                 ...state.expandedProjects,
@@ -2106,9 +2108,24 @@ function ProjectNode({
               worktree was created under the project (creation stays in the
               project context menu). */}
           {p.worktrees.length > 0 ? <WorktreesEntryRow p={p} /> : null}
-          {mainSessions.map((ses) => (
-            <MemoSessionRow key={ses.id} ses={ses} />
-          ))}
+          {mainSessions
+            .slice(0, showAllSessions ? undefined : 10)
+            .map((ses) => (
+              <MemoSessionRow key={ses.id} ses={ses} />
+            ))}
+          {mainSessions.length > 10 ? (
+            <button
+              type="button"
+              className="tree-row session-overflow-toggle"
+              aria-expanded={showAllSessions}
+              aria-label={t("shell:ui.sidebar.moreSessions", {
+                count: mainSessions.length - 10,
+              })}
+              onClick={() => setShowAllSessions((visible) => !visible)}
+            >
+              <span aria-hidden="true">…</span>
+            </button>
+          ) : null}
           {visibleSessions.length === 0 && p.worktrees.length === 0 ? (
             <div className="tree-empty">
               <span>{t("shell:ui.sidebar.noRunningTasks")}</span>

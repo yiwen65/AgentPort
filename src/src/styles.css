@@ -1459,6 +1459,25 @@ body.is-project-dragging .tree-row.project {
   padding-left: 28px;
 }
 
+/* Long project lists stay calm by default: the overflow affordance occupies
+   one compact row and reveals the rest without changing the project header. */
+.tree-row.session-overflow-toggle {
+  min-height: 26px;
+  justify-content: center;
+  padding: 0 10px;
+  color: var(--sidebar-text-faint);
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.16em;
+  line-height: 1;
+}
+
+.tree-row.session-overflow-toggle:hover,
+.tree-row.session-overflow-toggle:focus-visible {
+  color: var(--sidebar-text-strong);
+  background: var(--sidebar-row-hover);
+}
+
 /* Inline remove confirmation: replaces the row content instead of a modal. */
 .tree-row.session.remove-confirm {
   display: flex;

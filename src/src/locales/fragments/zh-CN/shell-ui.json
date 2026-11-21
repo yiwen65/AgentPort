@@ -78,6 +78,7 @@
       "readingBranch": "读取分支中…",
       "detachedAt": "游离 HEAD @ {{oid}}",
       "noRunningTasks": "还没有运行中的任务",
+      "moreSessions": "展开其余 {{count}} 个 Session",
       "expandAll": "展开所有项目与 Worktree",
       "collapseAll": "折叠所有项目与 Session",
       "quickLaunch": {
