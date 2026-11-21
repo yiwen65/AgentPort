@@ -13,6 +13,7 @@ use agentport_remote_protocol::{
 };
 use agentport_service::{RemoteService, SessionSummary};
 use serde_json::{json, Map, Value};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +34,9 @@ use crate::wait_jobs::{
 /// MCP request into an unbounded amount of work. Session creation itself still
 /// uses the existing per-process live-session limit.
 const MAX_BATCH_ITEMS: usize = 32;
+/// Keep repeated waits idempotent without retaining one reply/tail per
+/// historical Session for the lifetime of a long-lived MCP process.
+const MAX_SETTLED_TURNS: usize = 64;
 
 pub struct ToolDef {
     pub name: &'static str,
@@ -647,8 +651,10 @@ pub struct Toolbox {
     created_here: std::collections::HashSet<String>,
     /// Turns this server already saw settle. A repeated wait must answer from
     /// that fact instead of waiting again, or a caller that polls twice would
-    /// burn a full timeout on the second call.
+    /// burn a full timeout on the second call. The insertion order is bounded
+    /// so completed Sessions cannot grow this process forever.
     settled: std::collections::HashMap<String, SettledTurn>,
+    settled_order: VecDeque<String>,
     waits: WaitRegistry,
     root: PathBuf,
     parent_session_id: Option<String>,
@@ -682,6 +688,7 @@ impl Toolbox {
             created_here: std::collections::HashSet::new(),
             baselines: std::collections::HashMap::new(),
             settled: std::collections::HashMap::new(),
+            settled_order: VecDeque::new(),
             waits: WaitRegistry::default(),
             root: config.root,
             parent_session_id: config.parent_session_id,
@@ -1046,8 +1053,8 @@ impl Toolbox {
             "status moved to idle after the prompt".to_string()
         };
         self.baselines.remove(session_id);
-        self.settled.insert(
-            session_id.to_string(),
+        self.remember_settled(
+            session_id,
             SettledTurn {
                 state: "idle",
                 source: status.source.clone(),
@@ -1391,7 +1398,7 @@ impl Toolbox {
                             result["statusSequence"] = json!(baseline.sequence);
                             result["statusRunOrdinal"] = json!(baseline.run_ordinal);
                         }
-                        self.settled.remove(&session_id);
+                        self.forget_settled(&session_id);
                         if delivery.submitted {
                             if let Some(fence) = prompt_fence.as_deref() {
                                 self.ops.remember_prompt(&session_id, fence);
@@ -1663,7 +1670,7 @@ impl Toolbox {
             if let Some(baseline) = baseline {
                 self.baselines.insert(session_id.clone(), baseline);
             }
-            self.settled.remove(&session_id);
+            self.forget_settled(&session_id);
             self.ops.remember_prompt(&session_id, &prompt_fence);
             if role.is_some() {
                 role_preamble_delivered = self
@@ -1699,6 +1706,28 @@ impl Toolbox {
         }))
     }
 
+    fn remember_settled(&mut self, session_id: &str, turn: SettledTurn) {
+        // Refreshing a Session keeps it at the newest end of the bounded
+        // insertion order. This cache is a recovery/idempotence convenience,
+        // not durable history.
+        self.settled_order.retain(|id| id != session_id);
+        while self.settled.len() >= MAX_SETTLED_TURNS {
+            let oldest = self
+                .settled_order
+                .pop_front()
+                .or_else(|| self.settled.keys().next().cloned());
+            let Some(oldest) = oldest else { break };
+            self.settled.remove(&oldest);
+        }
+        self.settled.insert(session_id.to_string(), turn);
+        self.settled_order.push_back(session_id.to_string());
+    }
+
+    fn forget_settled(&mut self, session_id: &str) {
+        self.settled.remove(session_id);
+        self.settled_order.retain(|id| id != session_id);
+    }
+
     fn remember_wait_outcome(&mut self, session_id: &str, outcome: &crate::ops::WaitOutcome) {
         // Only a real turn boundary clears the baseline and is remembered. A
         // quiet-window verdict is a guess: caching it would turn silence into
@@ -1708,8 +1737,8 @@ impl Toolbox {
             && outcome.confidence != "low"
         {
             self.baselines.remove(session_id);
-            self.settled.insert(
-                session_id.to_string(),
+            self.remember_settled(
+                session_id,
                 SettledTurn {
                     state: outcome.state,
                     source: outcome.source.clone(),
@@ -2185,7 +2214,7 @@ impl Toolbox {
         let group_cleaned = self.ops.stop(&session_id, grace)?;
         self.ops.forget_prompt(&session_id);
         self.baselines.remove(&session_id);
-        self.settled.remove(&session_id);
+        self.forget_settled(&session_id);
         // Ownership is kept: the Session row still exists (terminated, not
         // deleted), and `list_sessions` prunes rows whose Session is gone, so
         // an agent can still ask what happened to what it started.
@@ -2209,7 +2238,7 @@ impl Toolbox {
             .map_err(ToolFailure::from)?;
         self.ops.forget_prompt(&session_id);
         self.baselines.remove(&session_id);
-        self.settled.remove(&session_id);
+        self.forget_settled(&session_id);
         self.ops.detach(&session_id);
         let mut result = json!({
             "sessionId": session_id,
@@ -2280,7 +2309,7 @@ impl Toolbox {
         self.ops.forget_prompt(&session_id);
         self.created_here.remove(&session_id);
         self.baselines.remove(&session_id);
-        self.settled.remove(&session_id);
+        self.forget_settled(&session_id);
         let _ = self.registry.remove(&session_id);
         let mut result = json!({
             "sessionId": session_id,
@@ -2819,6 +2848,32 @@ mod tests {
             value["results"][1]["error"]["code"],
             json!("session_not_owned")
         );
+    }
+
+    #[test]
+    fn settled_turn_cache_is_bounded() {
+        let mut toolbox = test_support::toolbox();
+        for index in 0..(MAX_SETTLED_TURNS + 2) {
+            let session_id = format!("ses-settled-{index}");
+            toolbox.remember_settled(
+                &session_id,
+                SettledTurn {
+                    state: "idle",
+                    source: "hook".into(),
+                    confidence: "high".into(),
+                    evidence: "test".into(),
+                    reply: Some("reply".into()),
+                    reply_unavailable_reason: None,
+                    tail_source: "transcript",
+                    fallback_reason: None,
+                },
+            );
+        }
+        assert_eq!(toolbox.settled.len(), MAX_SETTLED_TURNS);
+        assert_eq!(toolbox.settled_order.len(), MAX_SETTLED_TURNS);
+        assert!(!toolbox.settled.contains_key("ses-settled-0"));
+        assert!(!toolbox.settled.contains_key("ses-settled-1"));
+        assert!(toolbox.settled.contains_key("ses-settled-65"));
     }
 
     #[test]

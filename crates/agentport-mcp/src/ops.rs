@@ -15,6 +15,7 @@ use agentport_service::{
 };
 use base64::Engine as _;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -393,6 +394,7 @@ pub struct SessionOps {
     /// being returned as the current turn's reply.
     prompt_fences: HashMap<String, String>,
     batch_sequence: u64,
+    wait_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl SessionOps {
@@ -402,7 +404,21 @@ impl SessionOps {
             attachments: Attachments::default(),
             prompt_fences: HashMap::new(),
             batch_sequence: 0,
+            wait_cancel: None,
         }
+    }
+
+    /// Let a background wait interrupt its bounded poll without waiting for
+    /// the whole five-second worker quantum to elapse. Synchronous callers do
+    /// not install a flag and retain the ordinary wait behavior.
+    pub fn set_wait_cancel(&mut self, cancel: Arc<AtomicBool>) {
+        self.wait_cancel = Some(cancel);
+    }
+
+    fn wait_was_cancelled(&self) -> bool {
+        self.wait_cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
     }
 
     /// Remember enough of the prompt to identify its user event in native
@@ -957,6 +973,12 @@ impl SessionOps {
         let mut last_shell_prompt_check = Instant::now();
         let mut shell_prompt_returned = false;
         loop {
+            if self.wait_was_cancelled() {
+                return Err(ToolFailure::new(
+                    "wait_cancelled",
+                    "background wait was cancelled",
+                ));
+            }
             let summary = self.summary(session_id)?;
             let terminal = matches!(
                 summary.lifecycle.as_str(),
@@ -1072,6 +1094,12 @@ impl SessionOps {
                 }
                 Err(_) => self.detach(session_id),
             }
+            if self.wait_was_cancelled() {
+                return Err(ToolFailure::new(
+                    "wait_cancelled",
+                    "background wait was cancelled",
+                ));
+            }
             if wait_trace_enabled() {
                 eprintln!(
                     "wait_trace events={polled} state={:?} quiet_age_ms={:?} turn_source={saw_turn_source}",
@@ -1128,7 +1156,8 @@ impl SessionOps {
             // though the PTY has been quiet for several seconds. Check the
             // current VT grid as well as the stream because a Shell prompt can
             // be painted without a durable output event.
-            if !shell_prompt_returned
+            if summary.adapter_type == "shell"
+                && !shell_prompt_returned
                 && last_shell_prompt_check.elapsed() >= DIALOG_CHECK
             {
                 last_shell_prompt_check = Instant::now();
@@ -1156,8 +1185,10 @@ impl SessionOps {
 
             // A trust or login screen is the CLI asking the user a question. It
             // has no hook and no status event, so it is read from the rendered
-            // tail — checked on a slow cadence because it costs a replay.
-            if last_dialog_check.elapsed() >= DIALOG_CHECK {
+            // tail — checked on a slow cadence because it costs a replay. Do
+            // not gate it on semantic working evidence: a provider can still
+            // present a login/trust prompt after it has reported working.
+            if !shell_prompt_returned && last_dialog_check.elapsed() >= DIALOG_CHECK {
                 last_dialog_check = Instant::now();
                 if let Some(dialog) = self
                     .peek_screen(session_id)
@@ -1175,6 +1206,12 @@ impl SessionOps {
                 }
             }
 
+            if self.wait_was_cancelled() {
+                return Err(ToolFailure::new(
+                    "wait_cancelled",
+                    "background wait was cancelled",
+                ));
+            }
             if Instant::now() >= deadline {
                 return Ok(self.settle(
                     session_id,

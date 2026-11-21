@@ -373,6 +373,7 @@ fn run_waiter(
     deadline: Instant,
 ) {
     let mut ops = SessionOps::new(service);
+    ops.set_wait_cancel(Arc::clone(&record.cancel));
     if let Some(fence) = spec.prompt_fence.as_deref() {
         ops.remember_prompt(&spec.session_id, fence);
     }
