@@ -141,7 +141,7 @@ Measure the current MCP wait-group workload, identify concrete CPU/I/O/thread/at
 - Acceptance criteria:
   - All required checks pass and no resource leak remains within measured scope.
 - Verification method: Commands below plus GUI verification.
-- Validation evidence: Not run.
+- Validation evidence: Focused tests and E2E passed before delivery. `python3 scripts/restart-debug-app.py` rebuilt and signed the Debug App, stopped only the exact prior GUI executable, and opened PID 65865 at the required path. CUA verification found a rendered 1366×911 AgentPort window with populated panes (not blank).
 - Blocker: None.
 - Unblock condition: None.
 
@@ -176,5 +176,5 @@ Measure the current MCP wait-group workload, identify concrete CPU/I/O/thread/at
 ## Final validation result
 
 - Result: passed
-- Evidence: Current-tree focused MCP tests (41/41), Service tests (73/73), Remote Bridge check, and the full MCP E2E passed. The E2E screen-overwrite assertion that previously failed now passes. `git diff --check` passed for tracked changes. Rustfmt check was not used as a gate because the pre-existing `ops.rs` formatting differs from rustfmt across unrelated lines; no unrelated formatting was applied. Debug App restart and screenshot verification remain required before delivery.
+- Evidence: Current-tree focused MCP tests (41/41), Service tests (73/73), Remote Bridge check, and the full MCP E2E passed. The E2E screen-overwrite assertion that previously failed now passes. `git diff --check` passed for tracked changes. Rustfmt check was not used as a gate because the pre-existing `ops.rs` formatting differs from rustfmt across unrelated lines; no unrelated formatting was applied. The signed Debug App was rebuilt/restarted via `scripts/restart-debug-app.py`; PID 65865 was verified at `/Users/w/Projects/AgentSessions/target/debug/bundle/macos/AgentPort.app/Contents/MacOS/agentport`, and CUA captured a populated nonblank window.
 - Limitations: The resource sample is process-level and bounded; it proves attachment/thread/FD cleanup for the sampled workload but does not isolate a precise CPU percentage or measure every Agent adapter. The screen-probe optimization is therefore justified by call-path attribution and correctness tests, not a claimed wall-clock speedup for all providers.
