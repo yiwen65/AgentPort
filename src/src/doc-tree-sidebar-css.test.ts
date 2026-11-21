@@ -59,9 +59,7 @@ describe("document tree sidebar design language", () => {
     // No vertical rule in the title bar: the tree's own edge starts at the
     // panel top, below the bar.
     expect(backdrop).not.toContain("border-left");
-    // The flat glaze must copy the tree gradient's 0% stops per theme.
-    expect(styles).toContain("--sidebar-top-layer-1: rgba(255, 255, 255, 0.05)");
-    expect(styles).toContain("--sidebar-top-layer-1: rgba(255, 255, 255, 0.32)");
+    // The opaque surface has no gradient stops; both themes use a flat backdrop.
     expect(styles).toContain("--sidebar-top-layer-1: transparent");
   });
 
