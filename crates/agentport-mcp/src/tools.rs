@@ -98,7 +98,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "handoff",
-        description: "Create a new split-pane Agent Session and delegate a complete Markdown handoff directly to it. The tool returns immediately; use wait_for_task or a wait group for completion. No handoff document is written.",
+        description: "Create a new split-pane Agent Session and delegate a complete Markdown handoff directly to it. This is a one-shot fire-and-forget handoff: it returns immediately and does not require wait_for_task or a wait group. No handoff document is written.",
         schema: handoff_schema,
     },
     ToolDef {
@@ -1386,7 +1386,8 @@ impl Toolbox {
                             "normalizedLineEndings": normalized,
                             "compacted": false,
                             "promptBytes": structured.len(),
-                            "completion": "use wait_for_task or a wait group with the returned sessionId"
+                            "oneShot": true,
+                            "completion": "not_collected_by_handoff"
                         }),
                     );
                 }
@@ -1401,7 +1402,8 @@ impl Toolbox {
                         "normalizedLineEndings": normalized,
                         "compacted": false,
                         "fallbackReason": "agent_not_ready",
-                        "completion": "inspect the Session and retry with send_prompt"
+                        "oneShot": true,
+                        "completion": "not_collected_by_handoff"
                     }),
                 );
             }
@@ -1434,7 +1436,8 @@ impl Toolbox {
                         "compacted": compacted,
                         "promptBytes": prompt.len(),
                         "fallbackReason": "structured_prompt_requires_json_rpc_transport",
-                        "completion": "use wait_for_task or a wait group with the returned sessionId"
+                        "oneShot": true,
+                        "completion": "not_collected_by_handoff"
                     }),
                 );
             }

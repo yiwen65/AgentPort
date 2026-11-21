@@ -24,7 +24,7 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 **Non-goals**
 
 - No writing to `docs/handoff/` or any other handoff file.
-- No automatic wait for the delegated Agent's final answer; existing wait tools remain the completion mechanism.
+- No final-answer collection or completion wait; handoff is a one-shot fire-and-forget transfer.
 - No new AgentPort Host protocol, raw input path, or Session ownership model.
 - No modification to the unrelated `mobile/src-tauri/gen/schemas/acl-manifests.json` change.
 
@@ -55,7 +55,7 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 - Calling `handoff` creates an MCP-owned Session, sends the compacted handoff once, queues a split pane, and returns immediately without writing a handoff document.
 - The selected Agent is explicit; optional project/title/permission/worktree/role options follow existing delegation semantics.
 - Handoff content over 8 KiB, empty content, ESC, NUL, or unsupported control characters returns a structured error before Session creation.
-- The result identifies the direct handoff path and whether compaction occurred; completion remains available through existing wait tools.
+- The result identifies the direct handoff path and whether compaction occurred; it marks the transfer as one-shot and does not require completion polling.
 - Role selection remains explicit/model-owned, and Generic Shell rejects a selected Role as before.
 - Existing MCP tool, service, E2E, and delegation behavior remains green.
 - The task document validates, task changes are committed, the unrelated mobile schema change remains untouched, and the Debug App is rebuilt/restarted with a nonblank window.
@@ -105,14 +105,14 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 - Execution steps:
   1. Add `handoff` to the expected MCP tool set.
   2. Invoke it with a temporary Shell target and compact multi-section Markdown; assert Session/pane/prompt metadata and clean up the Session.
-  3. Add invalid handoff coverage and document waiting/return behavior.
+  3. Add invalid handoff coverage and document immediate one-shot return behavior.
 - Acceptance criteria:
   - E2E proves direct delegation and cleanup without creating a handoff file.
   - Existing E2E remains green.
 - Verification method:
   - `python3 scripts/test-agentport-mcp.py`
   - `git diff --check`
-- Validation evidence: `python3 scripts/test-agentport-mcp.py` completed all MCP E2E checks, including handoff Session creation, Prompt delivery, split pane metadata, invalid handoff rejection, no-document assertion, and cleanup. `docs/mcp.md` documents the new tool and wait behavior.
+- Validation evidence: `python3 scripts/test-agentport-mcp.py` completed all MCP E2E checks, including handoff Session creation, Prompt delivery, split pane metadata, invalid handoff rejection, no-document assertion, and cleanup. `docs/mcp.md` documents the new tool and one-shot return behavior.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -176,5 +176,5 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 ## Final validation result
 
 - Result: passed
-- Evidence: Direct `handoff` delegation is implemented and committed in `8780395`. MCP unit tests, Service tests, Remote Bridge check, frontend build/i18n check, full MCP E2E, task validation, and Debug App rendering verification passed. The tool returns immediately after creating/sending the Session prompt and does not write a handoff document.
-- Limitations: Handoff Markdown is supplied by the caller and compacted to a single prompt line; MCP does not reconstruct missing conversation context. Completion remains a separate wait-tool call.
+- Evidence: Direct `handoff` delegation is implemented and committed in `8780395`. MCP unit tests, Service tests, Remote Bridge check, frontend build, E2E, task validation, and Debug App rendering verification passed. The tool returns immediately after creating/sending the Session prompt, marks the transfer one-shot, and does not write a handoff document.
+- Limitations: Handoff Markdown is supplied by the caller and compacted to a single prompt line; MCP does not reconstruct missing conversation context. Handoff does not collect the target Agent's completion.
