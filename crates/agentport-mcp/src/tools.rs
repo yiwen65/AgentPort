@@ -594,17 +594,6 @@ struct ResolvedProject {
     created: bool,
 }
 
-fn public_role(role: AgentRole) -> Value {
-    json!({
-        "roleId": role.id,
-        "name": role.name,
-        "description": role.description,
-        "outputContract": role.output_contract,
-        "revision": role.revision,
-        "builtIn": role.built_in,
-    })
-}
-
 fn public_role_metadata(role: AgentRoleMetadata) -> Value {
     json!({
         "roleId": role.id,
@@ -2827,7 +2816,7 @@ mod tests {
             revision: 2,
             built_in: false,
         };
-        let metadata = public_role(role.clone());
+        let metadata = public_role_metadata(AgentRoleMetadata::from(&role));
         assert!(metadata.get("instructions").is_none());
         assert_eq!(metadata["roleId"], "role_test");
         let snapshot = RoleSnapshot::from(&role);

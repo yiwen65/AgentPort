@@ -8,7 +8,7 @@ use crate::protocol::{
     failure, initialize_result, parse_line, success, IncomingMessage, RpcError, INVALID_PARAMS,
     METHOD_NOT_FOUND,
 };
-use crate::tools::{Toolbox, TOOLS};
+use crate::tools::Toolbox;
 
 pub struct Server {
     toolbox: Toolbox,
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn tools_list_matches_the_registry() {
-        let tools = TOOLS;
+        let tools = crate::tools::TOOLS;
         assert!(tools.iter().any(|tool| tool.name == "create_session"));
         assert!(tools.iter().any(|tool| tool.name == "wait_for_task"));
         // Guardrails must not reappear as tools.
