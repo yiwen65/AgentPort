@@ -3,7 +3,7 @@
 - Created: 2026-11-21
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: user request to implement true nonblocking parallel coordination for multiple delegated Agents
 
 <!-- task-doc-section:background-goal -->
@@ -136,9 +136,9 @@ The MCP can already launch multiple delegated Sessions whose Host processes exec
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-004 — Validate, package, and deliver
+### [x] T-004 — Validate, package, and deliver
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: Run final checks, commit only task-related changes, rebuild/restart the debug App, and verify the window.
 - Inputs and prerequisites: T-003.
@@ -155,9 +155,9 @@ The MCP can already launch multiple delegated Sessions whose Host processes exec
   - Task document validates with all tasks done.
   - Only task-related files are committed.
 - Verification method: Commands listed in the validation plan and GUI observation.
-- Validation evidence: Targeted checks are passing; final commit, debug bundle restart, GUI verification, and task-document validation remain.
+- Validation evidence: `cargo test -p agentport-mcp --lib` passed (40 tests); `cargo test -p agentport-service --lib` passed (73 tests); `cargo check -p agentport-remote-bridge` passed; `python3 scripts/test-agentport-mcp.py` passed with 22 tools and nonblocking group assertions; `git diff --check` passed; commit `fd1c888` created task changes. Debug bundle was rebuilt/signed/restarted and exact GUI path plus nonblank screenshot were verified.
 - Blocker: None.
-- Unblock condition: Complete final validation and commit.
+- Unblock condition: None.
 
 <!-- task-doc-section:validation-plan -->
 ## Test and validation plan
@@ -184,10 +184,11 @@ The MCP can already launch multiple delegated Sessions whose Host processes exec
 - 2026-11-21: Scope selected as portable nonblocking wait-group polling with bounded background workers; preserve synchronous compatibility tools.
 - 2026-11-21: T-001 implementation started; worker state is isolated from the synchronous Toolbox attachment cache.
 - 2026-11-21: T-001/T-002/T-003 implemented; nonblocking wait-group E2E and registry duplicate test passed.
+- 2026-11-21: Final validation passed; commit `fd1c888` created and debug GUI restarted/verified.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: not_run
-- Evidence: Not run.
-- Limitations: None recorded yet.
+- Result: passed
+- Evidence: All required task tests, E2E, service/bridge checks, diff check, task-document validation, commit, and debug GUI verification passed.
+- Limitations: Wait groups are in-process and portable polling; an MCP process restart loses active wait-group handles, while `session_status.completion` remains the recovery path. The pre-existing mobile schema modification remains uncommitted.
