@@ -40,6 +40,12 @@ describe("document panel header tab strip", () => {
     expect(select).toContain("max-width: 96px");
   });
 
+  it("anchors editor settings to the Aa control instead of spilling left", () => {
+    const settings = styles.match(/^\.doc-editor-settings-panel\s*\{([\s\S]*?)\n\}/m)?.[1];
+    expect(settings).toContain("left: 0");
+    expect(settings).toContain("right: auto");
+  });
+
   it("moves Quote Selection to its own row in narrow editor columns", () => {
     const compact = styles.match(/@container doc-editor \(max-width: 560px\)\s*\{\s*\.doc-quote\s*\{([\s\S]*?)\n  \}/)?.[1];
     expect(compact).toContain("order: 1");
