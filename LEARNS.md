@@ -1084,11 +1084,11 @@
 ## `wait_for_task` 判定 — PTY 静默 3 秒的 idle 不是回合结束
 
 - Wrong approach: 把 `state=idle`（Host 的 PTY 启发式，输出静默 3 s 就置 idle）当成"这一轮做完了"，也把"本次调用里没见过输出"当成"会话安静"。
-- Why it failed: 模型思考时本来就没有输出，Claude 连续生成诗的那 20 s 里 Host 会先报 `idle/pty`，父 Agent 于是以为任务完成并去 `read_output` 拿空结果；反过来，prompt 回显和快速回答可能全部发生在 attach 之前，`last_output_at` 永远是 None，静默兜底因此永不触发。
-- Recognition signal: `wait_for_task` 返回 `idle/pty` 但屏幕里还有 `esc to interrupt`；或返回 `timeout/watchdog` 而同屏一切早已静止。
-- Correct approach: 只用"回合边界"结算 prompted turn —— `latest_attention_kind == turn_completed`，或状态来源是 `hook`/`adapter` 的 idle；PTY idle 只当暂停。静默兜底仅用于**从未报告过回合边界**的 Agent，基线取"任何活动的最后时刻"（输出或状态帧，缺省用开始观察的时刻），并要求 4 s 且当前不是 `working`；兜底结论一律 `confidence: low`，且不得被缓存成"已完成"。
-- Prevention: 完成判定要区分"状态为 idle"和"回合已结束"；任何兜底信号都要有可验证的基线（不能依赖"我看到的最后一条输出"），并且低置信结论不得写进"已结算"缓存。
-- Verified by: 端到端脚本的新增断言（`sleep 4` 的命令不会在 3.5 s 前被判完成、重复 wait 仍为 `quiet_window/low` 且 4.2 s 内返回）；Claude 长 prompt 两次均 `idle/hook` 且 `outputTail` 里带回诗文（2.4 KB）；shell 会话两次分别 7.4 s/4.3 s 诚实返回 `quiet_window/low`。
+- Why it failed: 模型思考时本来就没有输出，Claude 连续生成诗的那 20 s 里 Host 会先报 `idle/pty`，父 Agent 于是以为任务完成并去 `read_output` 拿空结果；反过来，prompt 回显和快速回答可能全部发生在 attach 之前，`last_output_at` 永远是 None，静默兜底因此永不触发。另一个独立边界是 MCP stdio 请求同步串行：父 Agent 的 60 s 客户端期限先于它请求的 120 s wait 到期，产生 transport unknown，后续 status/read 只能排队。
+- Recognition signal: `wait_for_task` 返回 `idle/pty` 但屏幕里还有 `esc to interrupt`；或返回 `timeout/watchdog` 而同屏一切早已静止；或日志出现 `MCP request timed out after 60000ms` 而 MCP 进程仍在执行 wait。
+- Correct approach: 只用"回合边界"结算 prompted turn —— `latest_attention_kind == turn_completed`，或状态来源是 `hook`/`adapter` 的 idle；PTY idle 只当暂停。静默兜底仅用于**从未报告过回合边界**的 Agent，必须先看到本次命令后的 Shell prompt，基线取"任何活动的最后时刻"（输出或状态帧，缺省用开始观察的时刻），并要求 4 s；兜底结论一律 `confidence: low`，且不得被缓存成"已完成"。同步 wait 上限固定为 45 s，超时返回结构化 continuation，调用方继续 wait 同一 prompt；结算后 reply 必须匹配本次 prompt fence，并接受原生历史的 `message` 事件形态。
+- Prevention: 完成判定要区分"状态为 idle"和"回合已结束"；任何兜底信号都要有可验证的基线（不能依赖"我看到的最后一条输出"），并且低置信结论不得写进"已结算"缓存。不要让 `timeoutMs` 超过 MCP 客户端期限；收到 `continuation/nextAction=wait_for_task` 时不要改用 `read_output` 判断完成。
+- Verified by: 端到端脚本的新增断言（`sleep 4` 和 `sleep 6` 的命令不会在命令结束前被判完成、重复 wait 仍为 `quiet_window/low`）；受控 `sleep 50` 请求在约 45 s 返回结构化 timeout 而不是 transport unknown；easy-pi 实测 `idle/adapter` 返回 `reply: MCP-REPLY-CHECK`。
 
 ## `跨 Agent 委派` — 按键语义、信任弹窗、回合边界是三件不同的事
 
