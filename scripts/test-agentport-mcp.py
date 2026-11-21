@@ -452,6 +452,28 @@ def main() -> int:
             "output tail proves the command actually completed",
         )
 
+        print("a quiet Shell command is not finished before its prompt returns")
+        begun = time.monotonic()
+        prompted, is_error = client.call(
+            "send_prompt", {"sessionId": session_id, "text": "sleep 6; echo LONG-QUIET-END"}
+        )
+        check(not is_error, "long quiet prompt accepted")
+        short, is_error = client.call(
+            "wait_for_task", {"sessionId": session_id, "timeoutMs": 5000}
+        )
+        short_elapsed = time.monotonic() - begun
+        check(not is_error, "short quiet wait returned a structured result")
+        check(
+            short["state"] == "timeout" and short.get("continuation") is True,
+            f"a still-running Shell turn stays a continuation ({short['state']})",
+        )
+        check(short_elapsed >= 4.5, f"short wait stayed within its budget ({short_elapsed:.1f}s)")
+        long_wait, is_error = client.call(
+            "wait_for_task", {"sessionId": session_id, "timeoutMs": 15000}
+        )
+        check(not is_error and long_wait["state"] == "idle", "the Shell settles after its prompt returns")
+        check("LONG-QUIET-END" in long_wait.get("outputTail", ""), "long command output is returned")
+
         print("a repeated wait never reports a false turn boundary")
         begun = time.monotonic()
         repeat, is_error = client.call(

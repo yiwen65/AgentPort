@@ -15,6 +15,7 @@ use agentport_service::RemoteService;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::ops::{
     ReadyOutcome, SessionOps, StatusMark, TResult, ToolFailure, DEFAULT_READY_MS, DEFAULT_WAIT_MS,
@@ -96,23 +97,17 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "wait_for_task",
-        description: "Wait for the Session's current turn to settle. Returns idle | needs_input | \
-                      exited | timeout together with the source, confidence and evidence used, so \
-                      an uncertain verdict is never reported as success. Keep timeoutMs under your \
-                      own request timeout (default 45s); call again to keep waiting.",
+        description: "Wait for exactly the current delegated turn and return its final assistant reply when it settles. Returns idle | needs_input | exited | timeout with source, confidence, evidence and reply. timeout is a structured continuation point (continuation/stillRunning/nextAction); call wait_for_task again for the same Session, and do not use read_output to decide completion. Each synchronous wait is capped below common client deadlines (default 45s).",
         schema: wait_for_task_schema,
     },
     ToolDef {
         name: "wait_for_tasks",
-        description: "Wait for several MCP-owned Sessions in one call. Each item preserves the \
-                      same state, confidence, evidence, reply and output fallback fields as \
-                      wait_for_task; an error for one item does not hide the other results.",
+        description: "Wait for several MCP-owned Sessions in one call under one shared request budget. Each item preserves the same state, confidence, evidence, reply and output fallback fields as wait_for_task; an error for one item does not hide the other results.",
         schema: wait_for_tasks_schema,
     },
     ToolDef {
         name: "read_output",
-        description: "Read the newest terminal output of a Session (ANSI stripped, bounded). \
-                      Works while the Session runs.",
+        description: "Read bounded progress/output (ANSI stripped) for a Session. It is informational and works while the Session runs; it is not completion evidence. Use wait_for_task.reply for the final answer of the current turn.",
         schema: read_output_schema,
     },
     ToolDef {
@@ -343,6 +338,10 @@ fn wait_for_task_schema() -> Value {
             "sinceSequence": {
                 "type": "integer",
                 "description": "Status sequence from your own send_prompt; only a newer transition settles"
+            },
+            "sinceRunOrdinal": {
+                "type": "integer",
+                "description": "Run ordinal paired with sinceSequence; returned by create_session/send_prompt"
             }
         }),
         json!(["sessionId"]),
@@ -375,6 +374,10 @@ fn wait_for_tasks_schema() -> Value {
                         "sinceSequence": {
                             "type": "integer",
                             "description": "Status sequence from your own send_prompt; only a newer transition settles"
+                        },
+                        "sinceRunOrdinal": {
+                            "type": "integer",
+                            "description": "Run ordinal paired with sinceSequence; returned by create_session/send_prompt"
                         }
                     },
                     "required": ["sessionId"],
@@ -386,7 +389,7 @@ fn wait_for_tasks_schema() -> Value {
                 "minimum": 1000,
                 "maximum": MAX_WAIT_MS,
                 "default": DEFAULT_WAIT_MS,
-                "description": "Per-item wait budget; items are processed in order with independent results."
+                "description": "Shared total request budget; items are processed in order and later items receive structured continuation results when the budget is exhausted."
             }
         }),
         json!(["tasks"]),
@@ -1092,6 +1095,9 @@ impl Toolbox {
             .map(|text| text::sanitize_prompt(&text))
             .transpose()
             .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+        let prompt_fence = task_prompt
+            .as_ref()
+            .map(|text| text.chars().take(64).collect::<String>());
         let evidence_token = role_snapshot
             .as_ref()
             .and(task_prompt.as_ref())
@@ -1232,8 +1238,15 @@ impl Toolbox {
                     Ok(delivery) => {
                         if let Some(baseline) = baseline {
                             self.baselines.insert(session_id.clone(), baseline);
+                            result["statusSequence"] = json!(baseline.sequence);
+                            result["statusRunOrdinal"] = json!(baseline.run_ordinal);
                         }
                         self.settled.remove(&session_id);
+                        if delivery.submitted {
+                            if let Some(fence) = prompt_fence.as_deref() {
+                                self.ops.remember_prompt(&session_id, fence);
+                            }
+                        }
                         result["promptSent"] = json!(delivery.submitted);
                         result["promptBytes"] = json!(delivery.bytes);
                         result["promptSubmitted"] = json!(delivery.submitted);
@@ -1452,6 +1465,7 @@ impl Toolbox {
                     .flatten()
             });
         let evidence_token: String = task.chars().take(10).collect();
+        let prompt_fence: String = task.chars().take(64).collect();
         let prompt = match role.as_ref() {
             Some(role) => role_prompt(role, &task)?,
             None => task,
@@ -1494,6 +1508,7 @@ impl Toolbox {
                 self.baselines.insert(session_id.clone(), baseline);
             }
             self.settled.remove(&session_id);
+            self.ops.remember_prompt(&session_id, &prompt_fence);
             if role.is_some() {
                 role_preamble_delivered = self
                     .registry
@@ -1512,6 +1527,7 @@ impl Toolbox {
             "readyBeforeSend": ready.ready,
             "blockedOn": delivery.blocked_on.clone(),
             "statusSequence": baseline.map(|mark| mark.sequence),
+            "statusRunOrdinal": baseline.map(|mark| mark.run_ordinal),
             "role": role.as_ref().map(public_role_snapshot),
             "rolePreambleApplied": role.is_some(),
             "rolePreambleDelivered": role_preamble_delivered,
@@ -1530,11 +1546,16 @@ impl Toolbox {
     fn wait_for_task(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
-        let timeout = optional_u64(args, "timeoutMs").unwrap_or(DEFAULT_WAIT_MS);
+        // A stdio MCP request cannot outlive the client's own deadline. Clamp
+        // even an explicitly oversized value so the caller receives a normal
+        // `timeout` result and can continue the same turn with another wait.
+        let timeout = wait_timeout_ms(optional_u64(args, "timeoutMs"));
         let since = match optional_u64(args, "sinceSequence") {
             Some(sequence) => Some(StatusMark {
-                run_ordinal: i64::MIN,
-                sequence: sequence as i64,
+                run_ordinal: optional_u64(args, "sinceRunOrdinal")
+                    .and_then(|value| i64::try_from(value).ok())
+                    .unwrap_or(i64::MIN),
+                sequence: i64::try_from(sequence).unwrap_or(i64::MAX),
             }),
             None => self.baselines.get(&session_id).copied(),
         };
@@ -1562,10 +1583,22 @@ impl Toolbox {
                     "outputFallbackReason": previous.fallback_reason,
                     "outputIncomplete": false,
                     "alreadySettled": true,
+                    "continuation": false,
+                    "stillRunning": false,
+                    "nextAction": Value::Null,
                 }));
             }
         }
         let outcome = self.ops.wait_for_task(&session_id, timeout, since)?;
+        let still_running = outcome.state == "timeout"
+            && self
+                .ops
+                .summary(&session_id)
+                .map(|summary| {
+                    matches!(summary.lifecycle.as_str(), "running" | "creating")
+                        && summary.host_alive
+                })
+                .unwrap_or(false);
         // Only a real turn boundary clears the baseline and is remembered. A
         // quiet-window verdict is a guess: caching it would turn silence into
         // a confident "finished" on the next call.
@@ -1604,13 +1637,24 @@ impl Toolbox {
             "outputSource": outcome.tail_source,
             "outputFallbackReason": outcome.fallback_reason,
             "outputIncomplete": outcome.incomplete,
+            // A timeout is a continuation point, not a completion answer. The
+            // caller must wait again for the same turn; read_output is only
+            // progress evidence and must not decide completion.
+            "continuation": outcome.state == "timeout",
+            "stillRunning": still_running,
+            "nextAction": if outcome.state == "timeout" {
+                json!("wait_for_task")
+            } else {
+                Value::Null
+            },
         }))
     }
 
     /// Wait for several Sessions using the exact single-session wait path. The
     /// loop is deliberately bounded and ordered so baselines, settled replies,
-    /// attachments and ownership remain in one Toolbox; failures are isolated
-    /// to their item and never terminate a successful Session.
+    /// attachments and ownership remain in one Toolbox. The timeout is a
+    /// shared request budget, not a per-item multiplier: a batch must return
+    /// before the caller's MCP deadline even when several Sessions are slow.
     fn wait_for_tasks(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let tasks = args
             .get("tasks")
@@ -1622,9 +1666,8 @@ impl Toolbox {
                 format!("tasks must contain at most {MAX_BATCH_ITEMS} items"),
             ));
         }
-        let timeout = optional_u64(args, "timeoutMs")
-            .unwrap_or(DEFAULT_WAIT_MS)
-            .clamp(1_000, MAX_WAIT_MS);
+        let timeout = wait_timeout_ms(optional_u64(args, "timeoutMs"));
+        let deadline = Instant::now() + Duration::from_millis(timeout);
         let mut results = Vec::with_capacity(tasks.len());
         let mut succeeded = 0usize;
 
@@ -1634,13 +1677,32 @@ impl Toolbox {
             let outcome = match task_map {
                 Some(map) => match require_str(map, "sessionId") {
                     Ok(session_id) => {
-                        let mut wait_args = Map::new();
-                        wait_args.insert("sessionId".into(), Value::String(session_id));
-                        if let Some(since) = map.get("sinceSequence") {
-                            wait_args.insert("sinceSequence".into(), since.clone());
+                        let remaining = deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis() as u64;
+                        if remaining < 1_000 {
+                            match self.require_owned(&session_id) {
+                                Ok(()) => Ok(batch_timeout_continuation(
+                                    &session_id,
+                                    "the shared batch wait budget was exhausted before this Session",
+                                )),
+                                Err(failure) => Err(failure),
+                            }
+                        } else {
+                            let mut wait_args = Map::new();
+                            wait_args.insert("sessionId".into(), Value::String(session_id));
+                            if let Some(since) = map.get("sinceSequence") {
+                                wait_args.insert("sinceSequence".into(), since.clone());
+                            }
+                            if let Some(run_ordinal) = map.get("sinceRunOrdinal") {
+                                wait_args.insert("sinceRunOrdinal".into(), run_ordinal.clone());
+                            }
+                            wait_args.insert(
+                                "timeoutMs".into(),
+                                json!(timeout.min(remaining).clamp(1_000, MAX_WAIT_MS)),
+                            );
+                            self.wait_for_task(&wait_args)
                         }
-                        wait_args.insert("timeoutMs".into(), json!(timeout));
-                        self.wait_for_task(&wait_args)
                     }
                     Err(failure) => Err(failure),
                 },
@@ -1782,6 +1844,7 @@ impl Toolbox {
         self.require_owned(&session_id)?;
         let grace = optional_u64(args, "graceMs").unwrap_or(1_500);
         let group_cleaned = self.ops.stop(&session_id, grace)?;
+        self.ops.forget_prompt(&session_id);
         self.baselines.remove(&session_id);
         self.settled.remove(&session_id);
         // Ownership is kept: the Session row still exists (terminated, not
@@ -1805,6 +1868,7 @@ impl Toolbox {
                 session_id: session_id.clone(),
             })
             .map_err(ToolFailure::from)?;
+        self.ops.forget_prompt(&session_id);
         self.baselines.remove(&session_id);
         self.settled.remove(&session_id);
         self.ops.detach(&session_id);
@@ -1874,6 +1938,7 @@ impl Toolbox {
             })
             .map_err(ToolFailure::from)?;
         self.ops.detach(&session_id);
+        self.ops.forget_prompt(&session_id);
         self.created_here.remove(&session_id);
         self.baselines.remove(&session_id);
         self.settled.remove(&session_id);
@@ -2099,6 +2164,27 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+fn batch_timeout_continuation(session_id: &str, evidence: &str) -> Value {
+    json!({
+        "sessionId": session_id,
+        "state": "timeout",
+        "source": "batch_budget",
+        "confidence": "low",
+        "evidence": evidence,
+        "waitedMs": 0,
+        "reply": Value::Null,
+        "replyTruncated": false,
+        "replyUnavailableReason": "the turn was not observed within this batch request",
+        "outputTail": "",
+        "outputSource": "stream",
+        "outputFallbackReason": Value::Null,
+        "outputIncomplete": false,
+        "continuation": true,
+        "stillRunning": Value::Null,
+        "nextAction": "wait_for_task"
+    })
+}
+
 fn batch_item_success(index: usize, task_id: Option<&str>, value: Value) -> Value {
     let mut result = value.as_object().cloned().unwrap_or_else(Map::new);
     result.insert("index".into(), json!(index));
@@ -2149,6 +2235,12 @@ fn optional_str(args: &Map<String, Value>, key: &str) -> Option<String> {
 
 fn optional_u64(args: &Map<String, Value>, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
+}
+
+fn wait_timeout_ms(requested: Option<u64>) -> u64 {
+    requested
+        .unwrap_or(DEFAULT_WAIT_MS)
+        .clamp(1_000, MAX_WAIT_MS)
 }
 
 #[cfg(test)]
@@ -2292,6 +2384,12 @@ mod tests {
             wait["properties"]["timeoutMs"]["default"],
             json!(DEFAULT_WAIT_MS)
         );
+        assert_eq!(
+            wait["properties"]["timeoutMs"]["maximum"],
+            json!(MAX_WAIT_MS)
+        );
+        assert_eq!(wait_timeout_ms(Some(600_000)), MAX_WAIT_MS);
+        assert_eq!(wait_timeout_ms(Some(0)), 1_000);
     }
 
     #[test]

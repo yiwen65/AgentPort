@@ -65,9 +65,9 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `create_session` | 建单个 Session；可传一个 `roleId` 选择已启用角色；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
 | `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId`；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
-| `wait_for_task` | 等单个当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 + **`reply`（本轮助手的回答原文）** |
-| `wait_for_tasks` | 一次等待多个 MCP-owned Session；每项返回与 `wait_for_task` 相同的 state/confidence/evidence/reply/fallback 字段 |
-| `read_output` | 按 `source` 读取：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）+ 行数与 `truncated`/`limited` 标注 |
+| `wait_for_task` | 等当前委派回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout`、依据和**本轮最终 `reply`**；`timeout` 是继续等待的结构化结果，应再次调用本工具，不要用 `read_output` 判断完成 |
+| `wait_for_tasks` | 一次等待多个 MCP-owned Session；每项返回与 `wait_for_task` 相同的 state/confidence/evidence/reply/fallback 字段（共享单次请求预算） |
+| `read_output` | 读取进度/输出证据：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）；不是回合完成信号 |
 | `cancel_turn` | 发 Ctrl-C，会话保留 |
 | `terminate_session` | 停止并清理整个进程组；会话记录仍在（可恢复） |
 | `archive_session` | 从侧栏移出并停止；历史保留，可在 App 里取消归档 |
@@ -82,7 +82,7 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 ```text
 list_roles       {}
 create_session  {agent: "claude", roleId: "role_implementer", projectPath: "/repo", title: "fix flaky test", prompt: "..."}
-wait_for_task  {sessionId: "...", timeoutMs: 600000}
+wait_for_task  {sessionId: "..."}  // 默认 45s；超时后继续调用本工具
 ```
 
 批量委派优先使用两次调用，减少模型轮次；`wait_for_tasks` 已返回每个 Session 的 `reply`，成功时不需要再调用 `read_output`。完成任务也不要自动 `terminate_session`，Session 会保留给用户查看或继续接管：
@@ -100,7 +100,7 @@ wait_for_tasks {
     {taskId: "lint", sessionId: "...", sinceSequence: 12},
     {taskId: "tests", sessionId: "...", sinceSequence: 8}
   ],
-  timeoutMs: 600000
+  timeoutMs: 45000
 }
 ```
 
@@ -139,13 +139,17 @@ MCP servers，此时打进去的字会被丢弃）。所以：
   信任/登录弹窗"）。正常路径下调用方**不需要**手工重发。
 
 **完成判定**：`wait_for_task` 先看 `needs_input`（Agent 在等审批，这是委派最常见的死结），
-再看 `state` 帧上的 `working → idle` 迁移与 `exited`。`create_session`/`send_prompt` 会返回
-`statusSequence`，`wait_for_task` 只承认**比它更新**的状态迁移，所以"发出任务后 0.9 秒就报空闲"
-这种误判不会再出现；也可以显式传 `sinceSequence`。
+再看**本次 prompt 之后**的 `state` 帧上的 `working → idle` 迁移与 `exited`。`create_session`/`send_prompt` 会返回
+`statusSequence` / `statusRunOrdinal`，MCP 同时保留完整的 run/sequence 基线，只承认**比它更新**的状态迁移，所以"发出任务后 0.9 秒就报空闲"
+这种误判不会再出现；也可以显式传配对的 `sinceSequence` + `sinceRunOrdinal`。
 
-只有当这个 Agent 完全不提供回合信号（例如 Shell：状态只是进程事实）时才退回到"终端静默 3.5 秒"，
+每次同步等待最多 45 秒，低于常见 MCP 客户端的 60 秒请求期限。长任务返回 `state: "timeout"`、
+`stillRunning` 和 `nextAction: "wait_for_task"`；保持同一个 Session 和 prompt，不要重新发送，也不要改用
+`read_output` 冒充完成判断，继续调用 `wait_for_task`，直到拿到本轮 `reply`。
+
+只有当这个 Agent 完全不提供回合信号（例如 Shell：状态只是进程事实）时才退回到"终端静默 4 秒"，
 并且一律报 `confidence: "low"` 与 `source: "quiet_window"`，不会把不确定当成完成。
-重复调用 `wait_for_task` 会直接返回上一次已结算的结论（`alreadySettled: true`），不会重新等满超时。
+重复调用 `wait_for_task` 对已有最终 reply 的高置信结论直接返回 `alreadySettled: true`。
 
 **输出读取**（对齐 Orca 的三层设计）：
 
@@ -155,10 +159,9 @@ MCP servers，此时打进去的字会被丢弃）。所以：
 | `stream` | 从 Host 日志按**不透明游标**继续读行；先不带游标读一次，后续用返回的 `nextCursor` 续读，不会把两段不相干的窗口拼起来 |
 | `transcript` | 读 Agent 自己的历史（Claude/Codex/Pi 的 JSONL），会话结束后仍然可读；没有历史时返回 `transcript-unavailable` + `fallbackReason` |
 
-`source: "reply"` 只给**本轮**助手的回答：从原生历史倒着走，跳过 tool 事件、遇到我们发出的那条
-user 消息就停——所以 tool result 和 thinking 永远不会混进来（thinking 在解析层就被丢弃）。
-`wait_for_task` 的 `reply` 字段就是这个东西；拿不到时给 `replyUnavailableReason`，并用
-`outputTail`（screen/stream）作为证据兜底。
+`source: "reply"` 只给**本轮**助手的回答：从原生历史倒着走，必须匹配本次 prompt 的 user 消息，再跳过 tool 事件
+和 thinking；没有匹配的 prompt fence 时不会泄漏上一轮答案。`wait_for_task` 的 `reply` 字段就是这个东西；
+拿不到时给 `replyUnavailableReason`，并用 `outputTail`（screen/stream）作为进度证据兜底。
 
 返回 `{source, lines[], returnedLineCount, truncated, limited, nextCursor}`：`truncated` 表示为了 `limit`
 丢掉了更早的行，`limited` 表示 Host 无法兑现游标（日志轮转或 resync）；`incomplete: true` 表示有缺口，

@@ -27,11 +27,16 @@ pub const ATTACH_REPLAY_BYTES: u64 = 65_537;
 /// Attachments held at once. The service允许 32; we keep far fewer and detach
 /// the least recently used so a long-lived server cannot exhaust them.
 const MAX_ATTACHMENTS: usize = 8;
-/// Upper bound for one tool call's completion wait.
-pub const MAX_WAIT_MS: u64 = 600_000;
-/// Default stays below a typical MCP client request timeout (60 s). The server
-/// handles one request at a time, so a wait that outlives the client's timeout
-/// reports "unknown outcome" and blocks every later call behind it.
+/// Upper bound for one synchronous tool call's completion wait.
+///
+/// The stdio server handles one request at a time. Keep this below the common
+/// 60-second MCP client deadline so a long turn returns a structured `timeout`
+/// that the caller can continue with another wait instead of becoming an
+/// unobservable transport outcome.
+pub const MAX_WAIT_MS: u64 = 45_000;
+/// Default stays below a typical MCP client request timeout (60 s). Long turns
+/// must be continued with another `wait_for_task` call; the baseline remains
+/// live until a real turn boundary is observed.
 pub const DEFAULT_WAIT_MS: u64 = 45_000;
 /// Gap between the prompt text and its Enter keypress. See `deliver_prompt`.
 const ENTER_GAP: Duration = Duration::from_millis(150);
@@ -43,9 +48,9 @@ const MAX_TYPE_ATTEMPTS: u32 = 4;
 /// How long a `process`-only status is treated as "still starting".
 const STARTUP_GRACE: Duration = Duration::from_millis(6_000);
 const MAX_ENTER_RETRIES: u32 = 2;
-/// Quiet window before calling a Shell Session finished: a command that printed
-/// nothing for four seconds after Enter is done, and the Shell has no other
-/// signal to offer.
+/// Quiet window after the Shell prompt returns. The prompt proves the command
+/// ended; the quiet period avoids returning while the terminal is still
+/// repainting.
 const QUIET_SHELL: Duration = Duration::from_millis(4_000);
 /// Quiet window for a coding Agent that never reported a turn boundary. Models
 /// routinely think for many seconds without a byte of output, so this only
@@ -202,6 +207,9 @@ pub struct StateObservation {
     pub source: String,
     pub confidence: String,
     pub evidence: Option<String>,
+    /// Durable status position carried by Host state events. A wait with a
+    /// prompt baseline must never settle on an older replayed state.
+    pub mark: Option<StatusMark>,
     pub observed_at: Option<Instant>,
 }
 
@@ -254,6 +262,15 @@ impl StreamState {
                     let Some(state) = event.payload.get("state").and_then(|v| v.as_str()) else {
                         continue;
                     };
+                    let mark = event
+                        .payload
+                        .get("run_ordinal")
+                        .and_then(|value| value.as_i64())
+                        .zip(event.payload.get("sequence").and_then(|value| value.as_i64()))
+                        .map(|(run_ordinal, sequence)| StatusMark {
+                            run_ordinal,
+                            sequence,
+                        });
                     self.latest_state = Some(StateObservation {
                         state: state.to_string(),
                         source: event
@@ -273,6 +290,7 @@ impl StreamState {
                             .get("evidence")
                             .and_then(|v| v.as_str())
                             .map(str::to_owned),
+                        mark,
                         observed_at: Some(Instant::now()),
                     });
                 }
@@ -339,6 +357,13 @@ impl StatusMark {
     }
 }
 
+/// A status without a durable mark cannot prove that it belongs to the turn
+/// being waited for. That is safe for an unbaselined status query, but not for
+/// a prompt-specific wait.
+fn mark_is_fresh(mark: Option<StatusMark>, since: Option<StatusMark>) -> bool {
+    since.is_none_or(|baseline| mark.is_some_and(|mark| mark.is_newer_than(baseline)))
+}
+
 /// Result of `wait_for_task`.
 #[derive(Debug, Clone)]
 pub struct WaitOutcome {
@@ -363,6 +388,10 @@ pub struct WaitOutcome {
 pub struct SessionOps {
     service: Arc<dyn RemoteService>,
     attachments: Attachments,
+    /// Short fence from the latest prompt this MCP submitted. Native history
+    /// can contain several turns; the fence prevents a previous answer from
+    /// being returned as the current turn's reply.
+    prompt_fences: HashMap<String, String>,
     batch_sequence: u64,
 }
 
@@ -371,8 +400,20 @@ impl SessionOps {
         SessionOps {
             service,
             attachments: Attachments::default(),
+            prompt_fences: HashMap::new(),
             batch_sequence: 0,
         }
+    }
+
+    /// Remember enough of the prompt to identify its user event in native
+    /// history without retaining the full task text in the MCP process.
+    pub fn remember_prompt(&mut self, session_id: &str, prompt: &str) {
+        let fence: String = prompt.chars().take(64).collect();
+        self.prompt_fences.insert(session_id.to_string(), fence);
+    }
+
+    pub fn forget_prompt(&mut self, session_id: &str) {
+        self.prompt_fences.remove(session_id);
     }
 
     /// Direct service access for tools that only query the service layer.
@@ -628,6 +669,20 @@ impl SessionOps {
             .and_then(|tail| detect_blocking_prompt(&tail).map(str::to_string))
     }
 
+    fn shell_prompt_after_prompt(&mut self, session_id: &str, stream: &StreamState) -> bool {
+        let Some(fence) = self.prompt_fences.get(session_id).cloned() else {
+            return false;
+        };
+        if shell_prompt_after_fence(&stream.tail, &fence) {
+            return true;
+        }
+        self.read_screen(session_id, text::DEFAULT_READ_LINES)
+            .ok()
+            .is_some_and(|screen| {
+                screen.source == "screen" && shell_prompt_after_fence(&screen.text(), &fence)
+            })
+    }
+
     /// Drain anything already buffered without waiting.
     fn drain(&mut self, session_id: &str) -> TResult<usize> {
         let mut seen = 0;
@@ -872,8 +927,8 @@ impl SessionOps {
     /// 1. an attention event: `needs_input` (approval) or `turn_completed`;
     /// 2. a hook/adapter `idle`, which is a turn boundary;
     /// 3. the lifecycle, for an ended Session;
-    /// 4. terminal quiet — for a Generic Shell only, where silence really does
-    ///    mean the command finished.
+    /// 4. terminal quiet after a returned shell prompt — for a Generic Shell
+    ///    only, where the prompt proves the command finished.
     ///
     /// A PTY `idle` is *not* a boundary: the Host reports it after three
     /// seconds of silence, which is exactly what a model thinking looks like.
@@ -891,6 +946,8 @@ impl SessionOps {
         let mut saw_turn_source = false;
         let watching_since = Instant::now();
         let mut last_dialog_check = Instant::now();
+        let mut last_shell_prompt_check = Instant::now();
+        let mut shell_prompt_returned = false;
         loop {
             let summary = self.summary(session_id)?;
             let terminal = matches!(
@@ -909,7 +966,16 @@ impl SessionOps {
                 ));
             }
             let attention = summary.latest_attention_kind.as_deref();
-            if attention == Some("approval_requested") {
+            let attention_fresh = summary.latest_status.as_ref().is_some_and(|status| {
+                mark_is_fresh(
+                    Some(StatusMark {
+                        run_ordinal: status.run_ordinal,
+                        sequence: status.sequence,
+                    }),
+                    since,
+                )
+            });
+            if attention == Some("approval_requested") && attention_fresh {
                 return Ok(self.settle(
                     session_id,
                     "needs_input",
@@ -925,11 +991,11 @@ impl SessionOps {
                     run_ordinal: status.run_ordinal,
                     sequence: status.sequence,
                 };
-                let fresh = since.is_none_or(|baseline| mark.is_newer_than(baseline));
+                let fresh = mark_is_fresh(Some(mark), since);
                 let turn_source = matches!(status.source.as_str(), "hook" | "adapter");
                 saw_turn_source |= turn_source;
                 match status.state.as_str() {
-                    "needs_input" => {
+                    "needs_input" if fresh => {
                         return Ok(self.settle(
                             session_id,
                             "needs_input",
@@ -940,7 +1006,7 @@ impl SessionOps {
                             started,
                         ))
                     }
-                    "exited" => {
+                    "exited" if fresh => {
                         return Ok(self.settle(
                             session_id,
                             "exited",
@@ -952,14 +1018,17 @@ impl SessionOps {
                         ))
                     }
                     // A hook/adapter idle is a turn boundary. So is a
-                    // completion classifier, whatever its state source.
+                    // completion classifier, whatever its state source. An
+                    // older idle/attention status is only the pre-prompt
+                    // baseline and must not settle this turn.
                     "idle"
-                        if attention == Some("turn_completed")
-                            || turn_source
-                            // No prompt is pending and nothing moved since we
-                            // attached: the caller is asking about a turn that
-                            // is already over.
-                            || (since.is_none() && stream.latest_state.is_none()) =>
+                        if fresh
+                            && (attention == Some("turn_completed")
+                                || turn_source
+                                // No prompt is pending and nothing moved since we
+                                // attached: the caller is asking about a turn that
+                                // is already over.
+                                || (since.is_none() && stream.latest_state.is_none())) =>
                     {
                         let evidence = if attention == Some("turn_completed") {
                             "turn completion reported after the prompt".to_string()
@@ -1004,9 +1073,10 @@ impl SessionOps {
             }
             if let Some(state) = stream.latest_state.clone() {
                 let turn_source = matches!(state.source.as_str(), "hook" | "adapter");
+                let fresh = mark_is_fresh(state.mark, since);
                 saw_turn_source |= turn_source;
                 match state.state.as_str() {
-                    "needs_input" => {
+                    "needs_input" if fresh => {
                         return Ok(self.settle(
                             session_id,
                             "needs_input",
@@ -1019,7 +1089,7 @@ impl SessionOps {
                             started,
                         ))
                     }
-                    "exited" => {
+                    "exited" if fresh => {
                         return Ok(self.settle(
                             session_id,
                             "exited",
@@ -1030,7 +1100,7 @@ impl SessionOps {
                             started,
                         ))
                     }
-                    "idle" if turn_source => {
+                    "idle" if turn_source && fresh => {
                         return Ok(self.settle(
                             session_id,
                             "idle",
@@ -1045,15 +1115,19 @@ impl SessionOps {
                 }
             }
 
-            // Only a Shell has "silence means the command finished". For a
-            // coding Agent silence is equally consistent with a trust prompt
-            // and with a model thinking, so the caller gets its honestly
-            // labelled timeout instead of a guess.
-            let working = stream
-                .latest_state
-                .as_ref()
-                .is_some_and(|state| state.state == "working");
-            if summary.adapter_type == "shell" && !saw_turn_source && !working {
+            // Only a Shell has a prompt that can prove its command returned.
+            // Silence alone is not enough: `sleep 50` is still running even
+            // though the PTY has been quiet for several seconds. Check the
+            // current VT grid as well as the stream because a Shell prompt can
+            // be painted without a durable output event.
+            if !shell_prompt_returned
+                && last_shell_prompt_check.elapsed() >= DIALOG_CHECK
+            {
+                last_shell_prompt_check = Instant::now();
+                shell_prompt_returned = self.shell_prompt_after_prompt(session_id, &stream);
+            }
+            if summary.adapter_type == "shell" && !saw_turn_source && shell_prompt_returned
+            {
                 if let Some(at) = stream.last_activity_at().or(Some(watching_since)) {
                     if at.elapsed() >= QUIET_SHELL {
                         return Ok(self.settle(
@@ -1062,7 +1136,7 @@ impl SessionOps {
                             "quiet_window",
                             "low",
                             format!(
-                                "Generic Shell command finished; quiet for {}ms",
+                                "Generic Shell prompt returned; quiet for {}ms",
                                 at.elapsed().as_millis()
                             ),
                             &stream,
@@ -1399,11 +1473,16 @@ impl SessionOps {
     /// that is the prompt we sent. Nothing about tool output or reasoning can
     /// leak into the answer because neither is an assistant text event.
     pub fn read_reply(&mut self, session_id: &str, max_bytes: usize) -> TResult<ReplyOutcome> {
+        let Some(prompt_fence) = self.prompt_fences.get(session_id).cloned() else {
+            return Ok(ReplyOutcome::unavailable(Some(
+                "this MCP process has no submitted prompt fence for the Session".into(),
+            )));
+        };
         let transcript = self.read_transcript_events(session_id, 80)?;
         if !transcript.available {
             return Ok(ReplyOutcome::unavailable(transcript.reason));
         }
-        let reply = last_assistant_turn(&transcript.events);
+        let reply = last_assistant_turn(&transcript.events, Some(&prompt_fence));
         if reply.trim().is_empty() {
             return Ok(ReplyOutcome {
                 text: String::new(),
@@ -1439,6 +1518,32 @@ fn decode_cursor(cursor: &str) -> TResult<RunCursor> {
         .map_err(|_| ToolFailure::new("invalid_cursor", "cursor is not a value this server issued"))?;
     serde_json::from_slice(&bytes)
         .map_err(|_| ToolFailure::new("invalid_cursor", "cursor is not a value this server issued"))
+}
+
+fn shell_prompt_after_fence(tail: &str, fence: &str) -> bool {
+    let Some(start) = tail.rfind(fence) else {
+        return false;
+    };
+    tail[start + fence.len()..]
+        .lines()
+        .any(is_shell_prompt_line)
+}
+
+fn is_shell_prompt_line(line: &str) -> bool {
+    let line = line.trim();
+    let Some(marker) = line.chars().last() else {
+        return false;
+    };
+    if !matches!(marker, '$' | '#' | '%') {
+        return false;
+    }
+    let prefix = &line[..line.len() - marker.len_utf8()];
+    !prefix.is_empty()
+        && (prefix.starts_with("sh-")
+            || prefix.starts_with("bash")
+            || prefix.starts_with("zsh")
+            || prefix.contains('@')
+            || prefix.contains(':'))
 }
 
 fn settle(
@@ -1582,11 +1687,13 @@ impl ReplyOutcome {
 }
 
 /// Assistant text of the newest turn, reading the events backwards.
-fn last_assistant_turn(events: &[TranscriptEvent]) -> String {
+fn last_assistant_turn(events: &[TranscriptEvent], prompt_fence: Option<&str>) -> String {
     let mut collected: Vec<&str> = Vec::new();
+    let mut found_prompt = false;
     for event in events.iter().rev() {
         match event.role.as_str() {
-            "assistant" if event.kind.is_empty() || event.kind == "assistant" => {
+            "assistant"
+                if !event.kind.contains("tool") && !event.kind.contains("thinking") => {
                 if !event.text.trim().is_empty() {
                     collected.push(event.text.trim());
                 }
@@ -1595,10 +1702,18 @@ fn last_assistant_turn(events: &[TranscriptEvent]) -> String {
             // not end the walk: an agent that used tools still answered.
             "tool" => continue,
             "system" => continue,
-            // The prompt we sent is the turn boundary.
-            "user" => break,
+            // The prompt we sent is the turn boundary. Without seeing it in
+            // the bounded history page, collected text could be the previous
+            // turn's answer and must not be returned as this turn's reply.
+            "user" => {
+                found_prompt = prompt_fence.is_none_or(|fence| event.text.contains(fence));
+                break;
+            }
             _ => continue,
         }
+    }
+    if !found_prompt {
+        return String::new();
     }
     collected.reverse();
     collected.join("\n\n")
@@ -1623,15 +1738,80 @@ mod tests {
             event("tool", "tool", "Bash echo hi"),
             event("assistant", "assistant", "first part"),
             event("tool", "tool", "Bash npm test"),
+            event("assistant", "message", "message-shaped answer"),
             event("assistant", "assistant", "final answer"),
         ];
         // Only this turn's assistant text, tool calls skipped, prompt excluded.
-        assert_eq!(last_assistant_turn(&events), "first part\n\nfinal answer");
+        assert_eq!(
+            last_assistant_turn(&events, None),
+            "first part\n\nmessage-shaped answer\n\nfinal answer"
+        );
         // Our prompt is the newest event: the turn has not answered yet, so
         // there is no reply (never the previous turn's answer).
-        assert_eq!(last_assistant_turn(&events[..3]), "");
+        assert_eq!(last_assistant_turn(&events[..3], None), "");
         let only_prompt = vec![event("user", "message", "prompt")];
-        assert_eq!(last_assistant_turn(&only_prompt), "");
+        assert_eq!(last_assistant_turn(&only_prompt, None), "");
+        // A page that starts after the prompt must not leak the previous
+        // assistant answer as if it belonged to the current turn.
+        assert_eq!(last_assistant_turn(&events[1..2], None), "");
+        assert_eq!(
+            last_assistant_turn(&events, Some("the prompt we sent")),
+            "first part\n\nmessage-shaped answer\n\nfinal answer"
+        );
+        assert_eq!(last_assistant_turn(&events, Some("a different prompt")), "");
+    }
+
+    #[test]
+    fn state_events_keep_their_durable_status_mark() {
+        let mut stream = StreamState::default();
+        stream.absorb(&[SessionEvent {
+            event_type: "state".into(),
+            cursor: RunCursor {
+                run_id: "run_2".into(),
+                run_ordinal: 2,
+                generation: 0,
+                offset: 0,
+                status_sequence: 7,
+            },
+            payload: serde_json::json!({
+                "run_ordinal": 2,
+                "sequence": 7,
+                "state": "idle",
+                "source": "hook",
+                "confidence": "high"
+            }),
+        }]);
+        assert_eq!(
+            stream.latest_state.as_ref().and_then(|state| state.mark),
+            Some(StatusMark {
+                run_ordinal: 2,
+                sequence: 7
+            })
+        );
+        assert!(mark_is_fresh(
+            Some(StatusMark {
+                run_ordinal: 2,
+                sequence: 7
+            }),
+            Some(StatusMark {
+                run_ordinal: 2,
+                sequence: 6
+            })
+        ));
+        assert!(!mark_is_fresh(
+            Some(StatusMark {
+                run_ordinal: 2,
+                sequence: 6
+            }),
+            Some(StatusMark {
+                run_ordinal: 2,
+                sequence: 7
+            })
+        ));
+        assert!(!mark_is_fresh(None, Some(StatusMark {
+            run_ordinal: 2,
+            sequence: 7
+        })));
     }
 
     #[test]
@@ -1664,6 +1844,21 @@ mod tests {
         assert_eq!(outcome.text(), "one\ntwo");
         assert!(ReadOutcome::unavailable("screen-unavailable").lines.is_empty());
         assert!(ReadOutcome::ended().ended);
+    }
+
+    #[test]
+    fn shell_completion_requires_a_prompt_after_the_command() {
+        assert!(!shell_prompt_after_fence(
+            "sh-3.2$ sleep 50; echo DONE\n",
+            "sleep 50; echo DONE"
+        ));
+        assert!(shell_prompt_after_fence(
+            "sh-3.2$ echo DONE\nDONE\nsh-3.2$\n",
+            "echo DONE"
+        ));
+        assert!(is_shell_prompt_line("sh-3.2$"));
+        assert!(is_shell_prompt_line("user@host:~/repo$"));
+        assert!(!is_shell_prompt_line("DONE$ output"));
     }
 
     #[test]
