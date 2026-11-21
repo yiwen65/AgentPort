@@ -3,7 +3,7 @@
 - Created: 2026-11-22
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: Confirmed user requirement: the coordinating model should see all enabled Role names/descriptions, choose a Role explicitly when appropriate, or omit Role when none applies; full instructions load progressively only after that choice.
 
 <!-- task-doc-section:background-goal -->
@@ -47,6 +47,7 @@ The current MCP supports Role use only when the caller already knows and passes 
 ## Assumptions and open questions
 
 - Assumption: Dynamic metadata is appended to delegation-tool descriptions at each `tools/list` request, so settings changes are visible without loading full instructions or requiring a prior `list_roles` call.
+- Assumption: The v22 no-op schema marker is retained only to open local databases created during the superseded trigger experiment; the active Role model does not read or expose that experiment's extra column.
 - Assumption: Explicit `roleId` remains the sole selection signal. Omission means no Role, including when the task text happens to resemble a Role description.
 - Assumption: Metadata contains `roleId`, name, description, enabled/revision and optional output-contract summary; `instructions` never appears in metadata.
 - Open question: None after the user confirmed dynamic `tools/list` exposure, model-owned selection, and removal of trigger-based matching.
@@ -80,7 +81,7 @@ The current MCP supports Role use only when the caller already knows and passes 
 - Objective: Add a metadata type and DB/service query that excludes full Role instructions.
 - Inputs and prerequisites: Existing AgentRole schema and local service boundary.
 - Scope or files: `crates/agentport-core/src/agent_roles.rs`, `crates/agentport-core/src/db/mod.rs`, `crates/agentport-service/src/lib.rs`, focused tests.
-- Expected output: Metadata-only query/API, no schema migration, explicit full lookup unchanged.
+- Expected output: Metadata-only query/API, a no-op v22 compatibility marker for the superseded local trigger experiment, and explicit full lookup unchanged.
 - Dependencies: None.
 - Execution steps:
   1. Add `AgentRoleMetadata` without instructions.
@@ -92,7 +93,7 @@ The current MCP supports Role use only when the caller already knows and passes 
 - Verification method:
   - `cargo test -p agentport-core --lib`
   - `cargo test -p agentport-service --lib`
-- Validation evidence: `cargo test -p agentport-core --lib` passed 472 tests (2 ignored); `cargo test -p agentport-service --lib` passed 73 tests. The metadata projection and full lookup both compile and pass.
+- Validation evidence: `cargo test -p agentport-core --lib` passed 472 tests (2 ignored); `cargo test -p agentport-service --lib` passed 73 tests. The metadata projection and full lookup both compile and pass. The v22 no-op compatibility marker keeps the existing local debug database readable without exposing trigger data.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -121,9 +122,9 @@ The current MCP supports Role use only when the caller already knows and passes 
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-003 — Integrated validation, commit, and Debug App delivery
+### [x] T-003 — Integrated validation, commit, and Debug App delivery
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: Run final checks for the corrected model-selected design, commit task-only changes, and deliver the rebuilt debug application.
 - Inputs and prerequisites: T-001 and T-002 done.
@@ -143,7 +144,7 @@ The current MCP supports Role use only when the caller already knows and passes 
   - Focused Rust/frontend tests/build.
   - `python3 scripts/test-agentport-mcp.py`.
   - Prescribed Debug App restart and CUA verification.
-- Validation evidence: Not run.
+- Validation evidence: Core 472 tests (2 ignored), Service 73 tests, MCP 41 tests, Remote Bridge check, frontend build and i18n check, and final MCP E2E all passed. `cargo build -p agentport-cli` refreshed the CLI used by E2E after the schema compatibility marker. `python3 scripts/restart-debug-app.py` rebuilt/signed/opened the Debug App; the current GUI PID 93989 was verified at the exact GUI path, with CUA confirming a populated 1366×911 nonblank window.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -176,10 +177,12 @@ The current MCP supports Role use only when the caller already knows and passes 
 - 2026-11-22: Revised contract confirmed: dynamic tools/list metadata, explicit model-provided roleId, omission means no Role, and no trigger field/migration.
 - 2026-11-22: T-001 completed: added instruction-free Core/Service metadata loading without a schema migration.
 - 2026-11-22: T-002 completed: added dynamic delegation-tool metadata and server regression coverage; restored explicit-only selection semantics.
+- 2026-11-22: Rebuilt the current MCP/CLI binaries before E2E; this avoided the stale-v21 CLI/schema-v22 false failure encountered during the superseded design attempt. Final corrected-design E2E passed.
+- 2026-11-22: Removed unused metadata helper warnings and committed the final cleanup.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: not_run
-- Evidence: Not run.
-- Limitations: Final corrected-design E2E, task commit, and Debug App delivery remain incomplete.
+- Result: passed
+- Evidence: The corrected model-selected Role design is implemented and committed in `325e639`, cleanup `66aadad`, and schema compatibility `ff09f97`. Core/Service/MCP tests, Remote Bridge check, frontend build/i18n check, final MCP E2E, task validation, and Debug App rendering verification passed. `tools/list` now exposes enabled Role metadata to the model; full instructions remain behind explicit `roleId` lookup.
+- Limitations: Existing MCP clients that cache `tools/list` may need to refresh their tool registry to see Role metadata changes. The CUA accessibility tree exposes only native window chrome, so nonblank proof relies on the captured populated window image.

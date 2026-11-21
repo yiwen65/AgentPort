@@ -431,6 +431,12 @@ pub mod schema {
         CREATE INDEX idx_agent_roles_enabled_name
             ON agent_roles(enabled, name);
         "#,
+        // v21 -> v22: compatibility marker for databases created by the
+        // superseded Role-trigger experiment. The active model ignores its
+        // extra column, so new databases need no additional table change.
+        r#"
+        SELECT 1;
+        "#,
     ];
 }
 
