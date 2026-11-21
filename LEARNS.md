@@ -338,6 +338,15 @@
 - Prevention: Keep separate argv regressions for launch and resume, and verify a packaged Debug App restart against a real Qoder transcript rather than inferring semantics from the shared ID value.
 - Verified by: The argv regression failed before the adapter change and Qoder tests pass 5/5 afterward; the same previously failing Session runs with `--resume <id>`, preserves its prior message, reaches Ready, and remains alive past the old failure window.
 
+## `AgentPort MCP sidecar lifecycle` — rebuilds do not update an existing Agent client
+
+- Wrong approach: Inspect the current source or rebuilt `.app` sidecar and assume an already-running Agent's stdio MCP process is using it.
+- Why it failed: The parent Agent keeps one `agentport-mcp` process alive for its MCP connection; it loaded the old binary before the prompt-evidence fix. The old Qoder delivery path used the preamble prefix as its screen token, retried typing four times, and never sent Enter (`promptAttempts=4`, `enterRetries=0`, `promptSubmitted=false`) even though the composer visibly contained text.
+- Recognition signal: `ps` shows the MCP child start time before the sidecar rebuild/commit; the tool result reports repeated typing with no Enter, while the GUI pane retains the composer text.
+- Correct approach: After changing the MCP sidecar, restart/reconnect the parent Agent's MCP client before testing; verify the child process start time and use a token from visible task text rather than a long preamble prefix.
+- Prevention: Treat the stdio MCP process as immutable for its lifetime. Include process-start/binary-version evidence in prompt-delivery debugging, and do not kill the user's Agent or Session Host as a shortcut.
+- Verified by: The same Qoder 1.1.94 workflow failed through the old sidecar and passed with the rebuilt sidecar (`promptSubmitted=true`, one attempt); the direct Qoder bundle check confirmed CR remains the submit key.
+
 ## `native backup manifest` — validate Provider semantics, not only archive paths
 
 - Wrong approach: Treat zip-slip checks, hashes, and a Provider-root enum as sufficient validation for an untrusted native-Session backup manifest.
