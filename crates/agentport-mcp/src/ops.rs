@@ -499,20 +499,9 @@ impl SessionOps {
     /// retried until the text is visible on the session, and Enter until a turn
     /// actually starts. A caller should never have to re-send by hand.
     pub fn deliver_prompt(&mut self, session_id: &str, text: &str) -> TResult<PromptDelivery> {
-        self.deliver_prompt_with_enter(session_id, text, b"\r")
-    }
-
-    /// Deliver a prompt with an adapter-specific submit key. Most PTY CLIs
-    /// accept CR as Enter; Qoder's Ink TUI v1.1.94 accepts LF instead.
-    pub fn deliver_prompt_with_enter(
-        &mut self,
-        session_id: &str,
-        text: &str,
-        submit_key: &[u8],
-    ) -> TResult<PromptDelivery> {
         // A distinctive prefix identifies our own text in the composer echo.
         let token: String = text.trim().chars().take(10).collect();
-        self.deliver_prompt_with_token_and_enter(session_id, text, &token, submit_key)
+        self.deliver_prompt_with_token(session_id, text, &token)
     }
 
     /// Deliver a prompt with a caller-supplied evidence token. Role preambles
@@ -523,16 +512,6 @@ impl SessionOps {
         session_id: &str,
         text: &str,
         evidence_token: &str,
-    ) -> TResult<PromptDelivery> {
-        self.deliver_prompt_with_token_and_enter(session_id, text, evidence_token, b"\r")
-    }
-
-    pub fn deliver_prompt_with_token_and_enter(
-        &mut self,
-        session_id: &str,
-        text: &str,
-        evidence_token: &str,
-        submit_key: &[u8],
     ) -> TResult<PromptDelivery> {
         let token: String = evidence_token.trim().chars().take(10).collect();
         let mut typed = false;
@@ -564,7 +543,7 @@ impl SessionOps {
                     attempts: attempt + 1,
                 });
             }
-            bytes += self.send_bytes(session_id, submit_key)?;
+            bytes += self.send_bytes(session_id, b"\r")?;
             entered += 1;
             match self.await_turn_start(session_id, &token)? {
                 SubmitEvidence::Started => {

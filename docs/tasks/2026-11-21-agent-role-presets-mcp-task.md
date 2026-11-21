@@ -205,7 +205,7 @@ Agent 选择、全权限默认、Session 所有权和生命周期边界的前提
 - 2026-11-21: Implemented v21 SQLite role storage, built-in seeds, revision CAS, Tauri CRUD commands, Settings UI, MCP list_roles/roleId injection, ownership snapshots, docs and tests.
 - 2026-11-21: Targeted Rust/frontend checks, MCP E2E and debug App restart/screenshot passed. Full frontend suite has one unrelated PairingSection assertion failure; recorded as a limitation.
 - 2026-11-21: Hardened role prompt submission evidence to use visible task text when a long role preamble scrolls its prefix off the TUI; MCP unit and E2E checks passed again.
-- 2026-11-21: Reproduced Qoder CLI v1.1.94 specifically: CR left the composer unsent, while LF submitted the same prompt in a temporary Session. Added Qoder-specific LF submission and regression coverage; MCP Qoder smoke returned `promptSubmitted: true`.
+- 2026-11-21: Rechecked Qoder CLI v1.1.94 input semantics and temporary Sessions: CR is the submit key; the prior LF mapping was reverted. The reported failure came from an already-running MCP sidecar launched before the visible-task-token fix in `323d040`; the rebuilt sidecar now contains that fix.
 - 2026-11-21: All role-feature tasks marked done; task document validated before delivery.
 
 <!-- task-doc-section:final-validation -->
