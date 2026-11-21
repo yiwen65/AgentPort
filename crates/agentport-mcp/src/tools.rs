@@ -664,6 +664,25 @@ impl Toolbox {
                     )
                 })?,
         };
+        // Inside a known project, "here" means that project: an Agent whose cwd
+        // is `repo/src` must not create a second project for it.
+        let normalized = agentport_core::paths::normalize_abs(&path)
+            .map_err(|error| ToolFailure::new("invalid_path", error.to_string()))?;
+        let projects = self.ops.service().list_projects().map_err(ToolFailure::from)?;
+        if let Some(enclosing) = projects
+            .iter()
+            .filter(|project| {
+                normalized == project.root_path
+                    || normalized.starts_with(&format!("{}/", project.root_path.trim_end_matches('/')))
+            })
+            .max_by_key(|project| project.root_path.len())
+        {
+            return Ok(ResolvedProject {
+                id: enclosing.id.clone(),
+                root_path: enclosing.root_path.clone(),
+                created: false,
+            });
+        }
         self.register_project(&path)
     }
 
