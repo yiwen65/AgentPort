@@ -36,11 +36,8 @@ describe("expanded document panel layout", () => {
     expect(styles).not.toContain(".doc-panel.expanded .md-preview");
   });
 
-  it("keeps a folded viewer on the same surface as the file tree", () => {
+  it("removes a folded viewer surface like an empty document workspace", () => {
     const folded = ruleBody(".doc-panel.collapsed") ?? "";
-    expect(folded).toContain("background: var(--workspace-current)");
-    const treeFolded = ruleBody(".doc-panel.collapsed.tree-open") ?? "";
-    expect(treeFolded).toContain("background-color: var(--doc-tree-surface");
-    expect(styles).toContain(".doc-panel.collapsed .doc-panel-fold-toggle");
+    expect(folded).toContain("display: none");
   });
 });
