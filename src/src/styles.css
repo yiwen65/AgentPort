@@ -105,20 +105,34 @@
      desktop. A solid smoked surface keeps the column readable without the
      glass material. `--sidebar-border` is the hairline divider,
      `--sidebar-chip` the quick-action pill. */
-  --sidebar-glass: #27272b;
-  --sidebar-glass-layers: none;
-  --sidebar-top-layer-1: transparent;
-  --sidebar-top-layer-2: transparent;
-  --sidebar-border: rgba(255, 255, 255, 0.075);
-  --sidebar-chip: rgba(32, 32, 39, 0.78);
+  /* Cool graphite navigation surfaces: a restrained blue cast separates both
+     sidebars from the near-black workbench without turning them into cards. */
+  --sidebar-glass: #20242d;
+  --sidebar-glass-layers:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 32%),
+    linear-gradient(115deg, rgba(123, 145, 214, 0.07), transparent 42%);
+  --sidebar-top-layer-1: rgba(255, 255, 255, 0.045);
+  --sidebar-top-layer-2: rgba(123, 145, 214, 0.07);
+  --doc-tree-glaze: linear-gradient(
+    180deg,
+    rgba(8, 12, 20, 0.02),
+    rgba(8, 12, 20, 0.13)
+  );
+  --sidebar-input: rgba(8, 12, 20, 0.3);
+  --sidebar-input-border: rgba(202, 213, 239, 0.18);
+  --doc-git-modified: #d7b568;
+  --doc-git-added: #7acb84;
+  --doc-git-conflict: #f07167;
+  --sidebar-border: rgba(202, 213, 239, 0.12);
+  --sidebar-chip: rgba(12, 15, 23, 0.38);
   /* Frosted selection chip: inset top highlight + accent hairline ring, so
      the active row reads as glass resting on glass instead of a flat fill. */
-  --sidebar-active-ring: rgba(140, 166, 255, 0.32);
-  --sidebar-active-highlight: rgba(255, 255, 255, 0.13);
+  --sidebar-active-ring: rgba(155, 176, 255, 0.36);
+  --sidebar-active-highlight: rgba(255, 255, 255, 0.11);
   --sidebar-footer-frost: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0) 0%,
-    rgba(0, 0, 0, 0.18) 100%
+    rgba(9, 12, 18, 0) 0%,
+    rgba(9, 12, 18, 0.3) 100%
   );
   --terminal-scroll-thumb: rgba(243, 245, 251, 0.28);
   /* Sidebar hierarchy (dark): L1 repo name > session label > L2 branch /
@@ -127,25 +141,25 @@
      State colors: hover = --sidebar-row-hover (neutral), selected =
      --sidebar-row-active (frosted accent chip), running session = --accent
      (spinner dot) with its label lifted to --sidebar-text-strong. */
-  --sidebar-text-strong: #f3f5fb;
-  --sidebar-text: #e9ebf1;
-  --sidebar-text-dim: rgba(243, 245, 251, 0.8);
-  --sidebar-text-faint: rgba(243, 245, 251, 0.64);
-  --sidebar-icon: rgba(243, 245, 251, 0.74);
-  --sidebar-action: rgba(243, 245, 251, 0.78);
-  --sidebar-row-hover: rgba(243, 245, 251, 0.09);
-  --sidebar-row-active: rgba(107, 140, 255, 0.24);
-  --sidebar-action-hover-bg: rgba(243, 245, 251, 0.14);
+  --sidebar-text-strong: #f4f6fb;
+  --sidebar-text: #e1e6f0;
+  --sidebar-text-dim: rgba(225, 232, 245, 0.76);
+  --sidebar-text-faint: rgba(225, 232, 245, 0.55);
+  --sidebar-icon: rgba(225, 232, 245, 0.68);
+  --sidebar-action: rgba(225, 232, 245, 0.74);
+  --sidebar-row-hover: rgba(225, 232, 245, 0.075);
+  --sidebar-row-active: rgba(109, 132, 214, 0.22);
+  --sidebar-action-hover-bg: rgba(225, 232, 245, 0.13);
   /* Current-checkout branch row: One Dark Pro magenta family, kept distinct
      from the blue accent (selection/unread) and the green running dot so a
      branch never reads as a state. Icon inherits the row color. */
-  --sidebar-branch: #d47bf2;
-  --sidebar-branch-hover: #e48cff;
+  --sidebar-branch: #c7a3ff;
+  --sidebar-branch-hover: #d8bcff;
   /* Worktrees drill-down entry: muted champagne gold — reads as a structural
      entry, kept clear of the accent/branch/running hues; icon inherits the
      row color. */
-  --sidebar-worktree: #d4b36c;
-  --sidebar-worktree-hover: #e6c886;
+  --sidebar-worktree: #d5b873;
+  --sidebar-worktree-hover: #e5c98a;
   /* Split-group tints (dark): one hue per remembered split, all at the same
      pastel saturation so adjacent groups read as a family rather than as
      different states. Selection stays on --accent. */
@@ -233,31 +247,45 @@
   --unread: #34c759;
   /* Opaque source list (light): no translucency or blur, so terminal output
      never triggers a full-window backdrop recomposition. */
-  --sidebar-glass: #efefef;
-  --sidebar-glass-layers: none;
-  --sidebar-top-layer-1: transparent;
-  --sidebar-top-layer-2: transparent;
-  --sidebar-border: rgba(17, 18, 23, 0.08);
-  --sidebar-chip: rgba(255, 255, 255, 0.75);
-  --sidebar-active-ring: rgba(0, 122, 255, 0.26);
-  --sidebar-active-highlight: rgba(255, 255, 255, 0.55);
+  /* Porcelain navigation surfaces: cool enough to relate to the dark theme,
+     warm enough to keep text and file decorations from feeling clinical. */
+  --sidebar-glass: #f1f3f8;
+  --sidebar-glass-layers:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), transparent 34%),
+    linear-gradient(115deg, rgba(94, 119, 188, 0.045), transparent 44%);
+  --sidebar-top-layer-1: rgba(255, 255, 255, 0.86);
+  --sidebar-top-layer-2: rgba(94, 119, 188, 0.045);
+  --doc-tree-glaze: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(210, 216, 232, 0.18)
+  );
+  --sidebar-input: rgba(255, 255, 255, 0.82);
+  --sidebar-input-border: rgba(36, 48, 78, 0.18);
+  --doc-git-modified: #8a6200;
+  --doc-git-added: #2f7d42;
+  --doc-git-conflict: #bf2e3b;
+  --sidebar-border: rgba(36, 48, 78, 0.13);
+  --sidebar-chip: rgba(255, 255, 255, 0.82);
+  --sidebar-active-ring: rgba(79, 107, 194, 0.3);
+  --sidebar-active-highlight: rgba(255, 255, 255, 0.72);
   --sidebar-footer-frost: linear-gradient(
     180deg,
     rgba(255, 255, 255, 0) 0%,
-    rgba(206, 210, 224, 0.32) 100%
+    rgba(210, 216, 232, 0.42) 100%
   );
   --terminal-scroll-thumb: rgba(17, 18, 23, 0.075);
   /* Sidebar hierarchy (light): same stepping logic as dark — L1 > session
      > L2 > L3, icons inherit the row tier, states reuse the accent family. */
-  --sidebar-text-strong: #111217;
-  --sidebar-text: #202127;
-  --sidebar-text-dim: rgba(17, 18, 23, 0.76);
-  --sidebar-text-faint: rgba(17, 18, 23, 0.64);
-  --sidebar-icon: rgba(17, 18, 23, 0.66);
-  --sidebar-action: rgba(17, 18, 23, 0.74);
-  --sidebar-row-hover: rgba(17, 18, 23, 0.07);
-  --sidebar-row-active: rgba(0, 122, 255, 0.2);
-  --sidebar-action-hover-bg: rgba(17, 18, 23, 0.12);
+  --sidebar-text-strong: #151a26;
+  --sidebar-text: #252c3a;
+  --sidebar-text-dim: rgba(28, 38, 59, 0.76);
+  --sidebar-text-faint: rgba(28, 38, 59, 0.57);
+  --sidebar-icon: rgba(28, 38, 59, 0.64);
+  --sidebar-action: rgba(28, 38, 59, 0.72);
+  --sidebar-row-hover: rgba(41, 57, 94, 0.065);
+  --sidebar-row-active: rgba(79, 107, 194, 0.15);
+  --sidebar-action-hover-bg: rgba(41, 57, 94, 0.11);
   /* Current-checkout branch row: One Light magenta (pairs with the dark
      side's One Dark Pro magenta); hover lifts toward the brighter hue. */
   --sidebar-branch: #a626a4;
@@ -463,6 +491,7 @@ button {
   /* Reproduce the tree surface's top gradient stop as a flat glaze so the
      48px strip matches the tree exactly at the seam. */
   background-image:
+    var(--doc-tree-glaze, none),
     linear-gradient(
       var(--sidebar-top-layer-1, transparent),
       var(--sidebar-top-layer-1, transparent)
@@ -3986,12 +4015,11 @@ body.is-resizing-pane {
   flex-direction: column;
   border-left: 1px solid var(--sidebar-border);
   background-color: var(--sidebar-glass);
-  background-image: var(--sidebar-glass-layers, none);
-  /* Git decoration palette: mid-saturation hues that read on both themes
-     (VSCode icon themes also keep one fixed palette). */
-  --doc-git-modified: #d8b26e;
-  --doc-git-added: #6fbf73;
-  --doc-git-conflict: #e5534b;
+  background-image:
+    var(--doc-tree-glaze, none),
+    var(--sidebar-glass-layers, none);
+  /* Git decoration colors live in the theme tokens above: dark mode gets
+     restrained jewel tones while light mode uses deeper, readable ink. */
 }
 
 /* Tree-only mode: the panel hugs the tree column (inline width = tree + 1px
@@ -4064,11 +4092,17 @@ body.is-resizing-pane {
   font-size: 12px;
   font-family: inherit;
   color: var(--text);
-  background: var(--bg-term);
-  border: 1px solid var(--accent);
-  border-radius: 5px;
+  background: var(--sidebar-input);
+  border: 1px solid var(--sidebar-input-border);
+  border-radius: 6px;
   padding: 3px 7px;
   outline: none;
+}
+
+.doc-tree-search input:focus,
+.doc-tree-create input:focus,
+.doc-tree-rename-input:focus {
+  border-color: var(--accent);
 }
 
 .doc-tree-search-busy {
@@ -4231,8 +4265,18 @@ body.is-resizing-pane {
   color: var(--doc-git-conflict);
 }
 
+/* Selection owns the primary label color; the badge/dot still carries the
+   change state without competing with the active navigation chip. */
+.doc-tree-row.selected .doc-tree-name {
+  color: var(--sidebar-text-strong);
+}
+
 .doc-tree-row.git-dimmed {
   opacity: 0.55;
+}
+
+.doc-tree-row.selected.git-dimmed {
+  opacity: 1;
 }
 
 .doc-tree-git-badge {
@@ -4312,7 +4356,7 @@ body.is-resizing-pane {
 /* Inline "new file / new folder" naming row. */
 .doc-tree-create {
   padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--sidebar-border);
 }
 
 .doc-tree-create-base {
@@ -4331,9 +4375,9 @@ body.is-resizing-pane {
   font-size: 12px;
   font-family: inherit;
   color: var(--text);
-  background: var(--bg-term);
-  border: 1px solid var(--accent);
-  border-radius: 5px;
+  background: var(--sidebar-input);
+  border: 1px solid var(--sidebar-input-border);
+  border-radius: 6px;
   padding: 4px 7px;
   outline: none;
 }
@@ -4352,9 +4396,9 @@ body.is-resizing-pane {
   font-size: 13px;
   font-family: inherit;
   color: var(--text);
-  background: var(--bg-term);
-  border: 1px solid var(--accent);
-  border-radius: 5px;
+  background: var(--sidebar-input);
+  border: 1px solid var(--sidebar-input-border);
+  border-radius: 6px;
   padding: 1px 5px;
   outline: none;
 }

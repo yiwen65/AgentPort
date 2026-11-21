@@ -13,7 +13,8 @@ describe("document tree sidebar design language", () => {
   it("shares the sidebar glass surface tokens", () => {
     const tree = ruleBody(".doc-tree");
     expect(tree).toContain("background-color: var(--sidebar-glass)");
-    expect(tree).toContain("background-image: var(--sidebar-glass-layers, none)");
+    expect(tree).toContain("var(--doc-tree-glaze, none)");
+    expect(tree).toContain("var(--sidebar-glass-layers, none)");
     expect(tree).toContain("border-left: 1px solid var(--sidebar-border)");
     expect(tree).not.toContain("--bg-panel");
   });
@@ -28,6 +29,24 @@ describe("document tree sidebar design language", () => {
   it("uses the 13px VSCode-explorer row font", () => {
     expect(ruleBody(".doc-tree-row")).toContain("font-size: 13px");
     expect(ruleBody(".doc-tree-rename-input")).toContain("font-size: 13px");
+  });
+
+  it("keeps file-state colors readable across themes and subordinate to selection", () => {
+    expect(styles).toContain("--doc-git-modified: #d7b568;");
+    expect(styles).toContain("--doc-git-modified: #8a6200;");
+    expect(styles).toContain("--doc-git-added: #7acb84;");
+    expect(styles).toContain("--doc-git-added: #2f7d42;");
+    expect(styles).toContain(".doc-tree-row.selected .doc-tree-name");
+    expect(styles).toContain(".doc-tree-row.selected.git-dimmed");
+  });
+
+  it("uses sidebar-local material for tree inputs", () => {
+    expect(styles).toContain("background: var(--sidebar-input);");
+    expect(styles).toContain("border: 1px solid var(--sidebar-input-border);");
+    expect(styles).toContain(".doc-tree-search input:focus");
+    expect(ruleBody(".doc-tree-create")).toContain(
+      "border-bottom: 1px solid var(--sidebar-border)",
+    );
   });
 
   it("aligns sibling names with one shared leading slot width", () => {
@@ -59,8 +78,8 @@ describe("document tree sidebar design language", () => {
     // No vertical rule in the title bar: the tree's own edge starts at the
     // panel top, below the bar.
     expect(backdrop).not.toContain("border-left");
-    // The opaque surface has no gradient stops; both themes use a flat backdrop.
-    expect(styles).toContain("--sidebar-top-layer-1: transparent");
+    // The title bar uses the same restrained glaze stops as the tree surface.
+    expect(styles).toContain("--sidebar-top-layer-1: rgba(255, 255, 255, 0.045)");
   });
 
   it("collapses header actions out of layout until they are shown", () => {
