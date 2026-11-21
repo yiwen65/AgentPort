@@ -127,6 +127,7 @@ def main() -> int:
             "list_sessions",
             "session_status",
             "create_session",
+            "handoff",
             "send_prompt",
             "wait_for_task",
             "read_output",
@@ -221,6 +222,28 @@ def main() -> int:
             args.agent in wrong["error"]["message"],
             "the error names a selectable agent, so no list_agents round-trip is needed",
         )
+
+        print("handoff delegates directly to a split Agent pane")
+        handoff, is_error = client.call(
+            "handoff",
+            {
+                "agent": "shell",
+                "projectId": project_id,
+                "title": "handoff e2e",
+                "handoff": "# Session Handoff\n\n## Session summary\n- Preserve the marker\n\n## Recommended continuation\n- Run printf",
+            },
+        )
+        check(not is_error and handoff.get("sessionId"), "handoff creates a Session")
+        check(handoff.get("promptSent"), "handoff sends the Markdown to the Agent")
+        check(handoff.get("handoff", {}).get("direct") is True, "handoff reports direct delegation")
+        check(handoff.get("pane", {}).get("kind") == "split_pane", "handoff queues a split pane")
+        handoff_id = handoff["sessionId"]
+        check(not (data_dir / "docs" / "handoff").exists(), "handoff does not create a document")
+        invalid_handoff, is_error = client.call(
+            "handoff", {"agent": "shell", "projectId": project_id, "handoff": "\u001b[2J"}
+        )
+        check(is_error and invalid_handoff["error"]["code"] == "invalid_handoff", "invalid handoff is rejected")
+        client.call("terminate_session", {"sessionId": handoff_id})
 
         print("create_session resolves its project by itself")
         cwd = os.getcwd()

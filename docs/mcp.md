@@ -64,6 +64,7 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence；完成后 `session_status.completion` 也会给本轮最终答复 |
 | `create_session` | 建单个 Session；模型可根据 tools/list 中的已启用 Role name/description 自行传 `roleId`，也可以省略；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
 | `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId` 或省略；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
+| `handoff` | 接收完整 Markdown handoff，直接委派到指定 Agent 的新分屏并立即返回；不写 `docs/handoff/`，完成继续用 wait 工具获取 |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
 | `wait_for_task` | 等当前委派回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout`、依据和**本轮最终 `reply`**；`timeout` 是继续等待的结构化结果，应再次调用本工具，不要用 `read_output` 判断完成 |
 | `wait_for_tasks` | 一次同步等待多个 MCP-owned Session；兼容旧客户端，按共享预算返回各项结果 |
@@ -82,7 +83,8 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 单任务委派：
 
 ```text
-tools/list       // create_session 描述中包含已启用 Role 的 name/description
+tools/list       // create_session 与 handoff 描述中包含已启用 Role 的 name/description
+handoff         {agent: "claude", projectPath: "/repo", title: "continue handoff", handoff: "# Session Handoff ..."}
 create_session  {agent: "claude", roleId: "role_implementer", projectPath: "/repo", title: "fix flaky test", prompt: "..."}
 // 如果没有 Role 适用，模型省略 roleId；list_roles 仅在需要刷新 metadata 时调用
 wait_for_task  {sessionId: "..."}  // 默认 45s；超时后继续调用本工具
@@ -111,6 +113,8 @@ get_wait_group {waitGroupId: "..."}
 
 **作用域**：只有本 MCP 创建的 Session 存在于此。用户自己开的 Session **既不列出也不可寻址**（不是"只读"，是不可见）；`list_agents` 同样只给已安装且未被设置关掉的 Agent ——
 一个 Agent 不应该能往你正在操作的窗格里打字。归属记录在 `<数据目录>/mcp/agent-sessions.json`。
+
+**handoff**：`handoff` 接收调用方已经整理好的完整 Markdown，压缩为单行 Prompt 后直接创建新分屏 Agent Session；它不创建 handoff 文件，也不等待 Agent 完成。返回的 Session ID 继续交给 `wait_for_task` 或 wait group。`agent` 与 `handoff` 必填，内容沿用 8 KiB/单行/控制字符限制。
 
 **角色**：角色在设置 → Agent 角色中全局管理。内置角色可编辑但不可删除，可恢复默认；DIY 角色新建时默认关闭。
 `tools/list` 会把所有已启用 Role 的 `roleId`、name、description 动态放入 `create_session` / `create_sessions` 的工具说明。模型自行判断传入哪个 `roleId`，或在没有合适 Role 时省略；不需要先调用 `list_roles`。这一步只返回 metadata，不加载完整指令。

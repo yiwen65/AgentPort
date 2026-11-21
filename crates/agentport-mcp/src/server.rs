@@ -103,6 +103,7 @@ mod tests {
     fn tools_list_matches_the_registry() {
         let tools = crate::tools::TOOLS;
         assert!(tools.iter().any(|tool| tool.name == "create_session"));
+        assert!(tools.iter().any(|tool| tool.name == "handoff"));
         assert!(tools.iter().any(|tool| tool.name == "wait_for_task"));
         // Guardrails must not reappear as tools.
         assert!(!tools.iter().any(|tool| tool.name == "send_input"));

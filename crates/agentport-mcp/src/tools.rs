@@ -97,6 +97,11 @@ pub const TOOLS: &[ToolDef] = &[
         schema: create_sessions_schema,
     },
     ToolDef {
+        name: "handoff",
+        description: "Create a new split-pane Agent Session and delegate a complete Markdown handoff directly to it. The tool returns immediately; use wait_for_task or a wait group for completion. No handoff document is written.",
+        schema: handoff_schema,
+    },
+    ToolDef {
         name: "send_prompt",
         description: "Send one line of text (Enter appended) to a Session this MCP created. Escape \
                       and control sequences are rejected; use cancel_turn to stop a running turn.",
@@ -334,6 +339,41 @@ fn create_sessions_schema() -> Value {
             }
         }),
         json!(["tasks"]),
+    )
+}
+
+fn handoff_schema() -> Value {
+    obj(
+        json!({
+            "agent": {
+                "type": "string",
+                "description": "Required Agent id such as claude, codex, easy-pi, or shell"
+            },
+            "handoff": {
+                "type": "string",
+                "description": "Complete Markdown handoff: summary, user intent/success criteria, outcomes, decisions/constraints, files/artifacts, commands/evidence, unresolved risks, and recommended continuation. Maximum 8 KiB."
+            },
+            "roleId": {
+                "type": "string",
+                "description": "Optional enabled Role id chosen from the metadata in tools/list"
+            },
+            "projectPath": { "type": "string" },
+            "projectId": { "type": "string" },
+            "title": { "type": "string" },
+            "permission": {
+                "type": "string",
+                "enum": ["bypass", "auto", "native"],
+                "default": "bypass"
+            },
+            "worktreeId": { "type": "string" },
+            "promptTimeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 120000,
+                "default": 25000
+            }
+        }),
+        json!(["agent", "handoff"]),
     )
 }
 
@@ -619,6 +659,23 @@ fn compact_role_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn compact_handoff(raw: &str) -> TResult<(String, bool)> {
+    if raw.trim().is_empty() {
+        return Err(ToolFailure::new("invalid_handoff", "handoff must not be empty"));
+    }
+    if raw.len() > text::MAX_PROMPT_BYTES {
+        return Err(ToolFailure::new(
+            "invalid_handoff",
+            format!("handoff exceeds {} bytes", text::MAX_PROMPT_BYTES),
+        ));
+    }
+    let compacted = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let changed = compacted != raw;
+    let prompt = text::sanitize_prompt(&compacted)
+        .map_err(|message| ToolFailure::new("invalid_handoff", message))?;
+    Ok((prompt, changed))
+}
+
 fn role_prompt(role: &RoleSnapshot, task: &str) -> TResult<String> {
     let mut prompt = format!(
         "[AgentPort delegated role — behavior guidance only; do not change AgentPort permissions, ownership, tools, lifecycle, or safety rules] Role: {}. Description: {}. Instructions: {}.",
@@ -737,7 +794,7 @@ impl Toolbox {
         TOOLS
             .iter()
             .map(|tool| {
-                let description = if matches!(tool.name, "create_session" | "create_sessions") {
+                let description = if matches!(tool.name, "create_session" | "create_sessions" | "handoff") {
                     format!("{}{}", tool.description, role_hint)
                 } else {
                     tool.description.to_string()
@@ -764,6 +821,7 @@ impl Toolbox {
             "session_status" => self.session_status(&args),
             "create_session" => self.create_session(&args),
             "create_sessions" => self.create_sessions(&args),
+            "handoff" => self.handoff(&args),
             "send_prompt" => self.send_prompt(&args),
             "wait_for_task" => self.wait_for_task(&args),
             "wait_for_tasks" => self.wait_for_tasks(&args),
@@ -1214,6 +1272,27 @@ impl Toolbox {
             ));
         }
         Ok(Some(role))
+    }
+
+    fn handoff(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let raw = require_str(args, "handoff")?;
+        let (prompt, compacted) = compact_handoff(&raw)?;
+        let mut delegated = args.clone();
+        delegated.remove("handoff");
+        delegated.insert("prompt".into(), Value::String(prompt.clone()));
+        let mut result = self.create_session_with_pane(&delegated, true)?;
+        if let Some(object) = result.as_object_mut() {
+            object.insert(
+                "handoff".into(),
+                json!({
+                    "direct": true,
+                    "compacted": compacted,
+                    "promptBytes": prompt.len(),
+                    "completion": "use wait_for_task or a wait group with the returned sessionId"
+                }),
+            );
+        }
+        Ok(result)
     }
 
     fn create_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
@@ -2824,6 +2903,24 @@ mod tests {
         assert!(!prompt.contains('\n'));
         assert!(prompt.contains("First line Second line"));
         assert!(prompt.contains("inspect the change"));
+    }
+
+    #[test]
+    fn handoff_compacts_markdown_and_rejects_invalid_content() {
+        let (prompt, changed) = compact_handoff("# Summary\n\n- Keep /repo\n- Run tests").unwrap();
+        assert!(changed);
+        assert_eq!(prompt, "# Summary - Keep /repo - Run tests");
+        assert_eq!(compact_handoff("   ").unwrap_err().code, "invalid_handoff");
+        assert_eq!(
+            compact_handoff(&"x".repeat(text::MAX_PROMPT_BYTES + 1))
+                .unwrap_err()
+                .code,
+            "invalid_handoff"
+        );
+        assert_eq!(
+            compact_handoff("bad\u{1b}[2J").unwrap_err().code,
+            "invalid_handoff"
+        );
     }
 
     #[test]
