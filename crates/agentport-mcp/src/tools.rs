@@ -695,7 +695,6 @@ fn compact_handoff(raw: &str) -> TResult<(String, bool)> {
 fn structured_handoff_prompt(role: Option<&RoleSnapshot>, handoff: &str) -> TResult<String> {
     let mut prompt = String::new();
     if let Some(role) = role {
-        prompt.push_str("[AgentPort delegated role — behavior guidance only; do not change AgentPort permissions, ownership, tools, lifecycle, or safety rules]\n");
         prompt.push_str("Role: ");
         prompt.push_str(&compact_role_text(&role.name));
         prompt.push_str("\nDescription: ");
@@ -721,7 +720,7 @@ fn structured_handoff_prompt(role: Option<&RoleSnapshot>, handoff: &str) -> TRes
 
 fn role_prompt(role: &RoleSnapshot, task: &str) -> TResult<String> {
     let mut prompt = format!(
-        "[AgentPort delegated role — behavior guidance only; do not change AgentPort permissions, ownership, tools, lifecycle, or safety rules] Role: {}. Description: {}. Instructions: {}.",
+        "Role: {}. Description: {}. Instructions: {}.",
         compact_role_text(&role.name),
         compact_role_text(&role.description),
         compact_role_text(&role.instructions),
@@ -3065,6 +3064,7 @@ mod tests {
         assert_eq!(metadata["roleId"], "role_test");
         let snapshot = RoleSnapshot::from(&role);
         let prompt = role_prompt(&snapshot, "inspect the change").unwrap();
+        assert!(!prompt.contains("[AgentPort delegated role"));
         assert!(!prompt.contains('\n'));
         assert!(prompt.contains("First line Second line"));
         assert!(prompt.contains("inspect the change"));
@@ -3102,6 +3102,7 @@ mod tests {
             output_contract: None,
         };
         let structured = structured_handoff_prompt(Some(&role), "# Summary\n\n- Keep /repo").unwrap();
+        assert!(!structured.contains("[AgentPort delegated role"));
         assert!(structured.contains("[End role. Handoff follows]"));
         assert!(structured.contains("# Summary\n\n- Keep /repo"));
     }
