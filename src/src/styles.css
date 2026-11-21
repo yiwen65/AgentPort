@@ -142,6 +142,9 @@
   --sidebar-text-faint: rgba(235, 235, 240, 0.5);
   --sidebar-icon: rgba(235, 235, 240, 0.66);
   --sidebar-action: rgba(235, 235, 240, 0.72);
+  /* Pinned projects are structural metadata, not an alert: keep the pin
+     quiet and warm so the project name remains the visual anchor. */
+  --sidebar-pin: rgba(220, 211, 190, 0.62);
   --sidebar-row-hover: rgba(255, 255, 255, 0.065);
   --sidebar-row-active: rgba(116, 128, 184, 0.2);
   --sidebar-action-hover-bg: rgba(255, 255, 255, 0.12);
@@ -273,6 +276,7 @@
   --sidebar-text-faint: rgba(32, 33, 39, 0.52);
   --sidebar-icon: rgba(32, 33, 39, 0.62);
   --sidebar-action: rgba(32, 33, 39, 0.7);
+  --sidebar-pin: rgba(76, 68, 52, 0.58);
   --sidebar-row-hover: rgba(20, 22, 28, 0.06);
   --sidebar-row-active: rgba(83, 104, 174, 0.14);
   --sidebar-action-hover-bg: rgba(20, 22, 28, 0.1);
@@ -868,12 +872,20 @@ body.is-project-dragging .tree-row.project {
   justify-content: center;
   width: 16px;
   height: 16px;
-  color: var(--accent);
+  color: var(--sidebar-pin);
+  opacity: 0.82;
+  transition: color 0.12s ease, opacity 0.12s ease;
+}
+
+.tree-row.project:hover .project-pin-indicator,
+.tree-row.project:focus-visible .project-pin-indicator {
+  color: var(--sidebar-text-dim);
+  opacity: 1;
 }
 
 .project-pin-indicator svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 
 /* Row icons inherit the row's tier color, so icon tone tracks the text

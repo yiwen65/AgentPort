@@ -29,4 +29,15 @@ describe("sidebar text clarity", () => {
       /\.tree-project \+ \.tree-project\.unpinned-start\s*\{[^}]*margin-top: 14px;/,
     );
   });
+
+  it("keeps the pinned-project marker subordinate to the project label", () => {
+    expect(styles).toContain("--sidebar-pin: rgba(220, 211, 190, 0.62);");
+    expect(styles).toContain("--sidebar-pin: rgba(76, 68, 52, 0.58);");
+    expect(styles).toMatch(
+      /\.project-pin-indicator\s*\{[^}]*color: var\(--sidebar-pin\);[^}]*opacity: 0\.82;/,
+    );
+    expect(styles).not.toMatch(
+      /\.project-pin-indicator\s*\{[^}]*color: var\(--accent\);/,
+    );
+  });
 });
