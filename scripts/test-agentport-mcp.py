@@ -134,6 +134,8 @@ def main() -> int:
             "split_pane",
             "focus_pane",
             "close_pane",
+            "create_sessions",
+            "wait_for_tasks",
         }
         check(names == expected, f"exactly the v1 tool set ({len(names)} tools)")
         check("send_input" not in names, "raw byte input is not exposed")
@@ -142,7 +144,17 @@ def main() -> int:
         agents, is_error = client.call("list_agents", {"probe": True})
         check(not is_error and "agents" in agents, "agents listed")
         shell = next((a for a in agents["agents"] if a["agent"] == "shell"), None)
-        check(shell is not None and shell["installed"], "generic shell agent is probed")
+        # Only installed Agents are listed at all, so presence is the proof.
+        check(shell is not None and bool(shell.get("path")), "the Generic Shell Agent is selectable")
+
+        check(
+            all(agent.get("path") for agent in agents["agents"]),
+            "every listed Agent is installed (no uninstalled entries)",
+        )
+        check(
+            all(agent.get("unavailableReason") in (None, "") for agent in agents["agents"]),
+            "no listed Agent carries an availability warning",
+        )
 
         print("resolve_project")
         resolved, is_error = client.call("resolve_project", {"path": str(project)})
@@ -150,6 +162,32 @@ def main() -> int:
         project_id = resolved["projectId"]
         again, _ = client.call("resolve_project", {"path": str(project)})
         check(again["projectId"] == project_id and not again["created"], "resolve is idempotent")
+
+        print("a Session the user opened is invisible")
+        cli = binary.parent / "agentport-cli"
+        if cli.is_file():
+            env = dict(os.environ, AGENTPORT_DATA_DIR=str(data_dir))
+            foreign = subprocess.run(
+                [str(cli), "--json", "session", "new", "--project", project_id,
+                 "--agent", args.agent, "--title", "user session"],
+                capture_output=True, text=True, env=env, timeout=60,
+            )
+            check(foreign.returncode == 0, "a Session created outside the MCP exists")
+            foreign_id = json.loads(foreign.stdout)["id"] if foreign.stdout.strip() else ""
+            listed, is_error = client.call("list_sessions", {})
+            check(not is_error, "list_sessions still works")
+            check(
+                all(session["sessionId"] != foreign_id for session in listed["sessions"]),
+                "list_sessions hides the Session the user opened",
+            )
+            visible, is_error = client.call("session_status", {"sessionId": foreign_id})
+            check(
+                is_error and visible["error"]["code"] == "session_not_owned",
+                "session_status refuses a Session this MCP did not create",
+            )
+        else:
+            print("  skip (no agentport-cli next to the MCP binary)")
+
 
         print("create_session + first prompt")
         created, is_error = client.call(

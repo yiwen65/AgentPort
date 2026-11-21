@@ -181,8 +181,9 @@ pub fn initialize_result(params: Option<&Value>, server_version: &str) -> Value 
 pub const CONNECTION_INSTRUCTIONS: &str = "\
 AgentPort Sessions MCP. Tools create and drive AgentPort Sessions on this machine.
 
-Scope: only Sessions this server created are addressable; Sessions the user opened
-themselves are read-only here on purpose.
+Scope: only Sessions this server created exist here. The user's own Sessions are not
+listed and cannot be addressed; list_agents only offers Agents that are installed and
+switched on in AgentPort.
 
 Delegation shape: create_session(agent, projectPath, prompt) opens a real AgentPort
 pane-sized Session and sends the first prompt once the CLI is ready. For several

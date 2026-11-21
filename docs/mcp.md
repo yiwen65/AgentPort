@@ -58,9 +58,9 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 
 | 工具 | 作用 |
 | --- | --- |
-| `list_agents` | 列出可用的 CLI Agent；`probe: true` 会重新探测（较慢） |
+| `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent；`probe: true` 会重新探测（较慢） |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等） |
-| `list_sessions` / `session_status` | 只读观察；状态带 source / confidence / evidence |
+| `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence |
 | `create_session` | 建单个 Session；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
 | `create_sessions` | 一次创建多个独立委派任务；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
@@ -103,7 +103,7 @@ wait_for_tasks {
 
 ## 语义与边界
 
-**作用域**：只有本 MCP 创建的 Session 可以被驱动。用户自己开的 Session 在这里是只读的 ——
+**作用域**：只有本 MCP 创建的 Session 存在于此。用户自己开的 Session **既不列出也不可寻址**（不是"只读"，是不可见）；`list_agents` 同样只给已安装且未被设置关掉的 Agent ——
 一个 Agent 不应该能往你正在操作的窗格里打字。归属记录在 `<数据目录>/mcp/agent-sessions.json`。
 
 **权限**：委派默认就是**各自的完全权限模式**（`permission: "bypass"`），因为委派本来就是无人值守的：

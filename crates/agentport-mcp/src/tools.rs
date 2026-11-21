@@ -37,9 +37,9 @@ pub struct ToolDef {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "list_agents",
-        description: "List the CLI Agents AgentPort knows on this machine. Only Agents with \
-                      installed=true can be launched through create_session. Results come from \
-                      AgentPort's cached probe; pass probe=true to re-detect them (slower).",
+        description: "List the CLI Agents you can delegate to right now: installed on this machine \
+                      and not switched off in AgentPort's settings. Pass probe=true to re-detect \
+                      them (slower).",
         schema: list_agents_schema,
     },
     ToolDef {
@@ -50,14 +50,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "list_sessions",
-        description: "List AgentPort Sessions with lifecycle, status evidence and host liveness. \
-                      Read-only; includes Sessions the user created.",
+        description: "List the Sessions this MCP created, with lifecycle, status evidence and host \
+                      liveness. Sessions the user opened themselves are not listed.",
         schema: list_sessions_schema,
     },
     ToolDef {
         name: "session_status",
-        description: "Status of one Session plus the tail of its status history (state, source, \
-                      confidence, evidence).",
+        description: "Status of one Session this MCP created, plus the tail of its status history \
+                      (state, source, confidence, evidence).",
         schema: session_status_schema,
     },
     ToolDef {
@@ -540,6 +540,17 @@ impl Toolbox {
     // -- read-only ---------------------------------------------------------
 
     fn list_agents(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        // Only Agents the user can actually pick: installed, and not hidden in
+        // AgentPort's settings. Listing the rest invites a create_session for a
+        // CLI that is missing or switched off.
+        let hidden = self
+            .ops
+            .service()
+            .agent_preferences()
+            .map(|preferences| preferences.agent_hidden)
+            .unwrap_or_default();
+        let selectable = |agent: &str| !hidden.iter().any(|hidden| hidden == agent);
+
         if args.get("probe").and_then(Value::as_bool).unwrap_or(false) {
             let probed = self
                 .ops
@@ -550,18 +561,16 @@ impl Toolbox {
                 .map_err(ToolFailure::from)?;
             let entries: Vec<Value> = probed
                 .iter()
+                .filter(|result| result.install.is_some() && selectable(&result.agent))
                 .map(|result| {
                     json!({
                         "agent": result.agent.clone(),
                         "displayName": result.display_name.clone(),
-                        "installed": result.install.is_some(),
                         "path": result.install.as_ref().map(|install| install.executable_path.clone()),
                         "version": result.install.as_ref().map(|install| install.version_text.clone()),
                         "exactResume": result.install.as_ref().map(|install| install.exact_resume),
                         "approvalModel": result.install.as_ref().map(|install| install.approval_model.as_str()),
                         "defaultTransport": result.install.as_ref().map(|install| install.default_transport.as_str()),
-                        "probeState": result.state.clone(),
-                        "unavailableReason": result.reason.clone(),
                     })
                 })
                 .collect();
@@ -574,22 +583,17 @@ impl Toolbox {
             .map_err(ToolFailure::from)?;
         let entries: Vec<Value> = agents
             .iter()
+            .filter(|agent| agent.install.is_some() && selectable(&agent.agent))
             .map(|agent| {
                 json!({
                     "agent": agent.agent.clone(),
                     "displayName": agent.display_name.clone(),
                     "commandNames": agent.command_names.clone(),
-                    "installed": agent.install.is_some(),
                     "path": agent.install.as_ref().map(|install| install.executable_path.clone()),
                     "version": agent.install.as_ref().map(|install| install.version_text.clone()),
                     "exactResume": agent.install.as_ref().map(|install| install.exact_resume),
                     "approvalModel": agent.install.as_ref().map(|install| install.approval_model.as_str()),
                     "defaultTransport": agent.install.as_ref().map(|install| install.default_transport.as_str()),
-                    "unavailableReason": if agent.install.is_some() {
-                        Value::Null
-                    } else {
-                        Value::String("not probed on this machine; run a probe in AgentPort settings".into())
-                    },
                 })
             })
             .collect();
@@ -641,8 +645,11 @@ impl Toolbox {
         let known: std::collections::HashSet<String> =
             sessions.iter().map(|session| session.id.clone()).collect();
         self.registry.prune(&known);
+        // The user's own Sessions are not this server's business: they are
+        // neither addressable nor visible here.
         let owned: Vec<Value> = sessions
             .iter()
+            .filter(|session| self.registry.contains(&session.id))
             .map(|session| {
                 json!({
                     "sessionId": session.id,
@@ -660,7 +667,6 @@ impl Toolbox {
                         "occurredAt": status.occurred_at,
                     })),
                     "attention": session.latest_attention_kind,
-                    "ownedByMcp": self.registry.contains(&session.id),
                 })
             })
             .collect();
@@ -669,6 +675,7 @@ impl Toolbox {
 
     fn session_status(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
         let summary = self.ops.summary(&session_id)?;
         let history = self
             .ops
@@ -707,7 +714,6 @@ impl Toolbox {
             })),
             "attention": summary.latest_attention_kind,
             "history": recent,
-            "ownedByMcp": self.registry.contains(&session_id),
         }))
     }
 
@@ -1506,11 +1512,13 @@ impl Toolbox {
         if self.registry.contains(session_id) {
             return Ok(());
         }
+        // Not "read-only": the user's Sessions are not visible through this
+        // server at all, so a wrong id looks like a wrong id.
         Err(ToolFailure::new(
             "session_not_owned",
             format!(
-                "Session {session_id} was not created by this MCP server. Sessions the user opened \
-                 are read-only here; create your own with create_session"
+                "Session {session_id} was not created by this MCP server, so it is not visible \
+                 here. Create your own with create_session"
             ),
         ))
     }
