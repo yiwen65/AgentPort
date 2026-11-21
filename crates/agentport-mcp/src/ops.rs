@@ -501,6 +501,19 @@ impl SessionOps {
     pub fn deliver_prompt(&mut self, session_id: &str, text: &str) -> TResult<PromptDelivery> {
         // A distinctive prefix identifies our own text in the composer echo.
         let token: String = text.trim().chars().take(10).collect();
+        self.deliver_prompt_with_token(session_id, text, &token)
+    }
+
+    /// Deliver a prompt with a caller-supplied evidence token. Role preambles
+    /// can scroll their prefix off a TUI screen, so use visible task text for
+    /// submission proof rather than an off-screen preamble header.
+    pub fn deliver_prompt_with_token(
+        &mut self,
+        session_id: &str,
+        text: &str,
+        evidence_token: &str,
+    ) -> TResult<PromptDelivery> {
+        let token: String = evidence_token.trim().chars().take(10).collect();
         let mut typed = false;
         let mut entered = 0;
         let mut bytes = 0;

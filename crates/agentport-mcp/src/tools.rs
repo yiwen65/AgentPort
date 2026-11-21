@@ -1092,6 +1092,10 @@ impl Toolbox {
             .map(|text| text::sanitize_prompt(&text))
             .transpose()
             .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+        let evidence_token = role_snapshot
+            .as_ref()
+            .and(task_prompt.as_ref())
+            .map(|text| text.chars().take(10).collect::<String>());
         let prompt = task_prompt
             .map(|text| match role_snapshot.as_ref() {
                 Some(role) => role_prompt(role, &text),
@@ -1205,12 +1209,22 @@ impl Toolbox {
                 // A first delivery can still fail if the Agent was not reading
                 // input yet; give it one more readiness round rather than
                 // handing the caller a prompt they must re-send by hand.
-                let mut delivery = self.ops.deliver_prompt(&session_id, &prompt);
+                let mut delivery = match evidence_token.as_deref() {
+                    Some(token) => self
+                        .ops
+                        .deliver_prompt_with_token(&session_id, &prompt, token),
+                    None => self.ops.deliver_prompt(&session_id, &prompt),
+                };
                 if matches!(&delivery, Ok(value) if !value.submitted && value.blocked_on.is_none())
                 {
                     if let Ok(ready_again) = self.ops.wait_ready(&session_id, prompt_timeout) {
                         if ready_again.ready {
-                            delivery = self.ops.deliver_prompt(&session_id, &prompt);
+                            delivery = match evidence_token.as_deref() {
+                                Some(token) => self
+                                    .ops
+                                    .deliver_prompt_with_token(&session_id, &prompt, token),
+                                None => self.ops.deliver_prompt(&session_id, &prompt),
+                            };
                         }
                     }
                 }
@@ -1437,6 +1451,7 @@ impl Toolbox {
                     .then(|| entry.role.clone())
                     .flatten()
             });
+        let evidence_token: String = task.chars().take(10).collect();
         let prompt = match role.as_ref() {
             Some(role) => role_prompt(role, &task)?,
             None => task,
@@ -1466,7 +1481,12 @@ impl Toolbox {
             self.ops.wait_ready(&session_id, SEND_READY_MS)?
         };
         let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
-        let delivery = self.ops.deliver_prompt(&session_id, &prompt)?;
+        let delivery = match role.as_ref() {
+            Some(_) => self
+                .ops
+                .deliver_prompt_with_token(&session_id, &prompt, &evidence_token),
+            None => self.ops.deliver_prompt(&session_id, &prompt),
+        }?;
         let _ = ready;
         let mut role_preamble_delivered = false;
         if delivery.submitted {

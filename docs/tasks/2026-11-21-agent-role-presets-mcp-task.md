@@ -204,6 +204,7 @@ Agent 选择、全权限默认、Session 所有权和生命周期边界的前提
 - 2026-11-21: Started read-only architecture reconnaissance for MCP, UI and backend configuration patterns.
 - 2026-11-21: Implemented v21 SQLite role storage, built-in seeds, revision CAS, Tauri CRUD commands, Settings UI, MCP list_roles/roleId injection, ownership snapshots, docs and tests.
 - 2026-11-21: Targeted Rust/frontend checks, MCP E2E and debug App restart/screenshot passed. Full frontend suite has one unrelated PairingSection assertion failure; recorded as a limitation.
+- 2026-11-21: Hardened role prompt submission evidence to use visible task text when a long role preamble scrolls its prefix off the TUI; MCP unit and E2E checks passed again.
 - 2026-11-21: All role-feature tasks marked done; task document validated before delivery.
 
 <!-- task-doc-section:final-validation -->
