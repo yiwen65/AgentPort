@@ -342,7 +342,7 @@ pub mod schema {
         ));
         "#,
         // v14 -> v15: include managed notification events and unexpected exits
-        // in the same bounded attention index used by unread and catch-up.
+        // in the same bounded attention index used by attention polling.
         r#"
         DROP INDEX idx_attention_cursor;
         CREATE INDEX idx_attention_cursor
@@ -2746,12 +2746,8 @@ impl Db {
                               (e.source='pty' AND e.evidence LIKE 'pty:pattern:%')
                             )) OR
                             (e.state='idle' AND (
-                              (e.source='hook' AND e.evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+                              (e.source='hook' AND e.evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed')) OR
                               (e.source='adapter' AND e.evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
-                            )) OR
-                            (e.state='exited' AND e.source='process' AND (
-                              (e.evidence GLOB 'process:exit:[0-9]*' AND substr(e.evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,14) AS INTEGER) NOT IN (130,143)) OR
-                              (e.evidence GLOB 'process:signal:[0-9]*' AND substr(e.evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,16) AS INTEGER) NOT IN (2,15))
                             ))
                           )
                         ) END
@@ -2877,12 +2873,8 @@ impl Db {
                     (e.source='pty' AND e.evidence LIKE 'pty:pattern:%')
                   )) OR
                   (e.state='idle' AND (
-                    (e.source='hook' AND e.evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+                    (e.source='hook' AND e.evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed')) OR
                     (e.source='adapter' AND e.evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
-                  )) OR
-                  (e.state='exited' AND e.source='process' AND (
-                    (e.evidence GLOB 'process:exit:[0-9]*' AND substr(e.evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,14) AS INTEGER) NOT IN (130,143)) OR
-                    (e.evidence GLOB 'process:signal:[0-9]*' AND substr(e.evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(e.evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(e.evidence,16) AS INTEGER) NOT IN (2,15))
                   ))
                 )
              ) END
@@ -4070,8 +4062,9 @@ impl Db {
         }
     }
 
-    /// Poll only user-actionable semantic events in a stable global order.
-    /// The same exact evidence predicate is used by unread/sidebar semantics.
+    /// Poll user-actionable semantic events in a stable global order.
+    /// Execution failures remain pollable for notifications/Recent; the
+    /// unread/sidebar subset is limited to completions and approvals.
     const ATTENTION_POLL_QUERY: &str = "SELECT session_id,run_id,run_ordinal,sequence,state,source,confidence,evidence,
                     log_generation,log_offset,occurred_at
              FROM status_events e
@@ -4789,8 +4782,9 @@ impl Db {
     }
 
     /// PTY working/idle heuristics are too noisy for an unread badge. Only
-    /// terminal-attention states count here; ordinary output is tracked by its
-    /// byte offset separately.
+    /// completed turns and approval requests count here; execution failures
+    /// remain separate attention events for notifications/Recent. Ordinary
+    /// output is tracked by its byte offset separately.
     pub fn has_unread_attention_after(
         &self,
         session_id: &str,
@@ -4810,12 +4804,8 @@ impl Db {
                         (source='pty' AND evidence LIKE 'pty:pattern:%')
                     )) OR
                     (state='idle' AND (
-                        (source='hook' AND evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed','hook:AgentPortNotification:failed')) OR
+                        (source='hook' AND evidence IN ('hook:Stop','hook:TurnEnd','hook:AgentPortNotification:completed')) OR
                         (source='adapter' AND evidence IN ('adapter:kimi:TurnEnd','adapter:pi:TurnEnd','adapter:omp:TurnEnd','adapter:easy_pi:TurnEnd'))
-                    )) OR
-                    (state='exited' AND source='process' AND (
-                        (evidence GLOB 'process:exit:[0-9]*' AND substr(evidence,14) NOT GLOB '*[^0-9]*' AND CAST(substr(evidence,14) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(evidence,14) AS INTEGER) NOT IN (130,143)) OR
-                        (evidence GLOB 'process:signal:[0-9]*' AND substr(evidence,16) NOT GLOB '*[^0-9]*' AND CAST(substr(evidence,16) AS INTEGER) BETWEEN 1 AND 2147483647 AND CAST(substr(evidence,16) AS INTEGER) NOT IN (2,15))
                     ))
                 )
              )",
@@ -7015,9 +7005,11 @@ mod tests {
             };
             assert_eq!(event.attention_kind().is_some(), expected, "{evidence}");
             db.record_status_event(&event).unwrap();
+            let unread_expected = expected
+                && !matches!(event.attention_kind(), Some(AttentionKind::ExecutionFailed));
             assert_eq!(
                 db.has_unread_attention(&session_id, 0).unwrap(),
-                expected,
+                unread_expected,
                 "{evidence}"
             );
         }
