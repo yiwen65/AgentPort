@@ -198,6 +198,24 @@ export interface Preset {
   builtIn: boolean;
 }
 
+export interface AgentRole {
+  id: string;
+  name: string;
+  description: string;
+  instructions: string;
+  outputContract: string | null;
+  enabled: boolean;
+  revision: number;
+  builtIn: boolean;
+}
+
+export interface AgentRoleDraft {
+  name: string;
+  description: string;
+  instructions: string;
+  outputContract: string | null;
+}
+
 export interface PlatformInfo {
   /** "macos" | "linux" */
   os: string;
@@ -241,6 +259,7 @@ export interface TimelineData {
 export type SettingsSection =
   | "appearance"
   | "adapters"
+  | "roles"
   | "commitAi"
   | "archive"
   | "backup"

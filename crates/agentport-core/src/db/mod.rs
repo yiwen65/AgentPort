@@ -412,6 +412,25 @@ pub mod schema {
         DROP TABLE status_import_cursors;
         ALTER TABLE status_import_cursors_new RENAME TO status_import_cursors;
         "#,
+        // v20 -> v21: global Agent roles are separate from execution presets.
+        // Instructions are local configuration and never part of the remote
+        // Session launch protocol; the MCP snapshots them in its own registry.
+        r#"
+        CREATE TABLE agent_roles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
+            description TEXT NOT NULL,
+            instructions TEXT NOT NULL,
+            output_contract TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            built_in INTEGER NOT NULL DEFAULT 0 CHECK(built_in IN (0,1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_agent_roles_enabled_name
+            ON agent_roles(enabled, name);
+        "#,
     ];
 }
 
@@ -830,6 +849,52 @@ fn row_preset(r: &Row) -> rusqlite::Result<Preset> {
             .unwrap_or_default(),
         built_in: r.get("built_in")?,
     })
+}
+
+fn row_agent_role(r: &Row) -> rusqlite::Result<crate::agent_roles::AgentRole> {
+    Ok(crate::agent_roles::AgentRole {
+        id: r.get("id")?,
+        name: r.get("name")?,
+        description: r.get("description")?,
+        instructions: r.get("instructions")?,
+        output_contract: r.get("output_contract")?,
+        enabled: r.get("enabled")?,
+        revision: r.get::<_, i64>("revision")? as u64,
+        built_in: r.get("built_in")?,
+    })
+}
+
+fn load_agent_role_tx(
+    tx: &Transaction<'_>,
+    id: &str,
+) -> Result<crate::agent_roles::AgentRole> {
+    tx.query_row(
+        "SELECT id,name,description,instructions,output_contract,enabled,revision,built_in,created_at,updated_at
+         FROM agent_roles WHERE id=?1",
+        params![id],
+        row_agent_role,
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => {
+            CoreError::NotFound(format!("agent role {id}"))
+        }
+        other => CoreError::Sqlite(other),
+    })
+}
+
+fn ensure_role_revision(id: &str, actual: u64, expected: u64) -> Result<()> {
+    if actual != expected {
+        return Err(CoreError::Conflict(format!(
+            "agent role {id} changed (expected revision {expected}, found {actual})"
+        )));
+    }
+    Ok(())
+}
+
+fn next_role_revision(current: u64) -> Result<u64> {
+    current
+        .checked_add(1)
+        .ok_or_else(|| CoreError::Conflict("agent role revision exhausted".into()))
 }
 
 fn row_secret_ref(r: &Row) -> rusqlite::Result<SecretRef> {
@@ -1744,6 +1809,201 @@ impl Db {
                 agent.display_name()
             )));
         }
+        Ok(())
+    }
+
+    // -- agent roles --------------------------------------------------------
+    pub fn list_agent_roles(&self) -> Result<Vec<crate::agent_roles::AgentRole>> {
+        let conn = self.conn.lock().unwrap();
+        let mut statement = conn.prepare(
+            "SELECT id,name,description,instructions,output_contract,enabled,revision,built_in,created_at,updated_at
+             FROM agent_roles ORDER BY built_in DESC, name COLLATE NOCASE, id",
+        )?;
+        let rows = statement.query_map([], row_agent_role)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(CoreError::Sqlite)
+    }
+
+    pub fn get_agent_role(&self, id: &str) -> Result<crate::agent_roles::AgentRole> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id,name,description,instructions,output_contract,enabled,revision,built_in,created_at,updated_at
+             FROM agent_roles WHERE id=?1",
+            params![id],
+            row_agent_role,
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => {
+                CoreError::NotFound(format!("agent role {id}"))
+            }
+            other => CoreError::Sqlite(other),
+        })
+    }
+
+    pub fn resolve_enabled_agent_role(&self, id: &str) -> Result<crate::agent_roles::AgentRole> {
+        let role = self.get_agent_role(id)?;
+        if !role.enabled {
+            return Err(CoreError::Conflict(format!("agent role {id} is disabled")));
+        }
+        Ok(role)
+    }
+
+    pub fn seed_builtin_roles(&self) -> Result<()> {
+        let now = dt_str(&Utc::now());
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for role in crate::agent_roles::builtin_roles() {
+            tx.execute(
+                "INSERT OR IGNORE INTO agent_roles
+                 (id,name,description,instructions,output_contract,enabled,revision,built_in,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,1,1,1,?6,?6)",
+                params![
+                    role.id,
+                    role.name,
+                    role.description,
+                    role.instructions,
+                    role.output_contract,
+                    now,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn create_agent_role(
+        &self,
+        draft: &crate::agent_roles::AgentRoleDraft,
+    ) -> Result<crate::agent_roles::AgentRole> {
+        crate::agent_roles::validate_role_draft(draft)?;
+        let draft = crate::agent_roles::normalize_role_draft(draft);
+        let id = crate::ids::new_id("role");
+        let now = dt_str(&Utc::now());
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO agent_roles
+             (id,name,description,instructions,output_contract,enabled,revision,built_in,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,0,1,0,?6,?6)",
+            params![
+                id,
+                draft.name,
+                draft.description,
+                draft.instructions,
+                draft.output_contract,
+                now,
+            ],
+        )?;
+        let role = tx.query_row(
+            "SELECT id,name,description,instructions,output_contract,enabled,revision,built_in,created_at,updated_at
+             FROM agent_roles WHERE id=?1",
+            params![id],
+            row_agent_role,
+        )?;
+        tx.commit()?;
+        Ok(role)
+    }
+
+    pub fn update_agent_role(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        draft: &crate::agent_roles::AgentRoleDraft,
+    ) -> Result<crate::agent_roles::AgentRole> {
+        crate::agent_roles::validate_role_draft(draft)?;
+        let draft = crate::agent_roles::normalize_role_draft(draft);
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_agent_role_tx(&tx, id)?;
+        ensure_role_revision(id, current.revision, expected_revision)?;
+        let revision = next_role_revision(current.revision)?;
+        tx.execute(
+            "UPDATE agent_roles
+             SET name=?2,description=?3,instructions=?4,output_contract=?5,revision=?6,updated_at=?7
+             WHERE id=?1",
+            params![
+                id,
+                draft.name,
+                draft.description,
+                draft.instructions,
+                draft.output_contract,
+                revision,
+                dt_str(&Utc::now()),
+            ],
+        )?;
+        let role = load_agent_role_tx(&tx, id)?;
+        tx.commit()?;
+        Ok(role)
+    }
+
+    pub fn set_agent_role_enabled(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        enabled: bool,
+    ) -> Result<crate::agent_roles::AgentRole> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_agent_role_tx(&tx, id)?;
+        ensure_role_revision(id, current.revision, expected_revision)?;
+        let revision = next_role_revision(current.revision)?;
+        tx.execute(
+            "UPDATE agent_roles SET enabled=?2,revision=?3,updated_at=?4 WHERE id=?1",
+            params![id, enabled, revision, dt_str(&Utc::now())],
+        )?;
+        let role = load_agent_role_tx(&tx, id)?;
+        tx.commit()?;
+        Ok(role)
+    }
+
+    pub fn reset_builtin_agent_role(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<crate::agent_roles::AgentRole> {
+        let default_role = crate::agent_roles::builtin_role(id)
+            .ok_or_else(|| CoreError::NotFound(format!("built-in agent role {id}")))?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_agent_role_tx(&tx, id)?;
+        if !current.built_in {
+            return Err(CoreError::Validation(
+                "only built-in roles can be restored".into(),
+            ));
+        }
+        ensure_role_revision(id, current.revision, expected_revision)?;
+        let revision = next_role_revision(current.revision)?;
+        tx.execute(
+            "UPDATE agent_roles
+             SET name=?2,description=?3,instructions=?4,output_contract=?5,revision=?6,updated_at=?7
+             WHERE id=?1",
+            params![
+                id,
+                default_role.name,
+                default_role.description,
+                default_role.instructions,
+                default_role.output_contract,
+                revision,
+                dt_str(&Utc::now()),
+            ],
+        )?;
+        let role = load_agent_role_tx(&tx, id)?;
+        tx.commit()?;
+        Ok(role)
+    }
+
+    pub fn delete_agent_role(&self, id: &str, expected_revision: u64) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = load_agent_role_tx(&tx, id)?;
+        if current.built_in {
+            return Err(CoreError::Conflict(
+                "built-in agent roles cannot be deleted".into(),
+            ));
+        }
+        ensure_role_revision(id, current.revision, expected_revision)?;
+        tx.execute("DELETE FROM agent_roles WHERE id=?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -7817,5 +8077,70 @@ mod tests {
         db.record_redaction_hits("ses_1", 3).unwrap();
         db.record_redaction_hits("ses_1", 2).unwrap();
         assert_eq!(db.redaction_hits_total("ses_1").unwrap(), 5);
+    }
+
+    #[test]
+    fn agent_roles_seed_and_preserve_builtin_edits() {
+        let db = db();
+        db.seed_builtin_roles().unwrap();
+        db.seed_builtin_roles().unwrap();
+        let builtins = db.list_agent_roles().unwrap();
+        assert_eq!(builtins.len(), 5);
+        assert!(builtins.iter().all(|role| role.built_in && role.enabled));
+
+        let original = db.get_agent_role("role_reviewer").unwrap();
+        let updated = db
+            .update_agent_role(
+                "role_reviewer",
+                original.revision,
+                &crate::agent_roles::AgentRoleDraft {
+                    name: "Edited reviewer".into(),
+                    description: "Edited description".into(),
+                    instructions: "Edited instructions".into(),
+                    output_contract: None,
+                },
+            )
+            .unwrap();
+        assert!(updated.revision > original.revision);
+        db.seed_builtin_roles().unwrap();
+        assert_eq!(db.get_agent_role("role_reviewer").unwrap().name, "Edited reviewer");
+
+        let restored = db
+            .reset_builtin_agent_role("role_reviewer", updated.revision)
+            .unwrap();
+        assert_eq!(restored.name, original.name);
+        assert!(restored.revision > updated.revision);
+        assert!(matches!(
+            db.delete_agent_role("role_reviewer", restored.revision),
+            Err(CoreError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn diy_roles_are_disabled_until_enabled_and_use_revision_cas() {
+        let db = db();
+        db.seed_builtin_roles().unwrap();
+        let role = db
+            .create_agent_role(&crate::agent_roles::AgentRoleDraft {
+                name: "Custom".into(),
+                description: "Custom description".into(),
+                instructions: "Custom instructions".into(),
+                output_contract: Some("Evidence".into()),
+            })
+            .unwrap();
+        assert!(!role.enabled);
+        assert!(db.resolve_enabled_agent_role(&role.id).is_err());
+        assert!(matches!(
+            db.set_agent_role_enabled(&role.id, role.revision + 1, true),
+            Err(CoreError::Conflict(_))
+        ));
+        let enabled = db
+            .set_agent_role_enabled(&role.id, role.revision, true)
+            .unwrap();
+        assert!(enabled.enabled);
+        let resolved = db.resolve_enabled_agent_role(&role.id).unwrap();
+        assert_eq!(resolved.instructions, "Custom instructions");
+        db.delete_agent_role(&role.id, enabled.revision).unwrap();
+        assert!(matches!(db.get_agent_role(&role.id), Err(CoreError::NotFound(_))));
     }
 }

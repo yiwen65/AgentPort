@@ -7,6 +7,7 @@
 #[cfg(test)]
 use agentport_core::adapters;
 use agentport_core::adapters::capability;
+use agentport_core::agent_roles::{AgentRole, AgentRoleDraft};
 use agentport_core::db::{Db, SessionProjection};
 use agentport_core::diag::Diagnostics;
 use agentport_core::error::{CoreError, Result};
@@ -1422,6 +1423,62 @@ async fn list_presets(
         .transpose()
         .map_err(|e: CoreError| e.to_string())?;
     map_err!(state.db.list_presets(t))
+}
+
+#[tauri::command]
+async fn list_agent_roles(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<AgentRole>, String> {
+    map_err!(state.db.seed_builtin_roles())?;
+    map_err!(state.db.list_agent_roles())
+}
+
+#[tauri::command]
+async fn create_agent_role(
+    state: State<'_, AppState>,
+    draft: AgentRoleDraft,
+) -> std::result::Result<AgentRole, String> {
+    map_err!(state.db.create_agent_role(&draft))
+}
+
+#[tauri::command]
+async fn update_agent_role(
+    state: State<'_, AppState>,
+    id: String,
+    expected_revision: u64,
+    draft: AgentRoleDraft,
+) -> std::result::Result<AgentRole, String> {
+    map_err!(state.db.update_agent_role(&id, expected_revision, &draft))
+}
+
+#[tauri::command]
+async fn set_agent_role_enabled(
+    state: State<'_, AppState>,
+    id: String,
+    expected_revision: u64,
+    enabled: bool,
+) -> std::result::Result<AgentRole, String> {
+    map_err!(state
+        .db
+        .set_agent_role_enabled(&id, expected_revision, enabled))
+}
+
+#[tauri::command]
+async fn reset_agent_role(
+    state: State<'_, AppState>,
+    id: String,
+    expected_revision: u64,
+) -> std::result::Result<AgentRole, String> {
+    map_err!(state.db.reset_builtin_agent_role(&id, expected_revision))
+}
+
+#[tauri::command]
+async fn delete_agent_role(
+    state: State<'_, AppState>,
+    id: String,
+    expected_revision: u64,
+) -> std::result::Result<(), String> {
+    map_err!(state.db.delete_agent_role(&id, expected_revision))
 }
 
 // ---------------------------------------------------------------------------
@@ -5117,6 +5174,7 @@ fn main() {
     tracing::info!("AgentPort {} starting", env!("CARGO_PKG_VERSION"));
     let db = Db::open(&paths).expect("open db");
     db.seed_builtin_presets().expect("seed presets");
+    db.seed_builtin_roles().expect("seed agent roles");
     let initial_settings = db.load_settings().unwrap_or_default();
     let mut notifier = Notifier::new(initial_settings.notifications_enabled);
     notifier.configure(
@@ -5233,6 +5291,12 @@ fn main() {
             remove_project,
             project_remove_preflight,
             list_presets,
+            list_agent_roles,
+            create_agent_role,
+            update_agent_role,
+            set_agent_role_enabled,
+            reset_agent_role,
+            delete_agent_role,
             create_session,
             attach_session,
             detach_session,

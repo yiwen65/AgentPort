@@ -121,6 +121,7 @@ def main() -> int:
         names = {tool["name"] for tool in tools}
         expected = {
             "list_agents",
+            "list_roles",
             "resolve_project",
             "list_sessions",
             "session_status",
@@ -156,6 +157,22 @@ def main() -> int:
         check(
             all(agent.get("unavailableReason") in (None, "") for agent in agents["agents"]),
             "no listed Agent carries an availability warning",
+        )
+
+        print("list_roles")
+        roles, is_error = client.call("list_roles", {})
+        check(not is_error and roles.get("roles"), "enabled roles listed")
+        check(
+            all("instructions" not in role for role in roles["roles"]),
+            "role discovery does not expose full instructions",
+        )
+        role_id = roles["roles"][0]["roleId"]
+        shell_role, is_error = client.call(
+            "create_session", {"agent": "shell", "roleId": role_id}
+        )
+        check(
+            is_error and shell_role["error"]["code"] == "role_not_supported",
+            "roles are not applied to the Generic Shell Agent",
         )
 
         print("resolve_project")

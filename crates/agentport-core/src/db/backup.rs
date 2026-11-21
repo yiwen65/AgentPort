@@ -83,6 +83,7 @@ impl Db {
             "app_meta",
             "presets",
             "secret_refs",
+            "agent_roles",
             "adapters",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])?;

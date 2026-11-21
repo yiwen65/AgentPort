@@ -27,6 +27,8 @@ import type {
   LegacyLogInventory,
   PermissionStr,
   Preset,
+  AgentRole,
+  AgentRoleDraft,
   ProbeOutcome,
   McpRegistration,
   NotificationSetup,
@@ -279,6 +281,17 @@ export const localApi = {
     sessions: ConfirmedArchivedSession[],
   ) => invoke<void>("delete_project_archived_sessions", { projectId, sessions }),
   listPresets: (agent: string | null) => invoke<Preset[]>("list_presets", { agent }),
+  listAgentRoles: () => invoke<AgentRole[]>("list_agent_roles"),
+  createAgentRole: (draft: AgentRoleDraft) =>
+    invoke<AgentRole>("create_agent_role", { draft }),
+  updateAgentRole: (id: string, expectedRevision: number, draft: AgentRoleDraft) =>
+    invoke<AgentRole>("update_agent_role", { id, expectedRevision, draft }),
+  setAgentRoleEnabled: (id: string, expectedRevision: number, enabled: boolean) =>
+    invoke<AgentRole>("set_agent_role_enabled", { id, expectedRevision, enabled }),
+  resetAgentRole: (id: string, expectedRevision: number) =>
+    invoke<AgentRole>("reset_agent_role", { id, expectedRevision }),
+  deleteAgentRole: (id: string, expectedRevision: number) =>
+    invoke<void>("delete_agent_role", { id, expectedRevision }),
   createSession: (args: CreateSessionArgs) =>
     invoke<CreateSessionResult>("create_session", args),
   attachSession: (

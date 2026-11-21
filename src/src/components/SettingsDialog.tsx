@@ -42,6 +42,8 @@ import {
 } from "../store";
 import type {
   AdapterInstall,
+  AgentRole,
+  AgentRoleDraft,
   ArchivedSessionView,
   CommitAiConfig,
   CommitAiLanguage,
@@ -348,6 +350,267 @@ function CommitAiSection() {
 function AdapterOrderIcon({ agent }: { agent: string }) {
   if (agent === "shell") return <ShellIcon className="adapter-order-icon" size={18} />;
   return <AgentIcon agent={agent} className="adapter-order-icon" size={18} />;
+}
+
+function roleDraft(role: AgentRole): AgentRoleDraft {
+  return {
+    name: role.name,
+    description: role.description,
+    instructions: role.instructions,
+    outputContract: role.outputContract,
+  };
+}
+
+function RoleSection() {
+  const { t } = useTranslation(["settings", "common"]);
+  const [roles, setRoles] = useState<AgentRole[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<AgentRoleDraft | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (preferredId?: string | null) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const next = await api.listAgentRoles();
+      setRoles(next);
+      const target = preferredId === undefined ? selectedId : preferredId;
+      const selected = next.find((role) => role.id === target) ?? next[0];
+      if (selected) {
+        setSelectedId(selected.id);
+        setDraft(roleDraft(selected));
+        setCreating(false);
+      } else {
+        setSelectedId(null);
+        setDraft(null);
+      }
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load(null);
+    // Roles are local configuration and are loaded once when this section opens.
+    // Each mutation refreshes the authoritative list explicitly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const select = (role: AgentRole) => {
+    setSelectedId(role.id);
+    setDraft(roleDraft(role));
+    setCreating(false);
+    setError(null);
+  };
+
+  const startCreate = () => {
+    setSelectedId(null);
+    setCreating(true);
+    setDraft({ name: "", description: "", instructions: "", outputContract: null });
+    setError(null);
+  };
+
+  const save = async () => {
+    if (!draft || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = creating
+        ? await api.createAgentRole(draft)
+        : await api.updateAgentRole(
+            selectedId!,
+            roles.find((role) => role.id === selectedId)?.revision ?? 0,
+            draft,
+          );
+      await load(saved.id);
+      toast(t("settings:ui.roles.saved"), "success");
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = async (role: AgentRole) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setAgentRoleEnabled(role.id, role.revision, !role.enabled);
+      await load(role.id);
+    } catch (reason) {
+      setError(errorText(reason));
+      await load(role.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reset = async (role: AgentRole) => {
+    if (busy) return;
+    const confirmed = await confirmDialog({
+      title: t("settings:ui.roles.resetTitle"),
+      body: t("settings:ui.roles.resetBody", { name: role.name }),
+      confirmLabel: t("settings:ui.roles.reset"),
+      danger: false,
+    });
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.resetAgentRole(role.id, role.revision);
+      await load(role.id);
+      toast(t("settings:ui.roles.restored"), "success");
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (role: AgentRole) => {
+    if (busy || role.builtIn) return;
+    const confirmed = await confirmDialog({
+      title: t("settings:ui.roles.deleteTitle"),
+      body: t("settings:ui.roles.deleteBody", { name: role.name }),
+      confirmLabel: t("common:actions.delete"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteAgentRole(role.id, role.revision);
+      await load(null);
+      toast(t("settings:ui.roles.deleted"), "success");
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectedRole = roles.find((role) => role.id === selectedId) ?? null;
+  return (
+    <>
+      <div className="settings-section-heading">
+        <div className="section-title">{t("settings:ui.sections.roles")}</div>
+        <p className="form-hint">{t("settings:ui.roles.description")}</p>
+      </div>
+      {error ? <div className="error-bar" role="alert">{error}</div> : null}
+      {loading ? <p className="dim">{t("common:status.loading")}</p> : null}
+      {!loading ? (
+        <div className="agent-roles-layout">
+          <div className="agent-role-list" aria-label={t("settings:ui.roles.listLabel")}>
+            <div className="agent-role-list-heading">
+              <strong>{t("settings:ui.roles.listTitle")}</strong>
+              <button className="btn small primary" type="button" onClick={startCreate} disabled={busy}>
+                {t("settings:ui.roles.add")}
+              </button>
+            </div>
+            {roles.map((role) => (
+              <div
+                className={`agent-role-card${role.id === selectedId ? " selected" : ""}`}
+                key={role.id}
+              >
+                <button className="agent-role-select" type="button" onClick={() => select(role)}>
+                  <strong>{role.name}</strong>
+                  <span>{role.description}</span>
+                  <small>{role.builtIn ? t("settings:ui.roles.builtIn") : t("settings:ui.roles.custom")}</small>
+                </button>
+                <button
+                  type="button"
+                  className="adapter-enabled-switch"
+                  role="switch"
+                  aria-checked={role.enabled}
+                  aria-label={t("settings:ui.roles.enabledLabel", { name: role.name })}
+                  disabled={busy}
+                  onClick={() => void toggle(role)}
+                />
+              </div>
+            ))}
+          </div>
+          <div className="agent-role-editor">
+            <div className="agent-role-editor-heading">
+              <strong>
+                {creating ? t("settings:ui.roles.newTitle") : selectedRole?.name ?? t("settings:ui.roles.editorTitle")}
+              </strong>
+              {selectedRole ? <span className="form-hint">v{selectedRole.revision}</span> : null}
+            </div>
+            {draft ? (
+              <div className="settings-grid">
+                <label htmlFor="agent-role-name">{t("settings:ui.roles.name")}</label>
+                <div className="control">
+                  <input
+                    id="agent-role-name"
+                    value={draft.name}
+                    disabled={busy}
+                    onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                  />
+                </div>
+                <label htmlFor="agent-role-description">{t("settings:ui.roles.descriptionLabel")}</label>
+                <div className="control">
+                  <textarea
+                    id="agent-role-description"
+                    value={draft.description}
+                    disabled={busy}
+                    rows={3}
+                    onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+                  />
+                </div>
+                <label htmlFor="agent-role-instructions">{t("settings:ui.roles.instructions")}</label>
+                <div className="control">
+                  <textarea
+                    id="agent-role-instructions"
+                    value={draft.instructions}
+                    disabled={busy}
+                    rows={9}
+                    onChange={(event) => setDraft({ ...draft, instructions: event.target.value })}
+                  />
+                  <span className="form-hint">{t("settings:ui.roles.instructionsHint")}</span>
+                </div>
+                <label htmlFor="agent-role-output">{t("settings:ui.roles.outputContract")}</label>
+                <div className="control">
+                  <textarea
+                    id="agent-role-output"
+                    value={draft.outputContract ?? ""}
+                    disabled={busy}
+                    rows={4}
+                    onChange={(event) => setDraft({ ...draft, outputContract: event.target.value || null })}
+                  />
+                  <span className="form-hint">{t("settings:ui.roles.outputContractHint")}</span>
+                </div>
+              </div>
+            ) : (
+              <p className="dim">{t("settings:ui.roles.empty")}</p>
+            )}
+            {draft ? (
+              <div className="agent-role-actions">
+                <button className="btn primary" type="button" disabled={busy} onClick={() => void save()}>
+                  {t("common:actions.save")}
+                </button>
+                {!creating && selectedRole?.builtIn ? (
+                  <button className="btn ghost" type="button" disabled={busy} onClick={() => void reset(selectedRole)}>
+                    {t("settings:ui.roles.reset")}
+                  </button>
+                ) : null}
+                {!creating && selectedRole && !selectedRole.builtIn ? (
+                  <button className="btn ghost danger" type="button" disabled={busy} onClick={() => void remove(selectedRole)}>
+                    {t("common:actions.delete")}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 /** Last MCP registration answer, kept across mounts so a reopen never flickers. */
@@ -1184,6 +1447,7 @@ function ArchiveSection() {
 const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "settings:ui.sections.appearance" },
   { id: "adapters", labelKey: "settings:ui.sections.adapters" },
+  { id: "roles", labelKey: "settings:ui.sections.roles" },
   { id: "commitAi", labelKey: "settings:ui.sections.commitAi" },
   { id: "archive", labelKey: "settings:ui.sections.archive" },
   { id: "backup", labelKey: "settings:ui.sections.backup" },
@@ -1616,6 +1880,7 @@ export default function SettingsDialog({
   const content = {
     appearance: appearanceSection,
     adapters: <AdapterSection agentOrder={draft.agentOrder} agentHidden={draft.agentHidden} onAgentOrderChange={(agentOrder) => patch({ agentOrder })} onAgentHiddenChange={(agentHidden) => patch({ agentHidden })} />,
+    roles: <RoleSection />,
     commitAi: <CommitAiSection />,
     archive: <ArchiveSection />,
     backup: <BackupSection />,

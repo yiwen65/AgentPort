@@ -6,6 +6,7 @@
 //! version. Losing the file degrades to "everything is user-owned", which is
 //! the safe direction.
 
+use agentport_core::agent_roles::AgentRole;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,6 +25,31 @@ const LOCK_STALE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct RoleSnapshot {
+    pub role_id: String,
+    pub revision: u64,
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+    #[serde(default)]
+    pub output_contract: Option<String>,
+}
+
+impl From<&AgentRole> for RoleSnapshot {
+    fn from(role: &AgentRole) -> Self {
+        Self {
+            role_id: role.id.clone(),
+            revision: role.revision,
+            name: role.name.clone(),
+            description: role.description.clone(),
+            instructions: role.instructions.clone(),
+            output_contract: role.output_contract.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct OwnedSession {
     pub session_id: String,
     pub created_at: String,
@@ -38,6 +64,13 @@ pub struct OwnedSession {
     /// Permission mode the delegated Session was launched with, for audit.
     #[serde(default)]
     pub permission: Option<String>,
+    /// Immutable role content selected when this Session was created.
+    #[serde(default)]
+    pub role: Option<RoleSnapshot>,
+    /// A role is sent once, with the first task prompt. Persisting this flag
+    /// lets a restarted MCP avoid repeating the preamble on a follow-up.
+    #[serde(default)]
+    pub role_preamble_delivered: bool,
 }
 
 #[derive(Debug, Default)]
@@ -90,6 +123,18 @@ impl Registry {
         let id = session_id.to_string();
         self.mutate(|entries| {
             entries.remove(&id);
+        })
+    }
+
+    pub fn mark_role_preamble_delivered(&mut self, session_id: &str) -> io::Result<()> {
+        if !self.entries.contains_key(session_id) {
+            return Ok(());
+        }
+        let id = session_id.to_string();
+        self.mutate(|entries| {
+            if let Some(entry) = entries.get_mut(&id) {
+                entry.role_preamble_delivered = true;
+            }
         })
     }
 
@@ -228,6 +273,8 @@ mod tests {
             agent: Some("shell".into()),
             title: None,
             permission: Some("bypass".into()),
+            role: None,
+            role_preamble_delivered: false,
         }
     }
 
@@ -297,5 +344,37 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn role_snapshot_roundtrips_and_delivery_marker_is_persistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::load(dir.path());
+        let mut owned = entry("ses_role", 0);
+        owned.role = Some(RoleSnapshot {
+            role_id: "role_reviewer".into(),
+            revision: 3,
+            name: "Reviewer".into(),
+            description: "Review code".into(),
+            instructions: "Check concrete risks".into(),
+            output_contract: Some("Findings".into()),
+        });
+        registry.insert(owned).unwrap();
+        assert_eq!(
+            Registry::load(dir.path())
+                .get("ses_role")
+                .unwrap()
+                .role
+                .as_ref()
+                .unwrap()
+                .revision,
+            3
+        );
+        let mut registry = Registry::load(dir.path());
+        registry.mark_role_preamble_delivered("ses_role").unwrap();
+        assert!(Registry::load(dir.path())
+            .get("ses_role")
+            .unwrap()
+            .role_preamble_delivered);
     }
 }

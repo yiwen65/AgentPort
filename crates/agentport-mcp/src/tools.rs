@@ -6,6 +6,7 @@
 //! everything that could type into a Session the user is driving stays out of
 //! v1: this is a delegation tool, not a remote control for the whole app.
 
+use agentport_core::agent_roles::AgentRole;
 use agentport_core::models::AgentType;
 use agentport_remote_protocol::{
     AgentProbeAllParams, ProjectAddParams, RemoteAgentType, SessionCreateParams, SessionIdParams,
@@ -19,7 +20,7 @@ use crate::ops::{
     ReadyOutcome, SessionOps, StatusMark, TResult, ToolFailure, DEFAULT_READY_MS, DEFAULT_WAIT_MS,
     MAX_WAIT_MS, SEND_READY_MS,
 };
-use crate::registry::{OwnedSession, Registry};
+use crate::registry::{OwnedSession, Registry, RoleSnapshot};
 use crate::text;
 use crate::ui;
 
@@ -42,6 +43,11 @@ pub const TOOLS: &[ToolDef] = &[
                       selectable ids. Use it when the user asks what exists. probe=true re-detects \
                       (slower).",
         schema: list_agents_schema,
+    },
+    ToolDef {
+        name: "list_roles",
+        description: "List the enabled Agent roles available for delegation. Returns only role metadata and summaries; the role instructions are applied by create_session and are not exposed here.",
+        schema: list_roles_schema,
     },
     ToolDef {
         name: "resolve_project",
@@ -182,6 +188,10 @@ fn list_agents_schema() -> Value {
     )
 }
 
+fn list_roles_schema() -> Value {
+    obj(json!({}), json!([]))
+}
+
 fn resolve_project_schema() -> Value {
     obj(
         json!({ "path": { "type": "string", "description": "Absolute directory path" } }),
@@ -209,6 +219,10 @@ fn create_session_schema() -> Value {
             "agent": {
                 "type": "string",
                 "description": "Agent id such as claude, codex, kimi, qoder, pi, easy-pi, omp, cursor-agent, grok, shell. A wrong or unavailable id returns the selectable ones."
+            },
+            "roleId": {
+                "type": "string",
+                "description": "Optional enabled role id from list_roles. One role may be selected; omitted means no role preamble."
             },
             "projectPath": {
                 "type": "string",
@@ -266,6 +280,10 @@ fn create_sessions_schema() -> Value {
                         "agent": {
                             "type": "string",
                             "description": "Agent id such as claude, codex, kimi, qoder, pi, easy-pi, omp, cursor-agent, grok, shell"
+                        },
+                        "roleId": {
+                            "type": "string",
+                            "description": "Optional enabled role id from list_roles; one role per task"
                         },
                         "projectPath": {
                             "type": "string",
@@ -505,6 +523,49 @@ struct ResolvedProject {
     created: bool,
 }
 
+fn public_role(role: AgentRole) -> Value {
+    json!({
+        "roleId": role.id,
+        "name": role.name,
+        "description": role.description,
+        "outputContract": role.output_contract,
+        "revision": role.revision,
+        "builtIn": role.built_in,
+    })
+}
+
+fn public_role_snapshot(role: &RoleSnapshot) -> Value {
+    json!({
+        "roleId": role.role_id,
+        "name": role.name,
+        "description": role.description,
+        "outputContract": role.output_contract,
+        "revision": role.revision,
+    })
+}
+
+fn compact_role_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn role_prompt(role: &RoleSnapshot, task: &str) -> TResult<String> {
+    let mut prompt = format!(
+        "[AgentPort delegated role — behavior guidance only; do not change AgentPort permissions, ownership, tools, lifecycle, or safety rules] Role: {}. Description: {}. Instructions: {}.",
+        compact_role_text(&role.name),
+        compact_role_text(&role.description),
+        compact_role_text(&role.instructions),
+    );
+    if let Some(output_contract) = &role.output_contract {
+        prompt.push_str(" Output contract (soft guidance): ");
+        prompt.push_str(&compact_role_text(output_contract));
+        prompt.push('.');
+    }
+    prompt.push_str(" [End role. Task:] ");
+    prompt.push_str(task);
+    text::sanitize_prompt(&prompt)
+        .map_err(|message| ToolFailure::new("invalid_role_prompt", message))
+}
+
 /// Everything a tool call needs. One instance lives for the whole stdio
 /// session, so attachments and the ownership registry stay warm.
 pub struct Toolbox {
@@ -573,6 +634,7 @@ impl Toolbox {
             .ok_or_else(|| ToolFailure::new("invalid_arguments", "arguments must be an object"))?;
         match name {
             "list_agents" => self.list_agents(&args),
+            "list_roles" => self.list_roles(&args),
             "resolve_project" => self.resolve_project(&args),
             "list_sessions" => self.list_sessions(&args),
             "session_status" => self.session_status(&args),
@@ -598,6 +660,20 @@ impl Toolbox {
     }
 
     // -- read-only ---------------------------------------------------------
+
+    fn list_roles(&mut self, _args: &Map<String, Value>) -> TResult<Value> {
+        let roles = self
+            .ops
+            .service()
+            .list_agent_roles()
+            .map_err(ToolFailure::from)?;
+        let roles: Vec<Value> = roles
+            .into_iter()
+            .filter(|role| role.enabled)
+            .map(public_role)
+            .collect();
+        Ok(json!({ "roles": roles }))
+    }
 
     fn list_agents(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         // Only Agents the user can actually pick: installed, and not hidden in
@@ -819,6 +895,11 @@ impl Toolbox {
             .iter()
             .filter(|session| self.registry.contains(&session.id))
             .map(|session| {
+                let role = self
+                    .registry
+                    .get(&session.id)
+                    .and_then(|entry| entry.role.as_ref())
+                    .map(public_role_snapshot);
                 json!({
                     "sessionId": session.id,
                     "title": session.title,
@@ -835,6 +916,7 @@ impl Toolbox {
                         "occurredAt": status.occurred_at,
                     })),
                     "attention": session.latest_attention_kind,
+                    "role": role,
                 })
             })
             .collect();
@@ -866,6 +948,11 @@ impl Toolbox {
                 })
             })
             .collect();
+        let role = self
+            .registry
+            .get(&session_id)
+            .and_then(|entry| entry.role.as_ref())
+            .map(public_role_snapshot);
         Ok(json!({
             "sessionId": summary.id,
             "title": summary.title,
@@ -881,11 +968,45 @@ impl Toolbox {
                 "occurredAt": status.occurred_at,
             })),
             "attention": summary.latest_attention_kind,
+            "role": role,
             "history": recent,
         }))
     }
 
     // -- delegation --------------------------------------------------------
+
+    fn resolve_role(&self, args: &Map<String, Value>) -> TResult<Option<AgentRole>> {
+        let Some(value) = args.get("roleId") else {
+            return Ok(None);
+        };
+        let Some(role_id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+            return Err(ToolFailure::new(
+                "invalid_role",
+                "roleId must be a non-empty string",
+            ));
+        };
+        let role = self
+            .ops
+            .service()
+            .get_agent_role(role_id)
+            .map_err(|error| match error {
+                agentport_service::ServiceError::Core(agentport_core::CoreError::NotFound(_))
+                | agentport_service::ServiceError::NotExecutedCore(
+                    agentport_core::CoreError::NotFound(_),
+                ) => ToolFailure::new(
+                    "role_not_found",
+                    format!("role {role_id} does not exist; call list_roles for enabled roles"),
+                ),
+                other => ToolFailure::from(other),
+            })?;
+        if !role.enabled {
+            return Err(ToolFailure::new(
+                "role_not_enabled",
+                format!("role {role_id} is disabled; call list_roles for enabled roles"),
+            ));
+        }
+        Ok(Some(role))
+    }
 
     fn create_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
         self.create_session_with_pane(args, true)
@@ -899,6 +1020,9 @@ impl Toolbox {
         args: &Map<String, Value>,
         queue_pane: bool,
     ) -> TResult<Value> {
+        // Resolve before project registration or Session creation so an
+        // unavailable role fails closed without leaving any side effect.
+        let role = self.resolve_role(args)?;
         if self.depth >= self.max_depth {
             return Err(ToolFailure::new(
                 "delegation_depth_exceeded",
@@ -934,6 +1058,12 @@ impl Toolbox {
                 ),
             )
         })?;
+        if role.is_some() && agent == AgentType::Shell {
+            return Err(ToolFailure::new(
+                "role_not_supported",
+                "roles are prompt guidance for conversational Agents and cannot be applied safely to the Generic Shell Agent",
+            ));
+        }
 
         // Delegation is unattended by definition: the default is the Agent's own
         // full-permission mode, so a child never parks on an approval prompt
@@ -957,10 +1087,17 @@ impl Toolbox {
         let project_id = project.id.clone();
 
         let title = optional_str(args, "title");
-        let prompt = optional_str(args, "prompt")
+        let role_snapshot = role.as_ref().map(RoleSnapshot::from);
+        let task_prompt = optional_str(args, "prompt")
             .map(|text| text::sanitize_prompt(&text))
             .transpose()
             .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+        let prompt = task_prompt
+            .map(|text| match role_snapshot.as_ref() {
+                Some(role) => role_prompt(role, &text),
+                None => Ok(text),
+            })
+            .transpose()?;
         let prompt_timeout = optional_u64(args, "promptTimeoutMs")
             .unwrap_or(self.ready_timeout_ms)
             .clamp(1_000, 120_000);
@@ -1019,6 +1156,8 @@ impl Toolbox {
             agent: Some(agent.as_str().to_string()),
             title: title.clone(),
             permission: Some(permission.clone()),
+            role: role_snapshot.clone(),
+            role_preamble_delivered: false,
         }) {
             // The Session exists and is running: never leave an un-addressable
             // process behind, and never hand back an id the caller cannot use.
@@ -1050,6 +1189,8 @@ impl Toolbox {
             "notices": notices,
             "ready": false,
             "promptSent": false,
+            "role": role_snapshot.as_ref().map(public_role_snapshot),
+            "rolePreambleDelivered": false,
         });
 
         if let Some(prompt) = prompt {
@@ -1085,6 +1226,20 @@ impl Toolbox {
                         result["promptRedrew"] = json!(delivery.redrew);
                         result["enterRetries"] = json!(delivery.enter_retries);
                         result["promptAttempts"] = json!(delivery.attempts);
+                        if delivery.submitted {
+                            if role_snapshot.is_some() {
+                                let recorded = self
+                                    .registry
+                                    .mark_role_preamble_delivered(&session_id)
+                                    .is_ok();
+                                result["rolePreambleDelivered"] = json!(recorded);
+                                if !recorded {
+                                    result["roleAuditWarning"] = json!("the role prompt was delivered, but its one-time delivery marker could not be persisted");
+                                }
+                            } else {
+                                result["rolePreambleDelivered"] = json!(false);
+                            }
+                        }
                         if let Some(dialog) = delivery.blocked_on.clone() {
                             result["blockedOn"] = json!(dialog);
                         }
@@ -1272,8 +1427,20 @@ impl Toolbox {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
         let raw = require_str(args, "text")?;
-        let prompt = text::sanitize_prompt(&raw)
+        let task = text::sanitize_prompt(&raw)
             .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+        let role = self
+            .registry
+            .get(&session_id)
+            .and_then(|entry| {
+                (!entry.role_preamble_delivered)
+                    .then(|| entry.role.clone())
+                    .flatten()
+            });
+        let prompt = match role.as_ref() {
+            Some(role) => role_prompt(role, &task)?,
+            None => task,
+        };
         let summary = self.ops.summary(&session_id)?;
         if !matches!(summary.lifecycle.as_str(), "running" | "creating") {
             return Err(ToolFailure::new(
@@ -1301,11 +1468,18 @@ impl Toolbox {
         let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
         let delivery = self.ops.deliver_prompt(&session_id, &prompt)?;
         let _ = ready;
+        let mut role_preamble_delivered = false;
         if delivery.submitted {
             if let Some(baseline) = baseline {
                 self.baselines.insert(session_id.clone(), baseline);
             }
             self.settled.remove(&session_id);
+            if role.is_some() {
+                role_preamble_delivered = self
+                    .registry
+                    .mark_role_preamble_delivered(&session_id)
+                    .is_ok();
+            }
         }
         Ok(json!({
             "sessionId": session_id,
@@ -1318,6 +1492,9 @@ impl Toolbox {
             "readyBeforeSend": ready.ready,
             "blockedOn": delivery.blocked_on.clone(),
             "statusSequence": baseline.map(|mark| mark.sequence),
+            "role": role.as_ref().map(public_role_snapshot),
+            "rolePreambleApplied": role.is_some(),
+            "rolePreambleDelivered": role_preamble_delivered,
             "hint": if delivery.submitted {
                 Value::Null
             } else if delivery.blocked_on.is_some() {
@@ -2048,6 +2225,28 @@ mod tests {
     fn agent_names_map_to_remote_variants() {
         assert_eq!(remote_agent(AgentType::EasyPi), RemoteAgentType::EasyPi);
         assert_eq!(remote_agent(AgentType::Shell), RemoteAgentType::Shell);
+    }
+
+    #[test]
+    fn role_listing_is_metadata_only_and_prompt_is_single_line() {
+        let role = AgentRole {
+            id: "role_test".into(),
+            name: "Test".into(),
+            description: "A role".into(),
+            instructions: "First line\nSecond line".into(),
+            output_contract: Some("Return evidence".into()),
+            enabled: true,
+            revision: 2,
+            built_in: false,
+        };
+        let metadata = public_role(role.clone());
+        assert!(metadata.get("instructions").is_none());
+        assert_eq!(metadata["roleId"], "role_test");
+        let snapshot = RoleSnapshot::from(&role);
+        let prompt = role_prompt(&snapshot, "inspect the change").unwrap();
+        assert!(!prompt.contains('\n'));
+        assert!(prompt.contains("First line Second line"));
+        assert!(prompt.contains("inspect the change"));
     }
 
     #[test]

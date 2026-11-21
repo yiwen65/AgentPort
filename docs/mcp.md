@@ -59,10 +59,11 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | 工具 | 作用 |
 | --- | --- |
 | `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent；`probe: true` 会重新探测（较慢） |
+| `list_roles` | 只列出设置中**已启用**的角色 metadata（roleId、名称、说明、输出契约和 revision）；不会返回完整角色指令 |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等）。**通常用不到**：`create_session` 自己解析项目（显式 id/path → 否则当前工作目录；cwd 在已注册项目内时归到那个项目） |
 | `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence |
-| `create_session` | 建单个 Session；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
-| `create_sessions` | 一次创建多个独立委派任务；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
+| `create_session` | 建单个 Session；可传一个 `roleId` 选择已启用角色；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
+| `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId`；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
 | `wait_for_task` | 等单个当前回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout` + 依据 + **`reply`（本轮助手的回答原文）** |
 | `wait_for_tasks` | 一次等待多个 MCP-owned Session；每项返回与 `wait_for_task` 相同的 state/confidence/evidence/reply/fallback 字段 |
@@ -79,8 +80,8 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 单任务委派：
 
 ```text
-resolve_project {path: "/repo"}
-create_session  {agent: "claude", projectId: "...", title: "fix flaky test", prompt: "..."}
+list_roles       {}
+create_session  {agent: "claude", roleId: "role_implementer", projectPath: "/repo", title: "fix flaky test", prompt: "..."}
 wait_for_task  {sessionId: "...", timeoutMs: 600000}
 ```
 
@@ -108,6 +109,12 @@ wait_for_tasks {
 **作用域**：只有本 MCP 创建的 Session 存在于此。用户自己开的 Session **既不列出也不可寻址**（不是"只读"，是不可见）；`list_agents` 同样只给已安装且未被设置关掉的 Agent ——
 一个 Agent 不应该能往你正在操作的窗格里打字。归属记录在 `<数据目录>/mcp/agent-sessions.json`。
 
+**角色**：角色在设置 → Agent 角色中全局管理。内置角色可编辑但不可删除，可恢复默认；DIY 角色新建时默认关闭。
+委派时显式传一个 `roleId`，不传则保持原行为；禁用、删除或不存在的 roleId 会在创建 Session 前拒绝，不会静默去掉角色。
+MCP 只返回已启用角色的摘要，创建时把当时的 roleId、revision 和完整内容快照写入归属记录。
+角色指令以受约束的单行 delegation preamble 注入，只是行为指导，不能改变 AgentPort 的权限、Agent、工具、窗格、所有权或生命周期规则。
+角色编辑不会影响已有 Session。Generic Shell 不是对话型 Agent，不能安全应用角色，因此传 roleId 给 Shell 会被拒绝。
+
 **权限**：委派默认就是**各自的完全权限模式**（`permission: "bypass"`），因为委派本来就是无人值守的：
 子 Agent 停在审批提示上没人回答，任务就死在那里。各 Agent 的映射沿用 AgentPort 自己的适配器验证
 过的原生 flag —— Claude/Qoder `--dangerously-skip-permissions`、Codex
@@ -118,7 +125,7 @@ Pi、Amp、Generic Shell 上游没有审批概念，`effectivePermissionMode` �
 批准），或传 `"auto"` 只放宽一部分。这些 Session 在标题栏照常带 ⚠ 警示，`list_sessions` 也会显示
 `permissionMode`。
 
-**输入**：没有裸字节输入工具。`send_prompt` 只接受一行文本，拒绝 ESC 与控制字符，上限 8 KiB。
+**输入**：没有裸字节输入工具。`send_prompt` 只接受一行文本，拒绝 ESC 与控制字符，上限 8 KiB。角色指令允许在设置中多行编辑，但注入时会压缩为空格并与任务一起受 8 KiB 限制。
 
 **首发任务**：交互式 TUI 启动期间会把提前写入的字节丢掉（尤其 Qoder：它先画出输入框，再继续加载
 MCP servers，此时打进去的字会被丢弃）。所以：

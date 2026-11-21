@@ -5,6 +5,7 @@
 //! the host manager; `agentport-host` owns PTY/process-group/log per session.
 
 pub mod adapters;
+pub mod agent_roles;
 pub mod backup;
 pub mod db;
 pub mod diag;

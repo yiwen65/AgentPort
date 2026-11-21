@@ -1231,6 +1231,98 @@ body.is-project-dragging .tree-row.project {
   opacity: 0.45;
 }
 
+.agent-roles-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1.4fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.agent-role-list,
+.agent-role-editor {
+  min-width: 0;
+}
+
+.agent-role-list-heading,
+.agent-role-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.agent-role-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+}
+
+.agent-role-card + .agent-role-card {
+  margin-top: 8px;
+}
+
+.agent-role-card.selected {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+
+.agent-role-select {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-role-select span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.agent-role-select small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-role-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.agent-role-editor .settings-grid {
+  margin-top: 0;
+}
+
+.agent-role-editor .settings-grid .control {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.agent-role-editor .settings-grid textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+@media (max-width: 820px) {
+  .agent-roles-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* MCP registration cell: a switch only; unsupported Agents render it disabled. */
 .adapter-mcp-cell {
   display: inline-flex;

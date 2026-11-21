@@ -13,6 +13,7 @@ pub use project_directory::ProjectDirectoryError;
 use agentport_core::terminal_seed;
 
 use agentport_core::adapters::{self, capability, LaunchContext, ResumeContext};
+use agentport_core::agent_roles::AgentRole;
 use agentport_core::db::Db;
 use agentport_core::diag::Diagnostics;
 use agentport_core::export::Exporter;
@@ -618,6 +619,15 @@ pub trait RemoteService {
         Err(ServiceError::InvalidRequest)
     }
     fn list_presets(&self, _params: PresetListParams) -> Result<Vec<PresetSummary>> {
+        Err(ServiceError::InvalidRequest)
+    }
+    /// Local-only role configuration used by the AgentPort GUI and MCP sidecar.
+    /// It is intentionally not part of the remote protocol or Session launch
+    /// parameters: roles are prompt context, not execution policy.
+    fn list_agent_roles(&self) -> Result<Vec<AgentRole>> {
+        Err(ServiceError::InvalidRequest)
+    }
+    fn get_agent_role(&self, _id: &str) -> Result<AgentRole> {
         Err(ServiceError::InvalidRequest)
     }
     fn list_projects(&self) -> Result<Vec<ProjectSummary>> {
@@ -1299,6 +1309,7 @@ impl CoreService {
         paths.ensure_layout()?;
         let db = Db::open(&paths)?;
         db.seed_builtin_presets()?;
+        db.seed_builtin_roles()?;
         Ok(Self {
             paths,
             db,
@@ -1460,6 +1471,14 @@ impl RemoteService for CoreService {
             .into_iter()
             .map(preset_summary)
             .collect()
+    }
+
+    fn list_agent_roles(&self) -> Result<Vec<AgentRole>> {
+        self.db.list_agent_roles().map_err(Into::into)
+    }
+
+    fn get_agent_role(&self, id: &str) -> Result<AgentRole> {
+        self.db.get_agent_role(id).map_err(Into::into)
     }
 
     fn list_projects(&self) -> Result<Vec<ProjectSummary>> {
