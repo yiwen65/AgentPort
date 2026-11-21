@@ -508,44 +508,56 @@ function RoleSection() {
         <div className="agent-roles-layout">
           <div className="agent-role-list" aria-label={t("settings:ui.roles.listLabel")}>
             <div className="agent-role-list-heading">
-              <strong>{t("settings:ui.roles.listTitle")}</strong>
+              <div>
+                <strong>{t("settings:ui.roles.listTitle")}</strong>
+                <span className="agent-role-list-count">{roles.length}</span>
+              </div>
               <button className="btn small primary" type="button" onClick={startCreate} disabled={busy}>
                 {t("settings:ui.roles.add")}
               </button>
             </div>
-            {roles.map((role) => (
-              <div
-                className={`agent-role-card${role.id === selectedId ? " selected" : ""}`}
-                key={role.id}
-              >
-                <button className="agent-role-select" type="button" onClick={() => select(role)}>
-                  <strong>{role.name}</strong>
-                  <span>{role.description}</span>
-                  <small>{role.builtIn ? t("settings:ui.roles.builtIn") : t("settings:ui.roles.custom")}</small>
-                </button>
-                <button
-                  type="button"
-                  className="adapter-enabled-switch"
-                  role="switch"
-                  aria-checked={role.enabled}
-                  aria-label={t("settings:ui.roles.enabledLabel", { name: role.name })}
-                  disabled={busy}
-                  onClick={() => void toggle(role)}
-                />
-              </div>
-            ))}
+            <div className="agent-role-list-items">
+              {roles.map((role) => (
+                <div
+                  className={`agent-role-card${role.id === selectedId ? " selected" : ""}`}
+                  key={role.id}
+                >
+                  <button className="agent-role-select" type="button" onClick={() => select(role)}>
+                    <span className="agent-role-avatar" aria-hidden="true">{role.name.trim().charAt(0).toUpperCase() || "?"}</span>
+                    <span className="agent-role-card-copy">
+                      <strong>{role.name}</strong>
+                      <small>{role.builtIn ? t("settings:ui.roles.builtIn") : t("settings:ui.roles.custom")}</small>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="adapter-enabled-switch"
+                    role="switch"
+                    aria-checked={role.enabled}
+                    aria-label={t("settings:ui.roles.enabledLabel", { name: role.name })}
+                    disabled={busy}
+                    onClick={() => void toggle(role)}
+                  />
+                </div>
+              ))}
+            </div>
           </div>
           <div className="agent-role-editor">
             <div className="agent-role-editor-heading">
-              <strong>
-                {creating ? t("settings:ui.roles.newTitle") : selectedRole?.name ?? t("settings:ui.roles.editorTitle")}
-              </strong>
-              {selectedRole ? <span className="form-hint">v{selectedRole.revision}</span> : null}
+              <div>
+                <span className="agent-role-kicker">{creating ? t("settings:ui.roles.newTitle") : t("settings:ui.roles.editorTitle")}</span>
+                <strong>{t("settings:ui.roles.detailsTitle")}</strong>
+              </div>
+              {selectedRole ? (
+                <span className={`agent-role-status${selectedRole.enabled ? " enabled" : ""}`}>
+                  {selectedRole.enabled ? t("settings:ui.roles.enabled") : t("settings:ui.roles.disabled")}
+                </span>
+              ) : null}
             </div>
             {draft ? (
-              <div className="settings-grid">
-                <label htmlFor="agent-role-name">{t("settings:ui.roles.name")}</label>
-                <div className="control">
+              <div className="agent-role-form">
+                <div className="agent-role-field">
+                  <label htmlFor="agent-role-name">{t("settings:ui.roles.name")}</label>
                   <input
                     id="agent-role-name"
                     value={draft.name}
@@ -553,34 +565,34 @@ function RoleSection() {
                     onChange={(event) => setDraft({ ...draft, name: event.target.value })}
                   />
                 </div>
-                <label htmlFor="agent-role-description">{t("settings:ui.roles.descriptionLabel")}</label>
-                <div className="control">
+                <div className="agent-role-field">
+                  <label htmlFor="agent-role-description">{t("settings:ui.roles.descriptionLabel")}</label>
                   <textarea
                     id="agent-role-description"
                     value={draft.description}
                     disabled={busy}
-                    rows={3}
+                    rows={2}
                     onChange={(event) => setDraft({ ...draft, description: event.target.value })}
                   />
                 </div>
-                <label htmlFor="agent-role-instructions">{t("settings:ui.roles.instructions")}</label>
-                <div className="control">
+                <div className="agent-role-field">
+                  <label htmlFor="agent-role-instructions">{t("settings:ui.roles.instructions")}</label>
                   <textarea
                     id="agent-role-instructions"
                     value={draft.instructions}
                     disabled={busy}
-                    rows={9}
+                    rows={8}
                     onChange={(event) => setDraft({ ...draft, instructions: event.target.value })}
                   />
                   <span className="form-hint">{t("settings:ui.roles.instructionsHint")}</span>
                 </div>
-                <label htmlFor="agent-role-output">{t("settings:ui.roles.outputContract")}</label>
-                <div className="control">
+                <div className="agent-role-field">
+                  <label htmlFor="agent-role-output">{t("settings:ui.roles.outputContract")}</label>
                   <textarea
                     id="agent-role-output"
                     value={draft.outputContract ?? ""}
                     disabled={busy}
-                    rows={4}
+                    rows={3}
                     onChange={(event) => setDraft({ ...draft, outputContract: event.target.value || null })}
                   />
                   <span className="form-hint">{t("settings:ui.roles.outputContractHint")}</span>
@@ -1917,7 +1929,7 @@ export default function SettingsDialog({
 
   return (
     <div
-      className="settings-page"
+      className={`settings-page settings-page-${section}`}
       role="dialog"
       aria-modal="true"
       aria-labelledby="settings-page-title"
@@ -1977,7 +1989,7 @@ export default function SettingsDialog({
         </nav>
         <section className="settings-page-panel" aria-label={t("settings:ui.contentAriaLabel")}>
           <div ref={contentScrollRef} className="settings-content">
-            <div className="settings-section-surface">
+            <div className={`settings-section-surface settings-section-surface-${section}`}>
               {error ? <div className="error-bar" role="alert">{error}</div> : null}
               {content}
             </div>

@@ -1184,14 +1184,25 @@ body.is-project-dragging .tree-row.project {
 
 .agent-roles-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(360px, 1.4fr);
-  gap: 20px;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(420px, 1.28fr);
+  gap: 18px;
   align-items: start;
 }
 
 .agent-role-list,
 .agent-role-editor {
   min-width: 0;
+  border: 1px solid var(--overlay-divider);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--overlay-input) 74%, transparent);
+}
+
+.agent-role-list {
+  padding: 14px;
+}
+
+.agent-role-editor {
+  padding: 20px;
 }
 
 .agent-role-list-heading,
@@ -1200,35 +1211,69 @@ body.is-project-dragging .tree-row.project {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+}
+
+.agent-role-list-heading {
+  min-height: 32px;
+  margin-bottom: 12px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.agent-role-list-heading > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.agent-role-list-count {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--overlay-hover);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agent-role-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .agent-role-card {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
+  gap: 8px;
+  min-height: 58px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
   border-radius: 9px;
-  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  background: transparent;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.agent-role-card + .agent-role-card {
-  margin-top: 8px;
+.agent-role-card:hover {
+  border-color: var(--overlay-border);
+  background: var(--overlay-hover);
 }
 
 .agent-role-card.selected {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--overlay-border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--overlay-input));
 }
 
 .agent-role-select {
   display: flex;
   flex: 1;
+  align-items: center;
   min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-  padding: 0;
+  gap: 10px;
+  padding: 2px 0;
   border: 0;
   background: transparent;
   color: inherit;
@@ -1236,36 +1281,134 @@ body.is-project-dragging .tree-row.project {
   cursor: pointer;
 }
 
-.agent-role-select span {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
+.agent-role-select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 
-.agent-role-select small {
-  color: var(--muted);
+.agent-role-avatar {
+  display: grid;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--overlay-input));
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-role-card-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.agent-role-card-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-role-card-copy small {
+  color: var(--text-faint);
   font-size: 11px;
+}
+
+.agent-role-editor-heading {
+  align-items: flex-start;
+  padding-bottom: 17px;
+  border-bottom: 1px solid var(--overlay-divider);
+  margin-bottom: 18px;
+}
+
+.agent-role-editor-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-role-kicker {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.agent-role-editor-heading strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-role-status {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid var(--overlay-border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agent-role-status.enabled {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--overlay-border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-text);
+}
+
+.agent-role-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.agent-role-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.agent-role-field label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-role-field input,
+.agent-role-field textarea {
+  width: 100%;
+}
+
+.agent-role-field textarea {
+  resize: vertical;
+}
+
+.agent-role-field .form-hint {
+  margin-top: -1px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .agent-role-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 16px;
-}
-
-.agent-role-editor .settings-grid {
-  margin-top: 0;
-}
-
-.agent-role-editor .settings-grid .control {
-  align-items: stretch;
-  flex-direction: column;
-}
-
-.agent-role-editor .settings-grid textarea {
-  width: 100%;
-  resize: vertical;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--overlay-divider);
 }
 
 @media (max-width: 820px) {
@@ -7377,6 +7520,10 @@ body.is-resizing-pane {
   margin-bottom: 14px;
 }
 
+.settings-section-surface-roles {
+  width: min(980px, 100%);
+}
+
 .settings-page-footer {
   display: flex;
   justify-content: flex-end;
@@ -9164,6 +9311,10 @@ textarea:focus {
 
   .settings-content > * {
     width: 100%;
+  }
+
+  .settings-page-roles .settings-content {
+    padding-inline: max(48px, calc((100% - 980px) / 2));
   }
 }
 
