@@ -751,10 +751,73 @@ fn descendant_pids(shared: &Shared) -> Vec<i32> {
     set.into_iter().collect()
 }
 
-/// Walk the process table (argv form, no shell) and collect every pid whose
-/// ancestor chain reaches `root`. The host itself is never included.
+/// Walk the process table and collect every pid by parent.
+///
+/// macOS reads the table in-process. Spawning `ps` on every refresh searched
+/// each PATH entry (several failed execs) and made `syspolicyd` track every
+/// attempt, which kept it busy across all idle session hosts.
 fn process_children() -> Option<std::collections::HashMap<i32, Vec<i32>>> {
-    let out = std::process::Command::new("ps")
+    #[cfg(target_os = "macos")]
+    {
+        process_children_macos()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        process_children_ps()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn process_children_macos() -> Option<std::collections::HashMap<i32, Vec<i32>>> {
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count <= 0 {
+        return None;
+    }
+    let mut pids = vec![0 as libc::c_int; count as usize + 64];
+    let written = unsafe {
+        libc::proc_listallpids(
+            pids.as_mut_ptr().cast(),
+            (pids.len() * std::mem::size_of::<libc::c_int>()) as libc::c_int,
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    pids.truncate(written as usize);
+    let info_size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let mut children: std::collections::HashMap<i32, Vec<i32>> =
+        std::collections::HashMap::new();
+    for pid in pids {
+        if pid <= 0 {
+            continue;
+        }
+        // SAFETY: proc_pidinfo writes at most `info_size` bytes into `info`.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdinfo).cast(),
+                info_size,
+            )
+        };
+        if read != info_size {
+            continue;
+        }
+        children.entry(info.pbi_ppid as i32).or_default().push(pid);
+    }
+    Some(children)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_children_ps() -> Option<std::collections::HashMap<i32, Vec<i32>>> {
+    let ps = if std::path::Path::new("/bin/ps").exists() {
+        "/bin/ps"
+    } else {
+        "ps"
+    };
+    let out = std::process::Command::new(ps)
         .args(["-axo", "pid=,ppid="])
         .output()
         .ok()?;
@@ -3444,5 +3507,21 @@ mod socket_cleanup_tests {
         remove_socket_file(&path, Some((1, 2)));
         remove_socket_file(&path, None);
         assert!(!path.exists());
+    }
+}
+
+#[cfg(test)]
+mod process_table_tests {
+    use super::*;
+
+    #[test]
+    fn process_children_lists_this_process_under_its_parent() {
+        let children = process_children().expect("process table");
+        let me = std::process::id() as i32;
+        let parent = unsafe { libc::getppid() } as i32;
+        assert!(
+            children.get(&parent).is_some_and(|pids| pids.contains(&me)),
+            "parent {parent} should list child {me}"
+        );
     }
 }
