@@ -3,7 +3,7 @@
 - Created: 2026-11-22
 - Workspace: /Users/w/Projects/AgentSessions
 - Mode: execute
-- Overall status: in_progress
+- Overall status: done
 - Source: User request to add an MCP `handoff` tool equivalent to the handoff-writer skill, but delegate the handoff directly to a split Agent Session instead of writing a document.
 
 <!-- task-doc-section:background-goal -->
@@ -116,9 +116,9 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 - Blocker: None.
 - Unblock condition: None.
 
-### [ ] T-003 — Integrated validation, commit, and Debug App delivery
+### [x] T-003 — Integrated validation, commit, and Debug App delivery
 
-- Status: in_progress
+- Status: done
 - Owner: coordinator
 - Objective: Run the complete required checks, commit task-only changes, and deliver the updated debug application.
 - Inputs and prerequisites: T-001 and T-002 done.
@@ -138,7 +138,7 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
   - Focused Rust/frontend tests/build.
   - `python3 scripts/test-agentport-mcp.py`.
   - Prescribed Debug App restart and CUA verification.
-- Validation evidence: `cargo test -p agentport-service --lib` passed 73 tests; `cargo check -p agentport-remote-bridge` passed; `npm run build` and `npm run i18n:check` passed; and final MCP E2E passed after adding the handoff scenario. Debug App restart remains for final delivery.
+- Validation evidence: `cargo test -p agentport-service --lib` passed 73 tests; `cargo check -p agentport-remote-bridge` passed; `npm run build` and `npm run i18n:check` passed; and final MCP E2E passed after adding the handoff scenario. `cargo test -p agentport-mcp --lib` passed 42 tests. `python3 scripts/restart-debug-app.py` rebuilt/signed/opened the Debug App; PID 16992 was verified at the exact GUI path, and CUA confirmed a populated 1366×857 nonblank window.
 - Blocker: None.
 - Unblock condition: None.
 
@@ -170,10 +170,11 @@ Add a first-class MCP tool named `handoff`. It receives a complete Markdown hand
 - 2026-11-22: Task document created in execute mode; implementation begins with MCP tool contract.
 - 2026-11-22: T-001 completed: registered `handoff`, added Markdown compaction/validation, and reused existing direct Session/pane delegation.
 - 2026-11-22: T-002 completed: added E2E coverage for delivery, pane creation, invalid input, no-document behavior, cleanup, and MCP documentation.
+- 2026-11-22: T-003 completed: all required validation passed; the signed Debug App was reopened and visually verified nonblank.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
-- Result: not_run
-- Evidence: Not run.
-- Limitations: Implementation, integrated validation, commit, and Debug App delivery are incomplete.
+- Result: passed
+- Evidence: Direct `handoff` delegation is implemented and committed in `8780395`. MCP unit tests, Service tests, Remote Bridge check, frontend build/i18n check, full MCP E2E, task validation, and Debug App rendering verification passed. The tool returns immediately after creating/sending the Session prompt and does not write a handoff document.
+- Limitations: Handoff Markdown is supplied by the caller and compacted to a single prompt line; MCP does not reconstruct missing conversation context. Completion remains a separate wait-tool call.
