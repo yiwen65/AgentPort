@@ -37,11 +37,13 @@ export function useAttentionInbox(
   }, []);
   const isHostNotConnected = (failure: unknown) => Boolean(failure && typeof failure === "object" && "code" in failure && (failure as { code?: unknown }).code === "host_not_connected");
   const flushSeen = useCallback((hostId: string): Promise<void> => {
+    if (!visible) return Promise.resolve();
     const active = seenFlushes.current.get(hostId);
     if (active) return active;
     let task!: Promise<void>;
     task = (async () => {
       for (;;) {
+        if (!visible) return;
         const pending = pendingSeen.current.get(hostId);
         if (!pending?.size) return;
         for (const [sessionId, cursor] of [...pending]) {
