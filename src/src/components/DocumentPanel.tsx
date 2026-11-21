@@ -2274,7 +2274,7 @@ export default function DocumentPanel() {
   const hasDocs = groups.length > 0;
   // Tree-only mode (explorer open, no file picked yet): show just the tree
   // column — the editor area appears once a file opens.
-  const treeOnly = !hasDocs;
+  const treeOnly = !hasDocs || (collapsed && explorerOpen);
   // Tree column width: user-draggable via the sash; in docked dual mode the
   // editor keeps at least MIN_DOC_EDITOR_WIDTH regardless of the stored tree
   // width. The expanded panel is window-wide, so the stored (docked) panel
@@ -2296,7 +2296,7 @@ export default function DocumentPanel() {
   const topbarTreeWidth = treeOnly ? treeBasis + 1 : treeBasis;
   useEffect(() => {
     const root = document.documentElement;
-    if (!explorerOpen || collapsed) {
+    if (!explorerOpen) {
       root.style.removeProperty("--doc-tree-topbar-width");
       return;
     }
@@ -2304,7 +2304,7 @@ export default function DocumentPanel() {
     return () => {
       root.style.removeProperty("--doc-tree-topbar-width");
     };
-  }, [collapsed, explorerOpen, topbarTreeWidth]);
+  }, [explorerOpen, topbarTreeWidth]);
 
   if (!hasDocs && !explorerOpen) return null;
 
@@ -2347,7 +2347,7 @@ export default function DocumentPanel() {
           }}
         />
       )}
-      {hasDocs ? (
+      {hasDocs && !treeOnly ? (
         <div className="doc-editor-column">
           <DocToolbar
             tab={activeTab}
@@ -2372,7 +2372,7 @@ export default function DocumentPanel() {
           </div> : null}
         </div>
       ) : null}
-      {hasDocs && explorerOpen ? (
+      {hasDocs && explorerOpen && !treeOnly ? (
         <div
           className={`doc-tree-resize${activeSash === "tree" ? " active" : ""}`}
           role="separator"

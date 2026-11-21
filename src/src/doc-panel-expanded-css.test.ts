@@ -37,7 +37,8 @@ describe("expanded document panel layout", () => {
   });
 
   it("removes a folded viewer surface like an empty document workspace", () => {
-    const folded = ruleBody(".doc-panel.collapsed") ?? "";
+    const folded = ruleBody(".doc-panel.collapsed:not(.tree-only)") ?? "";
     expect(folded).toContain("display: none");
+    expect(styles).toContain(".doc-panel.collapsed.tree-only .doc-editor-column");
   });
 });

@@ -753,6 +753,27 @@ describe("DocumentPanel", () => {
     });
   });
 
+  it("keeps the file tree independently expandable while the viewer is folded", async () => {
+    listMock.mockResolvedValue({
+      path: "/tmp/demo",
+      truncated: false,
+      entries: [{ name: "README.md", path: "/tmp/demo/README.md", kind: "file" }],
+    });
+    const { container } = render(<DocumentPanel />);
+    await screen.findByRole("tab", { name: "报告.md" });
+
+    fireEvent.click(screen.getByLabelText("折叠文档查看器"));
+    await waitFor(() => expect(getState().docPanelCollapsed).toBe(true));
+
+    act(() => setState({ explorerOpen: true, explorerRoot: "/tmp/demo" }));
+    await waitFor(() => {
+      expect(container.querySelector(".doc-panel")?.className).toContain("tree-only");
+      expect(container.querySelector(".doc-tree")).not.toBeNull();
+      expect(container.querySelector(".doc-editor-column")).toBeNull();
+      expect(getState().docPanelCollapsed).toBe(true);
+    });
+  });
+
   it("splits into two groups and collapses when the second group empties", async () => {
     act(() => pinDocumentTab(DEMO_DOC.path));
     act(() => {

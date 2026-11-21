@@ -4419,8 +4419,18 @@ body.is-resizing-pane {
 }
 
 /* Folded viewer: remove the document surface completely, like the empty
-   workspace, while the topbar keeps the reopen control available. */
-.doc-panel.collapsed {
+   workspace, while the topbar keeps the reopen control available. If the
+   explorer is opened independently, the same folded panel becomes the
+   tree-only surface instead of blocking the file tree. */
+.doc-panel.collapsed:not(.tree-only) {
+  display: none;
+}
+
+.doc-panel.collapsed.tree-only .doc-editor-column {
+  display: none;
+}
+
+.doc-panel.collapsed.tree-only .doc-tree-resize {
   display: none;
 }
 
