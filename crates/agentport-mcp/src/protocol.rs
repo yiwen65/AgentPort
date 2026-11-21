@@ -198,6 +198,12 @@ whether the turn finished. Each wait is capped below common client request deadl
 read_output is only bounded progress evidence; session_status.completion can carry a
 completed turn's final reply during recovery. cancel_wait_group cancels only the
 background waiters, not the Agent Sessions.
+
+Handoff routing: when the user asks to hand off, transfer, or delegate the current
+context to a named Agent (for example, “handoff to codex”), call the `handoff` tool.
+Do not invoke a handoff-writer skill and do not write a `docs/handoff/` document for
+that request. `handoff` is a one-shot fire-and-forget transfer; it returns the new
+Session and pane metadata without collecting a final answer.
 cancel_turn is Ctrl-C and keeps
 the Session alive; terminate_session kills the whole process group and cannot be
 undone. To tidy up, archive_session hides a Session and keeps its history readable;
@@ -253,6 +259,10 @@ mod tests {
         let params = json!({ "protocolVersion": "2024-11-05" });
         let result = initialize_result(Some(&params), "0.0.0");
         assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert!(result["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Handoff routing"));
         let unknown = json!({ "protocolVersion": "1999-01-01" });
         let result = initialize_result(Some(&unknown), "0.0.0");
         assert_eq!(result["protocolVersion"], LATEST_PROTOCOL_VERSION);

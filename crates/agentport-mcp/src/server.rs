@@ -120,6 +120,14 @@ mod tests {
             .unwrap();
         assert!(create["description"].as_str().unwrap().contains("role_test"));
         assert!(create["description"].as_str().unwrap().contains("Test Role"));
+        let handoff = definitions
+            .iter()
+            .find(|tool| tool["name"] == "handoff")
+            .unwrap();
+        let handoff_description = handoff["description"].as_str().unwrap();
+        assert!(handoff_description.contains("Canonical route"));
+        assert!(handoff_description.contains("handoff-writer"));
+        assert!(handoff_description.contains("docs/handoff"));
     }
 
     #[test]

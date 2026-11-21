@@ -98,7 +98,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "handoff",
-        description: "Create a new split-pane Agent Session and delegate a complete Markdown handoff directly to it. This is a one-shot fire-and-forget handoff: it returns immediately and does not require wait_for_task or a wait group. No handoff document is written.",
+        description: "Canonical route for requests such as ‘handoff to codex’. Create a new split-pane Agent Session and delegate a complete Markdown handoff directly to it. This is a one-shot fire-and-forget handoff: it returns immediately and does not require wait_for_task or a wait group. Use this tool instead of the handoff-writer skill or writing docs/handoff files. No handoff document is written.",
         schema: handoff_schema,
     },
     ToolDef {
