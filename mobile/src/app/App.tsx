@@ -15,6 +15,8 @@ import { FileDownloadProvider } from "../features/files/FileDownloads";
 import type { FileDownloadClient } from "../protocol/fileDownloadClient";
 import type { MarkdownImageClient } from "../protocol/markdownImageClient";
 import { fileDownloadClient } from "../platform/tauriFileDownloadClient";
+import { TaskHub } from "../features/tasks/TaskHub";
+import { parseTaskDeepLink, type TaskDeepLink } from "../features/tasks/taskDeepLinks";
 
 // Keep xterm and its addons off the dashboard's initial module graph. Both
 // terminal entry points must be lazy; an eager generic terminal defeats this.
@@ -42,7 +44,7 @@ const KEEP_ALIVE_SESSION_STAGES = 2;
 
 const stageKeyOf = (session: OpenSession) => `${session.hostProfileId}:${session.session.id}`;
 
-type SessionPage = "list" | "terminal" | "files";
+type SessionPage = "list" | "terminal" | "files" | "tasks";
 
 interface AppProps {
   client: RemoteClient;
@@ -67,7 +69,9 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
   // their terminal attachment instead of rebuilding it.
   const [sessionStages, setSessionStages] = useState<OpenSession[]>([]);
   const [genericHost, setGenericHost] = useState<HostProfileSummary>();
-  const [page, setPage] = useState<SessionPage>("list");
+  const [taskLink] = useState<TaskDeepLink | undefined>(() => parseTaskDeepLink(window.location.href));
+  const [activeTaskLink, setActiveTaskLink] = useState<TaskDeepLink | undefined>(taskLink);
+  const [page, setPage] = useState<SessionPage>(() => taskLink ? "tasks" : "list");
   const terminalVisible = page === "terminal" && !genericHost;
   const [filesVisited, setFilesVisited] = useState(false);
   useTerminalImmersion(terminalVisible || page === "files");
@@ -93,7 +97,30 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
     setFilesVisited(true);
     setPage("files");
   };
+  const openTasks = useCallback((link?: TaskDeepLink) => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    setActiveTaskLink(link);
+    setPage("tasks");
+  }, []);
+  const closeTasks = useCallback(() => {
+    setActiveTaskLink(undefined);
+    setPage("list");
+  }, []);
   usePushAlerts(client, hostAuthClient, hostProfilesEpoch, openSession);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const link = parseTaskDeepLink(window.location.href);
+      if (link) {
+        setActiveTaskLink(link);
+        setPage("tasks");
+      } else if (page === "tasks") {
+        closeTasks();
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [closeTasks, page]);
 
   // Keep the opened stages in sync with the visible session. Re-opening a
   // session that is already mounted only refreshes its props, so its terminal
@@ -253,6 +280,7 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
           hostProfilesEpoch={hostProfilesEpoch}
           preferredHostId={connectedProfileId}
           onManageDevices={() => setDeviceManagerOpen(true)}
+          onOpenTasks={openTasks}
           onOpenSettings={() => setSettingsOpen(true)}
         />
       </main>
@@ -277,6 +305,8 @@ function AppContents({ client, hostAuthClient, terminalClient = genericTerminalC
           </div>
         );
       })}
+
+      {page === "tasks" ? <TaskHub client={client} initialLink={activeTaskLink} onBack={closeTasks} /> : null}
 
       {selectedSession && filesVisited ? (
         <div className={`files-stage${page === "files" ? " is-visible" : ""}`} aria-hidden={page !== "files"} {...(page !== "files" ? { inert: "" } : {})}>

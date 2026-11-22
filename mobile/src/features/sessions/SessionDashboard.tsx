@@ -97,9 +97,10 @@ function relativeTime(value: string): string {
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "folder" | "chevron" | "settings" | "addProject" }) {
+function Icon({ name }: { name: "computer" | "bell" | "refresh" | "clock" | "folder" | "chevron" | "settings" | "addProject" | "tasks" }) {
   const paths = {
     addProject: <><path d="M3 8V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v3M3 8v10a2 2 0 0 0 2 2h6" /><path d="M17 14v8M13 18h8" /></>,
+    tasks: <><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="m9 3-1 3-3 1-2 5 2 5 3 1 1 3h6l1-3 3-1 2-5-2-5-3-1-1-3z" /></>,
     computer: <><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 21h8M12 18v3" /></>,
     bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
@@ -214,13 +215,14 @@ const SessionRows = memo(function SessionRows({ sessions, unreadSessionIds, host
     onOpen={() => onOpen(session)} onActions={() => onActions(session)} />)}</>;
 });
 
-export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenSettings, openedSession, hostProfilesEpoch = 0, preferredHostId, active: dashboardActive = true }: {
+export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpenTasks, onOpenSettings, openedSession, hostProfilesEpoch = 0, preferredHostId, active: dashboardActive = true }: {
   client: RemoteClient;
   hostProfilesEpoch?: number;
   preferredHostId?: string;
   active?: boolean;
   onOpenSession: (session: OpenSession) => void;
   onManageDevices?: () => void;
+  onOpenTasks?: () => void;
   onOpenSettings?: () => void;
   openedSession?: { open: OpenSession; token: number };
 }) {
@@ -775,6 +777,7 @@ export function SessionDashboard({ client, onOpenSession, onManageDevices, onOpe
           aria-label={t("project.add")} aria-haspopup="dialog" title={selectedHost?.connectionState === "connected" ? t("project.add") : t("project.offline")}
           disabled={!selectedHost || selectedHost.connectionState !== "connected" || updateBusy} onClick={openProjectDialog}><Icon name="addProject" /></button> : null}
         <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#f7c66a" } as CSSProperties} disabled={!selectedHost} onClick={() => updateWorkspace({ ...workspace, recentOpen: true })} aria-label={t("dashboard.recent")}><Icon name="clock" />{unreadIndicators.length > 0 ? <span className="toolbar-attention" aria-hidden="true" /> : null}</button>
+        <button type="button" className="toolbar-icon-button" style={{ "--toolbar-color": "#71b7ff" } as CSSProperties} onClick={() => onOpenTasks?.()} disabled={!onOpenTasks} aria-label={t("tasks.title", { defaultValue: "Tasks" })}><Icon name="tasks" /></button>
         <button type="button" className="toolbar-icon-button toolbar-refresh" style={{ "--toolbar-color": "#71e6d1" } as CSSProperties} disabled={globalActivity ? connectedHosts.length === 0 || activity.refreshing : !selectedDeviceId || updateBusy} aria-busy={globalActivity ? activity.refreshing : updateBusy} onClick={() => globalActivity ? void activity.refresh(undefined, false) : void updateSelectedDevice()} aria-label={t("dashboard.refresh")}><Icon name="refresh" /></button>
         <button
           type="button"
