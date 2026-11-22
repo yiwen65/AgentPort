@@ -1729,7 +1729,7 @@ fn fetch_issues(
         &[
             &endpoint,
             "--jq",
-            "[.[] | {number,title,state,html_url,user,updated_at,labels,pull_request}]",
+            "[.[] | {number,title,state,html_url,user,updated_at,labels,assignees,pull_request}]",
         ],
     )?;
     let entries: Vec<IssueApi> = parse_json(&output)?;
@@ -1763,7 +1763,7 @@ fn fetch_pulls(
         &[
             &endpoint,
             "--jq",
-            "[.[] | {number,title,state,html_url,user,updated_at,draft}]",
+            "[.[] | {number,title,state,html_url,user,updated_at,draft,labels,assignees}]",
         ],
     )?;
     let entries: Vec<PullApi> = parse_json(&output)?;
@@ -2069,9 +2069,10 @@ mod tests {
 
     #[test]
     fn normalizes_issue_pull_request_entries() {
-        let json = br#"[{"number":1,"title":"issue","state":"open","html_url":"https://github.com/o/r/issues/1","user":{"login":"octo"},"updated_at":null,"labels":[],"pull_request":null}]"#;
+        let json = br#"[{"number":1,"title":"issue","state":"open","html_url":"https://github.com/o/r/issues/1","user":{"login":"octo"},"updated_at":null,"labels":[],"assignees":[{"login":"assignee"}],"pull_request":null}]"#;
         let entries: Vec<IssueApi> = parse_json(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].pull_request.is_none());
+        assert_eq!(entries[0].assignees[0].login, "assignee");
     }
 }

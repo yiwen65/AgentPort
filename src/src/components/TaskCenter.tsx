@@ -649,11 +649,11 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   }), [activeItems, assignedOnly, filterAssignee, filterLabel, filterStatus, normalizedAssignee, normalizedLabel, normalizedQuery, taskOptions.assignees]);
   const selectedTask = useMemo(() => {
     if (selectedId) {
-      const match = activeItems.find((task) => taskIdentity(task) === selectedId);
+      const match = filteredItems.find((task) => taskIdentity(task) === selectedId);
       if (match) return match;
     }
-    return filteredItems[0] ?? activeItems[0] ?? null;
-  }, [activeItems, filteredItems, selectedId]);
+    return filteredItems[0] ?? null;
+  }, [filteredItems, selectedId]);
   const performMutation = async (kind: string, number: number, operation: string, fields: TaskMutationFields = {}) => {
     if (!activeProjectId || !visibleProvider || mutationBusy) return;
     setMutationBusy(true);
