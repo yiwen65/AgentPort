@@ -1337,6 +1337,52 @@ pub struct CoreService {
     live_snapshots: LiveSnapshotCache,
 }
 
+fn task_remote(root: &str) -> std::result::Result<(String, String, String), String> {
+    let output = std::process::Command::new("git")
+        .args(["-C", root, "remote", "get-url", "origin"])
+        .output()
+        .map_err(|error| format!("git remote unavailable: {error}"))?;
+    if !output.status.success() {
+        return Err("origin remote is unavailable".into());
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let (host, path) = if let Some(rest) = raw.strip_prefix("git@") {
+        rest.split_once(':').map(|(host, path)| (host.to_lowercase(), path.to_string()))
+    } else if let Some(rest) = raw.strip_prefix("https://").or_else(|| raw.strip_prefix("http://")) {
+        rest.split_once('/').map(|(host, path)| (host.to_lowercase(), path.to_string()))
+    } else {
+        None
+    }.ok_or_else(|| "unsupported remote URL".to_string())?;
+    let path = path.trim_matches('/').strip_suffix(".git").unwrap_or(path.trim_matches('/'));
+    let (namespace, name) = path.rsplit_once('/').ok_or_else(|| "remote has no repository path".to_string())?;
+    if namespace.is_empty() || name.is_empty() {
+        return Err("remote has no repository path".into());
+    }
+    Ok((host, namespace.to_string(), name.to_string()))
+}
+
+fn task_path_encode(value: &str) -> String {
+    value.bytes().map(|byte| match byte {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (byte as char).to_string(),
+        b'/' => "%2F".into(),
+        other => format!("%{other:02X}"),
+    }).collect()
+}
+
+fn task_cli_json(provider: &str, host: &str, root: &str, endpoint: &str) -> Result<serde_json::Value> {
+    let program = if provider == "github" { "gh" } else { "glab" };
+    let output = std::process::Command::new(program)
+        .args(["api", "--hostname", host, endpoint])
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|_| ServiceError::TaskProviderUnavailable)?;
+    if !output.status.success() {
+        return Err(ServiceError::TaskProviderUnavailable);
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| ServiceError::InvalidRequest)
+}
+
 impl CoreService {
     pub fn open_default() -> Result<Self> {
         Self::open(AppPaths::discover()?)
@@ -1384,6 +1430,80 @@ impl CoreService {
 impl RemoteService for CoreService {
     fn service_snapshot(&self) -> ServiceSnapshot {
         ServiceSnapshot::default()
+    }
+
+    fn list_tasks(&self, params: TaskListParams) -> Result<serde_json::Value> {
+        let project = self.db.get_project(&params.project_id)?;
+        let root = project.git_root_path.as_deref().unwrap_or(&project.root_path);
+        let remote = task_remote(root).map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
+        let (host, namespace, name) = remote;
+        let endpoint = match (params.provider.as_str(), params.scope.as_str()) {
+            ("github", "issues") => format!("repos/{namespace}/{name}/issues?state=all&per_page=50&sort=updated&direction=desc"),
+            ("github", "pulls") => format!("repos/{namespace}/{name}/pulls?state=all&per_page=50&sort=updated&direction=desc"),
+            ("github", "projects") => format!("repos/{namespace}/{name}/projects?per_page=50"),
+            ("gitlab", "issues") => format!("projects/{}/issues?per_page=50&order_by=updated_at&sort=desc", task_path_encode(&format!("{namespace}/{name}"))),
+            ("gitlab", "pulls") => format!("projects/{}/merge_requests?per_page=50&order_by=updated_at&sort=desc", task_path_encode(&format!("{namespace}/{name}"))),
+            ("gitlab", "boards") => format!("projects/{}/boards", task_path_encode(&format!("{namespace}/{name}"))),
+            _ => return Err(ServiceError::InvalidRequest),
+        };
+        let items = task_cli_json(&params.provider, &host, root, &endpoint)?;
+        Ok(serde_json::json!({
+            "provider": params.provider,
+            "scope": params.scope,
+            "repository": { "host": host, "namespace": namespace, "name": name },
+            "items": items,
+        }))
+    }
+
+    fn mutate_task(&self, params: TaskMutationParams) -> Result<serde_json::Value> {
+        if params.contains_credential_fields() {
+            return Err(ServiceError::TaskCredentialsForbidden);
+        }
+        let project = self.db.get_project(&params.project_id)?;
+        let root = project.git_root_path.as_deref().unwrap_or(&project.root_path);
+        let (host, namespace, name) = task_remote(root).map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
+        let number = params.payload.get("number").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        if number == 0 {
+            return Err(ServiceError::InvalidRequest);
+        }
+        let operation = params.operation.as_str();
+        let endpoint = match (params.provider.as_str(), operation) {
+            ("github", "comment") => format!("repos/{namespace}/{name}/issues/{number}/comments"),
+            ("github", "state") => format!("repos/{namespace}/{name}/issues/{number}"),
+            ("github", "merge") => format!("repos/{namespace}/{name}/pulls/{number}/merge"),
+            ("gitlab", "comment") => format!("projects/{}/issues/{number}/notes", task_path_encode(&format!("{namespace}/{name}"))),
+            ("gitlab", "state") => format!("projects/{}/issues/{number}", task_path_encode(&format!("{namespace}/{name}"))),
+            ("gitlab", "merge") => format!("projects/{}/merge_requests/{number}/merge", task_path_encode(&format!("{namespace}/{name}"))),
+            _ => return Err(ServiceError::InvalidRequest),
+        };
+        let body = params.payload.get("body").and_then(serde_json::Value::as_str).unwrap_or("");
+        let state = params.payload.get("state").and_then(serde_json::Value::as_str).unwrap_or("open");
+        let mut fields = Vec::<String>::new();
+        if operation == "comment" { fields.extend(["--raw-field".into(), format!("body={body}")]); }
+        if operation == "state" { fields.extend(["--raw-field".into(), format!("state={state}")]); }
+        if operation == "merge" { fields.extend(["--raw-field".into(), format!("merge_method={}", params.payload.get("mergeMethod").and_then(serde_json::Value::as_str).unwrap_or("merge"))]); }
+        let program = if params.provider == "github" { "gh" } else { "glab" };
+        let mut args = vec!["api".to_string(), "--hostname".into(), host, "-X".into(), if operation == "comment" { "POST".into() } else if operation == "state" { "PATCH".into() } else { "PUT".into() }, endpoint];
+        args.extend(fields);
+        let output = std::process::Command::new(program).args(&args).current_dir(root).stdin(std::process::Stdio::null()).output().map_err(|_| ServiceError::TaskProviderUnavailable)?;
+        if !output.status.success() { return Err(ServiceError::TaskProviderUnavailable); }
+        Ok(serde_json::json!({ "outcome": "applied", "readBack": true }))
+    }
+
+    fn task_detail(&self, params: TaskDetailParams) -> Result<serde_json::Value> {
+        let project = self.db.get_project(&params.project_id)?;
+        let root = project.git_root_path.as_deref().unwrap_or(&project.root_path);
+        let (host, namespace, name) = task_remote(root).map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
+        let scope = params.scope.as_deref().unwrap_or("issues");
+        let endpoint = match (params.provider.as_str(), scope) {
+            ("github", "pulls") => format!("repos/{namespace}/{name}/pulls/{}", params.item_id),
+            ("github", _) => format!("repos/{namespace}/{name}/issues/{}", params.item_id),
+            ("gitlab", "pulls") => format!("projects/{}/merge_requests/{}", task_path_encode(&format!("{namespace}/{name}")), params.item_id),
+            ("gitlab", _) => format!("projects/{}/issues/{}", task_path_encode(&format!("{namespace}/{name}")), params.item_id),
+            _ => return Err(ServiceError::InvalidRequest),
+        };
+        let item = task_cli_json(&params.provider, &host, root, &endpoint)?;
+        Ok(serde_json::json!({ "provider": params.provider, "scope": scope, "item": item }))
     }
 
     fn supported_agents(&self) -> Result<Vec<SupportedAgentSummary>> {

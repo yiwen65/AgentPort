@@ -112,6 +112,11 @@ import type {
   RemoteSessionSummary,
   RemoteStatusSummary,
   RemoteSupportedAgentSummary,
+  RemoteTaskDetailParams,
+  RemoteTaskListParams,
+  RemoteTaskMutationParams,
+  RemoteTaskMutationResult,
+  RemoteTaskResult,
   RemoteAgentProbeResult,
   RemotePresetSummary,
   RemoteSessionControlResult,
@@ -410,6 +415,22 @@ export class RemoteBackend {
     if (!listener) return;
     const message = remoteEventToChannelMsg(event);
     if (message) listener(message);
+  }
+
+  // -----------------------------------------------------------------------
+  // task providers
+  // -----------------------------------------------------------------------
+
+  listTasks(params: RemoteTaskListParams): Promise<RemoteTaskResult> {
+    return this.request<RemoteTaskResult>("task.list", params);
+  }
+
+  getTaskDetail(params: RemoteTaskDetailParams): Promise<RemoteTaskResult> {
+    return this.request<RemoteTaskResult>("task.detail", params);
+  }
+
+  mutateTask(params: RemoteTaskMutationParams): Promise<RemoteTaskMutationResult> {
+    return this.request<RemoteTaskMutationResult>("task.mutate", params);
   }
 
   // -----------------------------------------------------------------------
