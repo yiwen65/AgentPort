@@ -1338,12 +1338,20 @@ pub struct CoreService {
 }
 
 fn task_remote(root: &str) -> std::result::Result<(String, String, String), String> {
+    let configured = std::process::Command::new("git")
+        .args(["-C", root, "config", "--get", "branch.main.remote"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|remote| !remote.is_empty())
+        .unwrap_or_else(|| "origin".into());
     let output = std::process::Command::new("git")
-        .args(["-C", root, "remote", "get-url", "origin"])
+        .args(["-C", root, "remote", "get-url", &configured])
         .output()
         .map_err(|error| format!("git remote unavailable: {error}"))?;
     if !output.status.success() {
-        return Err("origin remote is unavailable".into());
+        return Err(format!("main branch upstream {configured} is unavailable"));
     }
     let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let (host, path) = if let Some(rest) = raw.strip_prefix("git@") {

@@ -658,19 +658,24 @@ fn load_tasks(
 }
 
 fn gitlab_remote(root: &str) -> Result<(RemoteIdentity, String), (&'static str, String)> {
-    let names = command_text("git", &["-C", root, "remote"], None)
+    // Match GitHub resolution: use the remote configured for branch.main,
+    // falling back to origin; do not select an unrelated upstream remote.
+    let configured = command_text(
+        "git",
+        &["-C", root, "config", "--get", "branch.main.remote"],
+        None,
+    )
+    .ok()
+    .filter(|name| !name.is_empty())
+    .unwrap_or_else(|| "origin".into());
+    let url = command_text("git", &["-C", root, "remote", "get-url", &configured], None)
         .map_err(|error| ("git_remote_failed", error))?;
-    for name in names.lines().map(str::trim).filter(|name| !name.is_empty()) {
-        let output = command_text("git", &["-C", root, "remote", "get-url", name], None).ok();
-        if let Some(url) = output {
-            if let Some(identity) = parse_gitlab_remote(&url) {
-                return Ok((identity, url));
-            }
-        }
+    if let Some(identity) = parse_gitlab_remote(&url) {
+        return Ok((identity, url));
     }
     Err((
         "gitlab_remote_required",
-        "The checkout has no supported GitLab remote".into(),
+        format!("The main branch upstream ({configured}) has no supported GitLab remote"),
     ))
 }
 

@@ -1171,17 +1171,21 @@ fn git_root(checkout: &str) -> Result<String, (&'static str, String)> {
 }
 
 fn github_remote(root: &str) -> Result<(RemoteIdentity, String), (&'static str, String)> {
-    let remotes = run_command("git", ["-C", root, "remote"], None)
+    // Task source follows the repository's main branch upstream: prefer the
+    // remote configured by branch.main.remote, then the conventional origin.
+    let configured = run_command(
+        "git",
+        ["-C", root, "config", "--get", "branch.main.remote"],
+        None,
+    )
+    .ok()
+    .filter(|output| output.success)
+    .map(|output| text_output(&output.stdout))
+    .filter(|name| !name.is_empty())
+    .unwrap_or_else(|| "origin".into());
+    let output = run_command("git", ["-C", root, "remote", "get-url", &configured], None)
         .map_err(|message| ("git_remote_failed", message))?;
-    if !remotes.success {
-        return Err(("git_remote_failed", "Could not list Git remotes".into()));
-    }
-    let names = text_output(&remotes.stdout);
-    for name in names.lines().map(str::trim).filter(|name| !name.is_empty()) {
-        let output = match run_command("git", ["-C", root, "remote", "get-url", name], None) {
-            Ok(output) if output.success => output,
-            _ => continue,
-        };
+    if output.success {
         let remote_url = text_output(&output.stdout);
         if let Some(identity) = parse_github_remote(&remote_url) {
             return Ok((identity, remote_url));
@@ -1189,7 +1193,7 @@ fn github_remote(root: &str) -> Result<(RemoteIdentity, String), (&'static str, 
     }
     Err((
         "github_remote_required",
-        "The checkout has no supported github.com remote".into(),
+        format!("The main branch upstream ({configured}) has no supported github.com remote"),
     ))
 }
 
