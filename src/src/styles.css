@@ -2610,16 +2610,59 @@ body.is-project-dragging .tree-row.project {
 .task-center-markdown-toolbar button { min-width: 26px; height: 26px; padding: 0 5px; border: 0; border-radius: 4px; background: transparent; color: var(--text-faint); font: inherit; font-size: 11px; cursor: pointer; }
 .task-center-markdown-toolbar button:hover,
 .task-center-markdown-toolbar button.is-active { background: var(--overlay-hover); color: var(--text); }
-.task-center-markdown-editor textarea { display: block; min-height: 160px; padding: 11px; border: 0; border-radius: 0; outline: none; background: transparent; box-shadow: none; resize: vertical; }
+.task-center-rich-editor { min-height: 190px; max-height: 320px; overflow: auto; padding: 11px; outline: none; background: transparent; color: var(--text-dim); font-size: 11px; line-height: 1.55; }
+.task-center-rich-editor[data-empty="true"]::before { content: attr(data-placeholder); color: var(--text-faint); pointer-events: none; }
+.task-center-rich-editor:focus { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 54%, transparent); }
+.task-center-rich-editor h1,
+.task-center-rich-editor h2,
+.task-center-rich-editor h3,
+.task-center-rich-editor h4,
+.task-center-rich-editor h5,
+.task-center-rich-editor h6 { margin: 0 0 8px; color: var(--text); line-height: 1.3; }
+.task-center-rich-editor p { margin: 0 0 9px; }
+.task-center-rich-editor p:last-child { margin-bottom: 0; }
+.task-center-rich-editor ul,
+.task-center-rich-editor ol { margin: 0 0 9px; padding-left: 23px; }
+.task-center-rich-editor blockquote { margin: 0 0 9px; padding-left: 10px; border-left: 2px solid var(--accent); color: var(--text-faint); }
+.task-center-rich-editor pre { margin: 0 0 9px; padding: 8px; overflow-x: auto; border: 1px solid var(--overlay-divider); border-radius: 5px; background: var(--term-code-bg); color: var(--term-text); font-family: var(--font-mono); font-size: 10px; }
+.task-center-rich-editor code { padding: 1px 4px; border-radius: 3px; background: color-mix(in srgb, var(--term-code-bg) 70%, transparent); color: var(--accent-text); font-family: var(--font-mono); font-size: 0.92em; }
+.task-center-rich-editor a { color: var(--accent-text); }
+.task-center-rich-editor img { display: block; max-width: 100%; max-height: 220px; margin: 7px 0; border: 1px solid var(--overlay-divider); border-radius: 5px; object-fit: contain; }
+.task-center-rich-editor-pending-image { display: inline-flex; align-items: center; gap: 6px; margin: 4px 0; padding: 5px 8px; border: 1px dashed color-mix(in srgb, var(--accent) 50%, var(--overlay-divider)); border-radius: 5px; background: var(--accent-soft); color: var(--accent-text); font-size: 10px; }
+.task-center-rich-editor input[type="checkbox"] { margin-right: 6px; accent-color: var(--accent); }
+.task-center-hidden-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 .task-center-image-insert { display: grid; grid-template-columns: 1fr 1.6fr auto; gap: 7px; align-items: center; padding: 8px; border: 1px solid var(--overlay-divider); border-radius: 6px; background: color-mix(in srgb, var(--overlay-input) 72%, transparent); }
 .task-center-image-insert input { height: 29px; padding: 0 7px; border: 1px solid var(--overlay-border); border-radius: 5px; background: var(--overlay-input); color: var(--text); font: inherit; font-size: 10px; }
 .task-center-image-insert button { min-height: 28px; padding: 0 8px; border: 1px solid var(--overlay-border); border-radius: 5px; background: var(--accent-soft); color: var(--accent-text); font: inherit; font-size: 10px; cursor: pointer; }
 .task-center-composer-error { margin: -3px 0 0; color: var(--red); font-size: 10px; }
+.task-center-composer-status { margin: -3px 0 0; color: var(--accent-text); font-size: 10px; }
 .task-center-composer-body { display: grid; gap: 13px; overflow: auto; padding: 18px 22px; }
-.task-center-composer-body label { display: grid; gap: 6px; color: var(--text-faint); font-size: 10px; font-weight: 650; }
+.task-center-composer-body label,
+.task-center-composer-field { display: grid; gap: 6px; color: var(--text-faint); font-size: 10px; font-weight: 650; }
 .task-center-composer input { height: 34px; padding: 0 9px; }
 .task-center-composer textarea { padding: 9px; resize: vertical; }
 .task-center-composer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.task-option-picker { position: relative; min-width: 0; display: grid; gap: 6px; color: var(--text-faint); font-size: 10px; font-weight: 650; }
+.task-option-picker-label { display: block; }
+.task-option-picker-control { min-height: 34px; box-sizing: border-box; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 4px 8px; border: 1px solid var(--overlay-border); border-radius: 6px; background: var(--overlay-input); box-shadow: var(--overlay-input-inset); color: var(--text); cursor: pointer; outline: none; }
+.task-option-picker-control:hover,
+.task-option-picker-control.is-open { border-color: color-mix(in srgb, var(--accent) 70%, var(--overlay-border)); }
+.task-option-picker-placeholder { color: var(--text-faint); font-weight: 400; }
+.task-option-picker-chevron { margin-left: auto; color: var(--text-faint); font-size: 14px; line-height: 1; }
+.task-option-picker-chip { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; padding: 3px 5px 3px 7px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--overlay-divider)); border-radius: 4px; background: var(--accent-soft); color: var(--accent-text); font-size: 10px; font-weight: 500; }
+.task-option-picker-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-option-picker-chip button { width: 16px; height: 16px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; cursor: pointer; line-height: 1; }
+.task-option-picker-chip button:hover { background: var(--overlay-hover); color: var(--text); }
+.task-option-picker-error { color: var(--amber); font-size: 9px; font-weight: 400; line-height: 1.3; }
+.task-option-picker-menu { position: absolute; z-index: 8; top: calc(100% + 4px); left: 0; right: 0; display: grid; gap: 3px; max-height: 220px; overflow: auto; padding: 7px; border: 1px solid var(--overlay-border-strong); border-radius: 7px; background: var(--overlay-bg); box-shadow: var(--overlay-shadow-sm); }
+.task-option-picker-menu > input { width: 100%; min-height: 28px; box-sizing: border-box; padding: 0 7px; border: 1px solid var(--overlay-border); border-radius: 5px; outline: none; background: var(--overlay-input); color: var(--text); font: inherit; font-size: 10px; }
+.task-option-picker-menu > input:focus { border-color: color-mix(in srgb, var(--accent) 70%, var(--overlay-border)); }
+.task-option-picker-option { min-height: 29px; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 5px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: var(--text-dim); font: inherit; font-size: 10px; text-align: left; cursor: pointer; }
+.task-option-picker-option:hover,
+.task-option-picker-option.is-selected { background: var(--overlay-selected); color: var(--text); }
+.task-option-picker-option small { color: var(--text-faint); font-family: var(--font-mono); font-size: 8px; }
+.task-option-picker-check { color: var(--accent-text); font-size: 11px; }
+.task-option-picker-empty { margin: 6px 3px; color: var(--text-faint); font-size: 10px; font-weight: 400; }
 .task-center-composer-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 22px 17px; border-top: 1px solid var(--overlay-divider); }
 .task-center-open-link { display: inline-flex; align-items: center; gap: 7px; color: var(--accent-text); font-size: 11px; text-decoration: none; }
 .task-center-open-link:hover { color: var(--text); text-decoration: underline; }

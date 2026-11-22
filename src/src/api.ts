@@ -58,6 +58,7 @@ import type {
   GitStateInvalidated,
   GitWorkspaceCommandError,
   TaskProviderDetection,
+  TaskOptionsEnvelope,
   GithubTaskEnvelope,
   GithubTaskScope,
   GithubTaskDetailEnvelope,
@@ -266,6 +267,16 @@ export const localApi = {
   boot: () => invoke<BootInfo>("boot"),
   detectTaskProvider: (projectId: string) =>
     invoke<TaskProviderDetection>("detect_task_provider", { projectId }),
+  getGithubTaskOptions: (projectId: string) =>
+    invoke<TaskOptionsEnvelope>("get_github_task_options", { projectId }),
+  getGitlabTaskOptions: (projectId: string) =>
+    invoke<TaskOptionsEnvelope>("get_gitlab_task_options", { projectId }),
+  uploadGithubTaskImage: (
+    projectId: string,
+    fileName: string,
+    contentType: string,
+    contentBase64: string,
+  ) => invoke<string>("upload_github_task_image", { projectId, fileName, contentType, contentBase64 }),
   listProjects: (activeSession: string | null) =>
     invoke<ProjectView[]>("list_projects", { activeSession }),
   listGithubTasks: (projectId: string, scope: GithubTaskScope) =>
@@ -992,6 +1003,32 @@ export async function clipboardHasImage(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Read the native clipboard image as a bounded PNG File for local uploads. */
+export async function readClipboardImageFile(): Promise<File> {
+  const image = await readNativeClipboardImage();
+  try {
+    const [rgba, size] = await Promise.all([image.rgba(), image.size()]);
+    if (!Number.isSafeInteger(size.width) || !Number.isSafeInteger(size.height) || size.width <= 0 || size.height <= 0 || size.width * size.height > 50_000_000) {
+      throw new Error("Clipboard image dimensions are not supported");
+    }
+    if (rgba.length !== size.width * size.height * 4) {
+      throw new Error("Clipboard image data is incomplete");
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Could not prepare clipboard image");
+    context.putImageData(new ImageData(new Uint8ClampedArray(rgba), size.width, size.height), 0, 0);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Could not encode clipboard image")), "image/png");
+    });
+    return new File([blob], "clipboard.png", { type: "image/png" });
+  } finally {
+    await image.close().catch(() => undefined);
   }
 }
 

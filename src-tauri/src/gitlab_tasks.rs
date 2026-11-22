@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::State;
 
+use crate::task_options::{TaskOption, TaskOptionsEnvelope};
 use crate::AppState;
 use agentport_core::task_remote::{
     gitlab_project_path, is_valid_project_path, parse_remote, provider_for_remote,
@@ -170,6 +171,20 @@ struct RemoteIdentity {
     project_path: String,
     namespace: String,
     name: String,
+}
+
+#[tauri::command]
+pub async fn get_gitlab_task_options(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<TaskOptionsEnvelope, String> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        load_gitlab_task_options(&paths, &project_id)
+            .unwrap_or_else(|error| TaskOptionsEnvelope::error(error.0, error.1))
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -837,6 +852,51 @@ impl GitlabTaskMutationOutcome {
             read_back_required: true,
         }
     }
+}
+
+fn load_gitlab_task_options(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+) -> Result<TaskOptionsEnvelope, (&'static str, String)> {
+    let (root, _repository, identity) = resolve_gitlab_checkout(paths, project_id)
+        .map_err(|error| ("gitlab_options_unavailable", error))?;
+    let labels = glab_api(
+        &root,
+        &identity.host,
+        &format!("projects/{}/labels?per_page=100", encode_path(&identity.project_path)),
+    )?
+    .into_iter()
+    .filter_map(|value| value.get("name").and_then(Value::as_str).map(str::to_owned))
+    .take(MAX_ITEMS)
+    .collect();
+    let assignees = glab_api(
+        &root,
+        &identity.host,
+        &format!(
+            "projects/{}/members/all?per_page=100",
+            encode_path(&identity.project_path)
+        ),
+    )?
+    .into_iter()
+    .filter_map(|value| {
+        let id = value.get("id").and_then(Value::as_u64)?;
+        let name = value
+            .get("username")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("name").and_then(Value::as_str))?
+            .trim();
+        (!name.is_empty()).then(|| TaskOption {
+            id: id.to_string(),
+            name: name.to_owned(),
+        })
+    })
+    .take(MAX_ITEMS)
+    .collect();
+    Ok(TaskOptionsEnvelope {
+        labels,
+        assignees,
+        error: None,
+    })
 }
 
 fn load_tasks(

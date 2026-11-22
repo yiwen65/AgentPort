@@ -5,13 +5,16 @@
 //! repository-scoped read requests to `gh api`.
 
 use agentport_core::db::Db;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tauri::State;
 
+use crate::task_options::{TaskOption, TaskOptionsEnvelope};
 use crate::AppState;
 use agentport_core::task_remote::{
     github_repository, gitlab_project_path, is_valid_project_path, parse_remote,
@@ -19,6 +22,7 @@ use agentport_core::task_remote::{
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_ITEMS: usize = 50;
 
 #[derive(Debug, Clone, Serialize)]
@@ -363,6 +367,43 @@ pub async fn detect_task_provider(
         Ok(value) => value,
         Err(error) => TaskProviderDetection::failed("backend_unavailable", error.to_string()),
     })
+}
+
+#[tauri::command]
+pub async fn get_github_task_options(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> std::result::Result<TaskOptionsEnvelope, String> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        load_github_task_options(&paths, &project_id)
+            .unwrap_or_else(|error| TaskOptionsEnvelope::error(error.0, error.1))
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn upload_github_task_image(
+    state: State<'_, AppState>,
+    project_id: String,
+    file_name: String,
+    content_type: String,
+    content_base64: String,
+) -> std::result::Result<String, String> {
+    let paths = state.paths.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        upload_github_task_image_blocking(
+            &paths,
+            &project_id,
+            &file_name,
+            &content_type,
+            &content_base64,
+        )
+        .map_err(|error| error.1)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1297,6 +1338,172 @@ fn github_mutation_matches(detail: &GithubTaskDetail, request: &GithubTaskMutati
     }
 }
 
+fn load_github_task_options(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+) -> Result<TaskOptionsEnvelope, (&'static str, String)> {
+    let (root, _repository, identity) = resolve_github_checkout(paths, project_id)?;
+    let labels = parse_json::<Vec<Value>>(&gh_api(
+        &root,
+        &[&format!("repos/{}/{}/labels?per_page=100", identity.owner, identity.name)],
+    )?)
+    .map_err(|error| (error.0, error.1))?
+    .into_iter()
+    .filter_map(|value| json_string(&value, "name"))
+    .take(MAX_ITEMS)
+    .collect();
+    let assignees = parse_json::<Vec<Value>>(&gh_api(
+        &root,
+        &[&format!("repos/{}/{}/assignees?per_page=100", identity.owner, identity.name)],
+    )?)
+    .map_err(|error| (error.0, error.1))?
+    .into_iter()
+    .filter_map(|value| {
+        let login = json_string(&value, "login")?;
+        Some(TaskOption {
+            id: login.clone(),
+            name: login,
+        })
+    })
+    .take(MAX_ITEMS)
+    .collect();
+    Ok(TaskOptionsEnvelope {
+        labels,
+        assignees,
+        error: None,
+    })
+}
+
+fn upload_github_task_image_blocking(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+    file_name: &str,
+    content_type: &str,
+    content_base64: &str,
+) -> Result<String, (&'static str, String)> {
+    let (root, _repository, identity) = resolve_github_checkout(paths, project_id)?;
+    let normalized_content_type = content_type.trim().to_ascii_lowercase();
+    if !matches!(
+        normalized_content_type.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) {
+        return Err((
+            "invalid_image",
+            "Only PNG, JPEG, GIF, and WebP images are supported".into(),
+        ));
+    }
+    let content_type = normalized_content_type.as_str();
+    if content_base64.len() > (MAX_IMAGE_BYTES.div_ceil(3) * 4 + 4) {
+        return Err(("invalid_image", "Image data exceeds the 10 MiB limit".into()));
+    }
+    let bytes = BASE64
+        .decode(content_base64)
+        .map_err(|_| ("invalid_image", "Image data is not valid base64".into()))?;
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+        return Err((
+            "invalid_image",
+            "Image must be between 1 byte and 10 MiB".into(),
+        ));
+    }
+    if !image_signature_matches(content_type, &bytes) {
+        return Err((
+            "invalid_image",
+            "Image bytes do not match the declared PNG, JPEG, GIF, or WebP type".into(),
+        ));
+    }
+    let safe_name = sanitize_upload_file_name(file_name);
+    let repository = gh_api(
+        &root,
+        &[&format!("repos/{}/{}", identity.owner, identity.name)],
+    )
+    .map_err(|error| (error.0, error.1))?;
+    let repository_id = parse_json::<Value>(&repository)
+        .ok()
+        .and_then(|value| value.get("id").and_then(Value::as_u64))
+        .ok_or((
+            "github_upload_failed",
+            "GitHub did not return a repository id for image upload".into(),
+        ))?;
+    let endpoint = format!(
+        "https://uploads.github.com/user-attachments/assets?name={}&content_type={}&repository_id={repository_id}",
+        percent_encode_query_component(&safe_name),
+        percent_encode_query_component(content_type),
+    );
+    let args = vec![
+        "api".into(),
+        "-X".into(),
+        "POST".into(),
+        endpoint,
+        "-H".into(),
+        "Content-Type: application/octet-stream".into(),
+        "-H".into(),
+        format!("Content-Length: {}", bytes.len()),
+        "--input".into(),
+        "-".into(),
+    ];
+    let output = run_command_with_input("gh", &args, Some(&root), &bytes)
+        .map_err(|message| ("github_upload_unknown", message))?;
+    if !output.success {
+        return Err((
+            "github_upload_failed",
+            truncate_message(text_output(&output.stderr)),
+        ));
+    }
+    let url = parse_json::<Value>(&output.stdout)
+        .ok()
+        .and_then(|value| value.get("url").and_then(Value::as_str).map(str::to_owned))
+        .filter(|url| url.starts_with("https://github.com/user-attachments/"))
+        .ok_or((
+            "github_upload_failed",
+            "GitHub did not return a safe image URL".into(),
+        ))?;
+    Ok(url)
+}
+
+fn image_signature_matches(content_type: &str, bytes: &[u8]) -> bool {
+    match content_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    }
+}
+
+fn sanitize_upload_file_name(file_name: &str) -> String {
+    let raw = Path::new(file_name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("image.png");
+    let mut name: String = raw
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(120)
+        .collect();
+    if name.is_empty() {
+        name = "image.png".into();
+    }
+    name
+}
+
+fn percent_encode_query_component(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
 fn gh_write(root: &str, args: Vec<String>) -> Result<Value, GithubMutationFailure> {
     let mut command_args = vec![
         "api".to_owned(),
@@ -1343,6 +1550,55 @@ fn gh_write(root: &str, args: Vec<String>) -> Result<Value, GithubMutationFailur
         code,
         truncate_message(stderr),
     ))
+}
+
+fn run_command_with_input(
+    program: &str,
+    args: &[String],
+    current_dir: Option<&str>,
+    input: &[u8],
+) -> Result<CommandOutput, String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|_| format!("{program} is not available"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input)
+            .map_err(|_| format!("{program} input could not be written"))?;
+    }
+    let started = Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .map_err(|_| format!("{program} failed while running"))?
+        {
+            Some(status) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| format!("{program} output could not be read"))?;
+                return Ok(CommandOutput {
+                    success: status.success(),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                });
+            }
+            None if started.elapsed() >= COMMAND_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{program} timed out"));
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
 }
 
 fn git_root(checkout: &str) -> Result<String, (&'static str, String)> {
@@ -1788,6 +2044,15 @@ mod tests {
         assert_eq!(parse_github_remote("https://gitlab.com/o/r.git"), None);
         assert_eq!(parse_github_remote("https://github.com/o/r/issues"), None);
         assert_eq!(parse_github_remote("file:///tmp/repo"), None);
+    }
+
+    #[test]
+    fn validates_image_signatures() {
+        assert!(image_signature_matches("image/png", b"\x89PNG\r\n\x1a\nrest"));
+        assert!(image_signature_matches("image/jpeg", &[0xff, 0xd8, 0xff, 0xe0]));
+        assert!(image_signature_matches("image/gif", b"GIF89a"));
+        assert!(image_signature_matches("image/webp", b"RIFFxxxxWEBP"));
+        assert!(!image_signature_matches("image/png", b"GIF89a"));
     }
 
     #[test]

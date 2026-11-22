@@ -580,6 +580,22 @@ export interface TaskProviderDetection {
 
 export type GithubTaskScope = "issues" | "pulls" | "projects";
 
+export interface TaskOption {
+  id: string;
+  name: string;
+}
+
+export interface TaskOptionsError {
+  code: string;
+  message: string;
+}
+
+export interface TaskOptionsEnvelope {
+  labels: string[];
+  assignees: TaskOption[];
+  error: TaskOptionsError | null;
+}
+
 export interface GithubRepository {
   host: string;
   owner: string;

@@ -54,6 +54,7 @@ mod notifications;
 mod relay;
 mod remote;
 mod updater;
+mod task_options;
 mod terminal_input;
 
 // ---------------------------------------------------------------------------
@@ -5254,9 +5255,12 @@ fn main() {
             markdown_images::markdown_image_fetch,
             markdown_images::markdown_image_validate,
             github_tasks::detect_task_provider,
+            github_tasks::get_github_task_options,
+            github_tasks::upload_github_task_image,
             github_tasks::list_github_tasks,
             github_tasks::get_github_task,
             github_tasks::mutate_github_task,
+            gitlab_tasks::get_gitlab_task_options,
             gitlab_tasks::list_gitlab_tasks,
             gitlab_tasks::get_gitlab_task,
             gitlab_tasks::mutate_gitlab_task,
