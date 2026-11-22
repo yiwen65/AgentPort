@@ -38,7 +38,10 @@ button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 .session-stage.is-before-files { transform: translate3d(-100%, 0, 0); }
 .app-shell:not([data-page="list"]) > .main-content { visibility: hidden; pointer-events: none; }
 .files-stage { position: fixed; z-index: 9; inset: 0; overflow: hidden; background: var(--bg); transform: translate3d(100%, 0, 0); visibility: hidden; pointer-events: none; transition: transform 220ms cubic-bezier(.2, .8, .2, 1), visibility 0s linear 220ms; }
-.files-stage.is-visible { transform: translate3d(0, 0, 0); visibility: visible; pointer-events: auto; transition-delay: 0s; }
+/* A settled file page should return to the normal WebKit paint tree. Keeping
+   an always-on zero-distance 3D transform here can leave descendants of the
+   nested scroll layer stale until a pointer hover invalidates their tiles. */
+.files-stage.is-visible { transform: none; visibility: visible; pointer-events: auto; transition-delay: 0s; }
 /* Preview code needs native horizontal panning; the tree retains page swipes. */
 html.files-visible, body.files-visible, body.files-visible #root, .app-shell[data-page="files"] { touch-action: pan-x pan-y; }
 .files-stage .files-tree-page { touch-action: pan-y; }
