@@ -21,6 +21,8 @@ type ComposerKind = "issue" | "pull_request" | "merge_request";
 type TaskMutationFields = {
   title?: string;
   body?: string;
+  labels?: string[];
+  assignees?: string[];
   state?: string;
   head?: string;
   base?: string;
@@ -137,6 +139,18 @@ function taskAuthor(task: TaskRecord): string | null {
   return null;
 }
 
+function taskAssignees(task: TaskRecord): string[] {
+  const raw = task.assignees ?? task.assignee ?? [];
+  if (typeof raw === "string") return raw.trim() ? [raw.trim()] : [];
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((value) => {
+    if (typeof value === "string" && value.trim()) return [value.trim()];
+    const record = asRecord(value);
+    const name = record ? firstText(record, ["login", "username", "name", "handle"]) : "";
+    return name ? [name] : [];
+  });
+}
+
 function taskLabels(task: TaskRecord): string[] {
   const raw = task.labels ?? task.tags ?? [];
   if (!Array.isArray(raw)) return [];
@@ -177,6 +191,19 @@ function supportedScopes(provider: Provider): ScopeMeta[] {
 
 function scopeMeta(scope: TaskScope): ScopeMeta {
   return scopes.find((candidate) => candidate.id === scope) ?? scopes[0];
+}
+
+function parseCommaSeparated(value: string): string[] {
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))].slice(0, 50);
+}
+
+function safeImageUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 function errorCategory(message: string | null): "auth" | "rate" | "unavailable" | "error" {
@@ -501,6 +528,18 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const [composerBody, setComposerBody] = useState("");
   const [composerHead, setComposerHead] = useState("");
   const [composerBase, setComposerBase] = useState("main");
+  const [composerLabels, setComposerLabels] = useState("");
+  const [composerAssignees, setComposerAssignees] = useState("");
+  const [composerImageOpen, setComposerImageOpen] = useState(false);
+  const [composerImageUrl, setComposerImageUrl] = useState("");
+  const [composerImageAlt, setComposerImageAlt] = useState("");
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const composerBodyRef = useRef<HTMLTextAreaElement>(null);
+  const [filterStatus, setFilterStatus] = useState<"all" | "open" | "closed">("all");
+  const [assignedOnly, setAssignedOnly] = useState(false);
+  const [filterLabel, setFilterLabel] = useState("");
+  const [filterAssignee, setFilterAssignee] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [mutationBusy, setMutationBusy] = useState(false);
   const [mutationNotice, setMutationNotice] = useState<{ tone: "success" | "error" | "unknown"; text: string } | null>(null);
   const shellRef = useRef<HTMLElement>(null);
@@ -551,13 +590,22 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const activeError = error ?? scopeErrors[activeScope];
   const detectionError = detection?.error ?? null;
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredItems = useMemo(() => {
-    if (!normalizedQuery) return activeItems;
-    return activeItems.filter((task) => {
-      const searchable = [taskTitle(task), taskSummary(task) ?? "", taskState(task), ...taskLabels(task)].join(" ").toLowerCase();
-      return searchable.includes(normalizedQuery);
-    });
-  }, [activeItems, normalizedQuery]);
+  const normalizedLabel = filterLabel.trim().toLowerCase();
+  const normalizedAssignee = filterAssignee.trim().toLowerCase();
+  const filteredItems = useMemo(() => activeItems.filter((task) => {
+    const state = taskState(task).toLowerCase();
+    const closed = state.includes("closed") || state.includes("merged") || state.includes("done") || state.includes("complete");
+    const labels = taskLabels(task);
+    const assignees = taskAssignees(task);
+    const searchable = [taskTitle(task), taskSummary(task) ?? "", taskState(task), taskAuthor(task) ?? "", ...labels, ...assignees].join(" ").toLowerCase();
+    if (normalizedQuery && !searchable.includes(normalizedQuery)) return false;
+    if (filterStatus === "open" && closed) return false;
+    if (filterStatus === "closed" && !closed) return false;
+    if (assignedOnly && assignees.length === 0) return false;
+    if (normalizedLabel && !labels.some((label) => label.toLowerCase().includes(normalizedLabel))) return false;
+    if (normalizedAssignee && !assignees.some((assignee) => assignee.toLowerCase().includes(normalizedAssignee))) return false;
+    return true;
+  }), [activeItems, assignedOnly, filterAssignee, filterLabel, filterStatus, normalizedAssignee, normalizedLabel, normalizedQuery]);
   const selectedTask = useMemo(() => {
     if (selectedId) {
       const match = activeItems.find((task) => taskIdentity(task) === selectedId);
@@ -581,6 +629,8 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           draft: fields.draft,
           body: fields.body,
           state: fields.state,
+          labels: fields.labels,
+          assignees: fields.assignees,
           reviewEvent: fields.reviewEvent,
         })
         : await api.mutateGitlabTask(activeProjectId, {
@@ -592,6 +642,8 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           targetBranch: fields.targetBranch,
           body: fields.body,
           state: fields.state,
+          labels: fields.labels,
+          assignees: fields.assignees,
           reviewEvent: fields.reviewEvent,
         });
       if (outcome.status === "succeeded") {
@@ -604,6 +656,12 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           setComposerBody("");
           setComposerHead("");
           setComposerBase("main");
+          setComposerLabels("");
+          setComposerAssignees("");
+          setComposerImageOpen(false);
+          setComposerImageUrl("");
+          setComposerImageAlt("");
+          setComposerError(null);
         }
       } else {
         setMutationNotice({
@@ -625,11 +683,42 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     const kind = activeScope === "pulls" ? (visibleProvider === "github" ? "pull_request" : "merge_request") : "issue";
     void performMutation(kind, number, operation, fields);
   };
+  const insertComposerMarkdown = (prefix: string, suffix = "", fallback = "text") => {
+    const textarea = composerBodyRef.current;
+    const start = textarea?.selectionStart ?? composerBody.length;
+    const end = textarea?.selectionEnd ?? start;
+    const selected = composerBody.slice(start, end) || fallback;
+    const next = `${composerBody.slice(0, start)}${prefix}${selected}${suffix}${composerBody.slice(end)}`;
+    setComposerBody(next);
+    requestAnimationFrame(() => {
+      textarea?.focus();
+      const cursor = start + prefix.length + selected.length + suffix.length;
+      textarea?.setSelectionRange(cursor, cursor);
+    });
+  };
+  const insertComposerImage = () => {
+    const url = composerImageUrl.trim();
+    if (!safeImageUrl(url)) {
+      setComposerError("Use an anonymous HTTPS image URL.");
+      return;
+    }
+    const alt = composerImageAlt.trim() || "image";
+    insertComposerMarkdown(`![${alt}](${url})`, "", "");
+    setComposerImageOpen(false);
+    setComposerImageUrl("");
+    setComposerImageAlt("");
+    setComposerError(null);
+  };
   const submitComposer = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!composerKind || !visibleProvider || !composerTitle.trim()) return;
     const operation = composerKind === "issue" ? "create_issue" : visibleProvider === "github" ? "create_pull_request" : "create_merge_request";
-    const fields: TaskMutationFields = { title: composerTitle.trim(), body: composerBody };
+    const fields: TaskMutationFields = {
+      title: composerTitle.trim(),
+      body: composerBody,
+      labels: parseCommaSeparated(composerLabels),
+      assignees: parseCommaSeparated(composerAssignees),
+    };
     if (composerKind === "pull_request") {
       fields.head = composerHead.trim();
       fields.base = composerBase.trim();
@@ -693,6 +782,12 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     setComposerBody("");
     setComposerHead("");
     setComposerBase("main");
+    setComposerLabels("");
+    setComposerAssignees("");
+    setComposerImageOpen(false);
+    setComposerImageUrl("");
+    setComposerImageAlt("");
+    setComposerError(null);
     setMutationNotice(null);
   };
   const titleRepository = repository ?? detection?.repository ?? "No repository detected";
@@ -797,6 +892,11 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               </div>
             </header>
             <div className="task-center-filterbar">
+              <div className="task-center-filter-chips" role="group" aria-label="Quick filters">
+                <button type="button" className={filterStatus === "open" ? "is-active" : ""} aria-pressed={filterStatus === "open"} onClick={() => setFilterStatus(filterStatus === "open" ? "all" : "open")}>Open</button>
+                <button type="button" className={assignedOnly ? "is-active" : ""} aria-pressed={assignedOnly} onClick={() => setAssignedOnly(!assignedOnly)}>Assigned</button>
+                <button type="button" className={filtersOpen ? "is-active" : ""} aria-pressed={filtersOpen} onClick={() => setFiltersOpen(!filtersOpen)}>Filters{filterLabel || filterAssignee || filterStatus === "closed" ? " ·" : ""}</button>
+              </div>
               <label className="task-center-search">
                 <span aria-hidden="true">⌕</span>
                 <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${activeScopeMeta.label.toLowerCase()}`} aria-label={`Search ${activeScopeMeta.label}`} />
@@ -807,6 +907,14 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
                 <button type="button" className={viewMode === "board" ? "is-active" : ""} aria-pressed={viewMode === "board"} onClick={() => setViewMode("board")}>Board</button>
               </div>
             </div>
+            {filtersOpen ? <div className="task-center-filter-popover" role="dialog" aria-label="Task filters">
+              <div className="task-center-filter-popover-head"><strong>Filter tasks</strong><button type="button" onClick={() => { setFilterStatus("all"); setAssignedOnly(false); setFilterLabel(""); setFilterAssignee(""); setQuery(""); }}>Clear all</button></div>
+              <div className="task-center-filter-grid">
+                <label>Status<select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value as "all" | "open" | "closed")}><option value="all">All</option><option value="open">Open</option><option value="closed">Closed</option></select></label>
+                <label>Label<input value={filterLabel} onChange={(event) => setFilterLabel(event.target.value)} placeholder="e.g. bug" /></label>
+                <label>Assignee<input value={filterAssignee} onChange={(event) => setFilterAssignee(event.target.value)} placeholder="login or name" /></label>
+              </div>
+            </div> : null}
             {mutationNotice ? <div className={`task-center-mutation-notice is-${mutationNotice.tone}`} role={mutationNotice.tone === "success" ? "status" : "alert"}>{mutationNotice.text}</div> : null}
             {loading && activeItems.length > 0 ? <div className="task-center-stale-banner" role="status"><span className="task-center-stale-dot" aria-hidden="true" />Showing cached results while this view refreshes.</div> : null}
             <div className="task-center-list-body">
@@ -864,13 +972,26 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               <div>
                 <span className="task-center-eyebrow">{providerName} / Create</span>
                 <h2>New {composerKind === "issue" ? "issue" : composerKind === "pull_request" ? "pull request" : "merge request"}</h2>
+                <p>Filing in {titleRepository}</p>
               </div>
               <button type="button" className="task-center-icon-button" onClick={() => setComposerKind(null)} aria-label="Close create form">×</button>
             </header>
             <div className="task-center-composer-body">
-              <label>Title<input value={composerTitle} onChange={(event) => setComposerTitle(event.target.value)} maxLength={256} required autoFocus /></label>
+              <label>Title<input value={composerTitle} onChange={(event) => setComposerTitle(event.target.value)} placeholder="Short summary" maxLength={256} required autoFocus /></label>
               {(composerKind === "pull_request" || composerKind === "merge_request") ? <div className="task-center-composer-grid"><label>{composerKind === "pull_request" ? "Head branch" : "Source branch"}<input value={composerHead} onChange={(event) => setComposerHead(event.target.value)} required /></label><label>{composerKind === "pull_request" ? "Base branch" : "Target branch"}<input value={composerBase} onChange={(event) => setComposerBase(event.target.value)} required /></label></div> : null}
-              <label>Description<textarea value={composerBody} onChange={(event) => setComposerBody(event.target.value)} maxLength={20000} rows={7} /></label>
+              <label>Description <span className="task-center-composer-hint">optional, Markdown</span>
+                <div className="task-center-markdown-editor">
+                  <div className="task-center-markdown-toolbar" role="toolbar" aria-label="Markdown formatting">
+                    <button type="button" onClick={() => insertComposerMarkdown("# ", "", "Heading")}>H1</button><button type="button" onClick={() => insertComposerMarkdown("**", "**")}>B</button><button type="button" onClick={() => insertComposerMarkdown("*", "*")}>I</button><button type="button" onClick={() => insertComposerMarkdown("~~", "~~")}>S</button><span />
+                    <button type="button" onClick={() => insertComposerMarkdown("- ", "", "List item")}>☷</button><button type="button" onClick={() => insertComposerMarkdown("- [ ] ", "", "Task")}>☑</button><button type="button" onClick={() => insertComposerMarkdown("> ", "", "Quote")}>❯</button><button type="button" onClick={() => insertComposerMarkdown("`", "`", "code")}>Code</button><span />
+                    <button type="button" onClick={() => insertComposerMarkdown("[", "](https://)", "link text")}>↗</button><button type="button" className={composerImageOpen ? "is-active" : ""} onClick={() => setComposerImageOpen(!composerImageOpen)} aria-pressed={composerImageOpen}>▧</button>
+                  </div>
+                  <textarea ref={composerBodyRef} value={composerBody} onChange={(event) => setComposerBody(event.target.value)} maxLength={20000} rows={8} placeholder="What's going on?" />
+                </div>
+              </label>
+              {composerImageOpen ? <div className="task-center-image-insert"><input value={composerImageAlt} onChange={(event) => setComposerImageAlt(event.target.value)} placeholder="Image alt text" aria-label="Image alt text" /><input value={composerImageUrl} onChange={(event) => setComposerImageUrl(event.target.value)} placeholder="https://… image URL" aria-label="Image URL" /><button type="button" onClick={insertComposerImage}>Insert image</button></div> : null}
+              {composerError ? <p className="task-center-composer-error" role="alert">{composerError}</p> : null}
+              <div className="task-center-composer-grid"><label>Labels <span className="task-center-composer-hint">comma separated</span><input value={composerLabels} onChange={(event) => setComposerLabels(event.target.value)} placeholder="bug, feature" /></label><label>{visibleProvider === "gitlab" ? "Assignee IDs" : "Assignees"} <span className="task-center-composer-hint">comma separated</span><input value={composerAssignees} onChange={(event) => setComposerAssignees(event.target.value)} placeholder={visibleProvider === "gitlab" ? "e.g. 42" : "username"} /></label></div>
             </div>
             <footer className="task-center-composer-foot"><button type="button" className="task-center-composer-cancel" onClick={() => setComposerKind(null)} disabled={mutationBusy}>Cancel</button><button type="submit" className="task-center-composer-submit" disabled={mutationBusy || !composerTitle.trim() || ((composerKind === "pull_request" || composerKind === "merge_request") && (!composerHead.trim() || !composerBase.trim()))}>{mutationBusy ? "Creating…" : "Create"}</button></footer>
           </form>

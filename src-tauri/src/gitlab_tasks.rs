@@ -513,6 +513,23 @@ fn create_gitlab_task(
                 .join(","),
         ));
     }
+    if let Some(assignees) = request
+        .assignees
+        .as_deref()
+        .filter(|assignees| !assignees.is_empty())
+    {
+        let ids = assignees
+            .iter()
+            .take(MAX_ITEMS)
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map(|id| id.to_string())
+                    .map_err(|_| "GitLab assignees must be numeric user IDs".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fields.push(("assignee_ids", ids.join(",")));
+    }
     if expected_kind == "merge_request" {
         fields.push((
             "source_branch",

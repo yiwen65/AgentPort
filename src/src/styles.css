@@ -2482,7 +2482,18 @@ body.is-project-dragging .tree-row.project {
 .task-center-refresh-icon { display: inline-block; color: var(--accent-text); font-size: 16px; line-height: 1; }
 .task-center-refresh-icon.is-spinning { animation: task-center-spin 0.9s linear infinite; }
 @keyframes task-center-spin { to { transform: rotate(360deg); } }
-.task-center-filterbar { display: flex; align-items: center; gap: 10px; flex: none; padding: 0 25px 16px; }
+.task-center-filterbar { display: flex; align-items: center; gap: 10px; flex: none; padding: 0 25px 16px; flex-wrap: wrap; }
+.task-center-filter-chips { display: inline-flex; flex: none; gap: 5px; }
+.task-center-filter-chips button { min-height: 28px; padding: 0 10px; border: 1px solid var(--overlay-border); border-radius: 7px; background: var(--overlay-input); color: var(--text-faint); font: inherit; font-size: 10px; cursor: pointer; }
+.task-center-filter-chips button:hover { border-color: var(--overlay-border-strong); color: var(--text); }
+.task-center-filter-chips button.is-active { border-color: color-mix(in srgb, var(--accent) 45%, var(--overlay-border)); background: var(--accent-soft); color: var(--accent-text); }
+.task-center-filter-popover { position: relative; z-index: 3; display: grid; gap: 12px; margin: -5px 25px 12px; padding: 12px; border: 1px solid var(--overlay-border); border-radius: 8px; background: var(--settings-sidebar); box-shadow: 0 12px 30px rgba(0,0,0,.2); }
+.task-center-filter-popover-head { display: flex; align-items: center; justify-content: space-between; color: var(--text-dim); font-size: 11px; }
+.task-center-filter-popover-head button { border: 0; background: transparent; color: var(--accent-text); font: inherit; font-size: 10px; cursor: pointer; }
+.task-center-filter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.task-center-filter-grid label { display: grid; gap: 5px; color: var(--text-faint); font-size: 10px; }
+.task-center-filter-grid input,
+.task-center-filter-grid select { width: 100%; box-sizing: border-box; height: 29px; padding: 0 7px; border: 1px solid var(--overlay-border); border-radius: 5px; background: var(--overlay-input); color: var(--text); font: inherit; font-size: 10px; }
 .task-center-mutation-notice { margin: 0 25px 10px; padding: 8px 10px; border: 1px solid var(--overlay-divider); border-radius: 6px; background: var(--overlay-input); color: var(--text-faint); font-size: 10px; line-height: 1.4; }
 .task-center-mutation-notice.is-success { border-color: color-mix(in srgb, var(--green) 35%, var(--overlay-divider)); color: var(--green); }
 .task-center-mutation-notice.is-error { border-color: var(--red-soft); color: var(--red); }
@@ -2591,6 +2602,19 @@ body.is-project-dragging .tree-row.project {
 .task-center-composer { width: min(560px, 100%); max-height: min(720px, 92%); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--overlay-border-strong); border-radius: 12px; background: var(--settings-surface); box-shadow: 0 25px 80px rgba(0,0,0,.45); }
 .task-center-composer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 22px 15px; border-bottom: 1px solid var(--overlay-divider); }
 .task-center-composer-head h2 { margin: 7px 0 0; color: var(--text); font-size: 18px; }
+.task-center-composer-head p { margin: 6px 0 0; color: var(--text-faint); font-size: 11px; }
+.task-center-composer-hint { color: var(--text-faint); font-size: 10px; font-weight: 400; }
+.task-center-markdown-editor { overflow: hidden; border: 1px solid var(--overlay-border); border-radius: 7px; background: var(--overlay-input); }
+.task-center-markdown-toolbar { display: flex; align-items: center; gap: 2px; min-height: 35px; padding: 3px 5px; border-bottom: 1px solid var(--overlay-divider); }
+.task-center-markdown-toolbar span { width: 1px; height: 20px; margin: 0 4px; background: var(--overlay-divider); }
+.task-center-markdown-toolbar button { min-width: 26px; height: 26px; padding: 0 5px; border: 0; border-radius: 4px; background: transparent; color: var(--text-faint); font: inherit; font-size: 11px; cursor: pointer; }
+.task-center-markdown-toolbar button:hover,
+.task-center-markdown-toolbar button.is-active { background: var(--overlay-hover); color: var(--text); }
+.task-center-markdown-editor textarea { display: block; min-height: 160px; padding: 11px; border: 0; border-radius: 0; outline: none; background: transparent; box-shadow: none; resize: vertical; }
+.task-center-image-insert { display: grid; grid-template-columns: 1fr 1.6fr auto; gap: 7px; align-items: center; padding: 8px; border: 1px solid var(--overlay-divider); border-radius: 6px; background: color-mix(in srgb, var(--overlay-input) 72%, transparent); }
+.task-center-image-insert input { height: 29px; padding: 0 7px; border: 1px solid var(--overlay-border); border-radius: 5px; background: var(--overlay-input); color: var(--text); font: inherit; font-size: 10px; }
+.task-center-image-insert button { min-height: 28px; padding: 0 8px; border: 1px solid var(--overlay-border); border-radius: 5px; background: var(--accent-soft); color: var(--accent-text); font: inherit; font-size: 10px; cursor: pointer; }
+.task-center-composer-error { margin: -3px 0 0; color: var(--red); font-size: 10px; }
 .task-center-composer-body { display: grid; gap: 13px; overflow: auto; padding: 18px 22px; }
 .task-center-composer-body label { display: grid; gap: 6px; color: var(--text-faint); font-size: 10px; font-weight: 650; }
 .task-center-composer input { height: 34px; padding: 0 9px; }
@@ -2655,6 +2679,9 @@ body.is-project-dragging .tree-row.project {
   .task-center-source-rail { display: none; }
   .task-center-list-head { padding: 18px 15px 14px; }
   .task-center-filterbar { padding: 0 15px 12px; }
+  .task-center-filter-grid { grid-template-columns: 1fr; }
+  .task-center-filter-popover { margin-left: 15px; margin-right: 15px; }
+  .task-center-image-insert { grid-template-columns: 1fr; }
   .task-center-list-body { padding: 0 15px 22px; }
   .task-center-stale-banner { margin-left: 15px; margin-right: 15px; }
   .task-center-list-heading h2 { font-size: 19px; }
