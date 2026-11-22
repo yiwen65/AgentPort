@@ -130,6 +130,7 @@ pub struct GitlabTaskMutationRequest {
     pub list_id: Option<u64>,
     pub position: Option<u64>,
     pub label_id: Option<u64>,
+    pub assignee_ids: Option<Vec<u64>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,10 +318,122 @@ fn load_gitlab_detail(
                     .collect()
             })
             .unwrap_or_default(),
-        assignees: Vec::new(),
-        comments: Vec::new(),
-        reviews: Vec::new(),
-        checks: Vec::new(),
+        assignees: value
+            .get("assignees")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.get("username").and_then(Value::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        comments: glab_api(
+            &root,
+            &identity.host,
+            &format!(
+                "projects/{}/{segment}/{number}/notes?per_page=100",
+                encode_path(&identity.project_path)
+            ),
+        )
+        .ok()
+        .map(|items| {
+            items
+                .into_iter()
+                .map(|v| GitlabTaskComment {
+                    id: v
+                        .get("id")
+                        .and_then(Value::as_u64)
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
+                    author: v
+                        .get("author")
+                        .and_then(|a| a.get("username"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    body: v
+                        .get("body")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .into(),
+                    created_at: v
+                        .get("created_at")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    url: v
+                        .get("noteable_url")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                })
+                .collect()
+        })
+        .unwrap_or_default(),
+        reviews: if kind == "merge_request" {
+            glab_api(
+                &root,
+                &identity.host,
+                &format!(
+                    "projects/{}/merge_requests/{number}/approvals",
+                    encode_path(&identity.project_path)
+                ),
+            )
+            .ok()
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|v| GitlabTaskReview {
+                        id: v
+                            .get("id")
+                            .and_then(Value::as_u64)
+                            .map(|n| n.to_string())
+                            .unwrap_or_default(),
+                        author: None,
+                        state: v
+                            .get("approved")
+                            .and_then(Value::as_bool)
+                            .map(|b| if b { "approved" } else { "pending" })
+                            .unwrap_or("pending")
+                            .into(),
+                        body: String::new(),
+                        submitted_at: None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        },
+        checks: if kind == "merge_request" {
+            glab_api(
+                &root,
+                &identity.host,
+                &format!(
+                    "projects/{}/merge_requests/{number}/pipelines",
+                    encode_path(&identity.project_path)
+                ),
+            )
+            .ok()
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|v| GitlabTaskCheck {
+                        name: format!(
+                            "pipeline-{}",
+                            v.get("id").and_then(Value::as_u64).unwrap_or_default()
+                        ),
+                        state: v
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .into(),
+                        url: v.get("web_url").and_then(Value::as_str).map(str::to_owned),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         source_revision: value.get("sha").and_then(Value::as_str).map(str::to_owned),
         repository,
         partial: true,
@@ -344,12 +457,13 @@ fn mutate_gitlab_task_blocking(
 ) -> Result<GitlabTaskMutationOutcome, String> {
     let (root, _repository, identity) = resolve_gitlab_checkout(paths, project_id)?;
     let number = request.number;
-    let segment = if request.kind == "merge_request" {
+    let request_kind = request.kind.clone();
+    let segment = if request_kind == "merge_request" {
         "merge_requests"
     } else {
         "issues"
     };
-    let (method, endpoint, field) = match request.operation.as_str() {
+    let (method, endpoint, field, field_name) = match request.operation.as_str() {
         "comment" => (
             "POST",
             format!(
@@ -357,6 +471,7 @@ fn mutate_gitlab_task_blocking(
                 encode_path(&identity.project_path)
             ),
             request.body.unwrap_or_default(),
+            "body",
         ),
         "state" => (
             "PUT",
@@ -364,7 +479,32 @@ fn mutate_gitlab_task_blocking(
                 "projects/{}/{segment}/{number}",
                 encode_path(&identity.project_path)
             ),
-            request.state.unwrap_or_else(|| "opened".into()),
+            request.state.unwrap_or_else(|| "reopen".into()),
+            "state_event",
+        ),
+        "labels" => (
+            "PUT",
+            format!(
+                "projects/{}/{segment}/{number}",
+                encode_path(&identity.project_path)
+            ),
+            request.labels.unwrap_or_default().join(","),
+            "labels",
+        ),
+        "assignees" => (
+            "PUT",
+            format!(
+                "projects/{}/{segment}/{number}",
+                encode_path(&identity.project_path)
+            ),
+            request
+                .assignee_ids
+                .unwrap_or_default()
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            "assignee_ids",
         ),
         "merge" => (
             "PUT",
@@ -372,7 +512,20 @@ fn mutate_gitlab_task_blocking(
                 "projects/{}/merge_requests/{number}/merge",
                 encode_path(&identity.project_path)
             ),
-            "".into(),
+            String::new(),
+            "merge_when_pipeline_succeeds",
+        ),
+        "board_move" => (
+            "PUT",
+            format!(
+                "projects/{}/boards/{}/lists/{}/issues/{}",
+                encode_path(&identity.project_path),
+                request.board_id.unwrap_or_default(),
+                request.list_id.unwrap_or_default(),
+                number
+            ),
+            request.position.unwrap_or_default().to_string(),
+            "position",
         ),
         _ => {
             return Ok(GitlabTaskMutationOutcome::unknown(
@@ -391,7 +544,7 @@ fn mutate_gitlab_task_blocking(
             method,
             &endpoint,
             "--raw-field",
-            &format!("body={field}"),
+            &format!("{field_name}={field}"),
         ],
         Some(&root),
     )
@@ -402,12 +555,18 @@ fn mutate_gitlab_task_blocking(
             "GitLab mutation failed; read back required".into(),
         ));
     }
-    Ok(GitlabTaskMutationOutcome {
-        status: "succeeded".into(),
-        data: None,
-        error: None,
-        read_back_required: true,
-    })
+    match load_gitlab_detail(paths, project_id, &request_kind, number) {
+        Ok(detail) if detail.error.is_none() => Ok(GitlabTaskMutationOutcome {
+            status: "succeeded".into(),
+            data: detail.data,
+            error: None,
+            read_back_required: true,
+        }),
+        _ => Ok(GitlabTaskMutationOutcome::unknown(
+            "gitlab_read_back_failed",
+            "Mutation completed but authoritative read-back failed".into(),
+        )),
+    }
 }
 
 impl GitlabTaskDetailEnvelope {
