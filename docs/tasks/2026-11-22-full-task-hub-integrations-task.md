@@ -113,9 +113,9 @@ Replace the initial compact GitHub Task Center with a full-screen AgentPort Task
 - Execution steps: add typed method names; dispatch to device-local provider service; map errors/unknown outcomes; add mobile read allowlist only; test.
 - Acceptance criteria: no credentials cross wire; remote writes are non-replayable unless idempotency/read-back proves safe.
 - Verification method: Rust protocol/service tests and TypeScript remote tests.
-- Validation evidence: `cargo check -p agentport-remote-protocol -p agentport-service -p agentport-remote-bridge` passed; `git diff --check` passed. Provider hooks explicitly report unavailable.
-- Blocker: Provider execution hooks are unavailable and T-002 full operations are incomplete.
-- Unblock condition: Wire provider operation handlers into the remote service and complete T-002.
+- Validation evidence: `cargo check -p agentport-remote-protocol -p agentport-service -p agentport-remote-bridge` passed; remote service now executes target-local gh/glab list/detail/basic mutation calls; `git diff --check` passed.
+- Blocker: T-002 provider parity and full project/board mutation coverage remain incomplete.
+- Unblock condition: Complete provider parity and hardening.
 
 ### [ ] T-004 — Add mobile read-only Task Hub surface
 
@@ -189,7 +189,7 @@ Replace the initial compact GitHub Task Center with a full-screen AgentPort Task
 - 2026-11-22: Batch 1 started with UI/provider operation owners.
 - 2026-11-22: Full-screen three-column Task Hub completed; frontend build passed.
 - 2026-11-22: GitHub/GitLab provider modules extended with detail/mutation DTOs; GitLab detail/mutation currently returns explicit unavailable until provider hooks are complete.
-- 2026-11-22: Remote registry/service/bridge capability and credential rejection paths added; service provider hooks explicitly report unavailable.
+- 2026-11-22: Remote registry/service/bridge capability and credential rejection paths added; CoreService now executes target-local provider list/detail/basic mutation operations.
 - 2026-11-22: Mobile read-only Task Hub completed and committed as `1dc2d51`.
 - 2026-11-22: Full integration remains partial; T-002 and T-005 are blocked.
 
@@ -198,4 +198,4 @@ Replace the initial compact GitHub Task Center with a full-screen AgentPort Task
 
 - Result: partial
 - Evidence: Full-screen UI build, Rust provider/protocol checks, mobile task tests/build, task-document validation, and debug App rebuild/screenshot passed. Scoped commit `0fa5d07`; mobile read-only commit `1dc2d51`.
-- Limitations: GitHub/GitLab full mutation read-back, provider hooks on remote devices, and security hardening are incomplete; service currently reports unavailable where provider hooks are not wired.
+- Limitations: GitLab advanced review/checks/board operations and complete mutation read-back/security hardening remain incomplete; basic remote list/detail/comment/state/merge execution is now wired to target-local gh/glab.
