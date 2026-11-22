@@ -434,6 +434,42 @@ export class RemoteBackend {
   }
 
   // -----------------------------------------------------------------------
+  // task hub (provider execution remains on the remote device)
+  // -----------------------------------------------------------------------
+
+  async listTasks(params: RemoteTaskListParams): Promise<RemoteTaskResult> {
+    if (!this.client.hasCapability(CAPABILITY_TASK_READ)) {
+      throw new RemoteRequestError(
+        "capability_disabled",
+        "task reads are unavailable on the remote device",
+      );
+    }
+    return this.request<RemoteTaskResult>("task.list", params);
+  }
+
+  async getTaskDetail(params: RemoteTaskDetailParams): Promise<RemoteTaskResult> {
+    if (!this.client.hasCapability(CAPABILITY_TASK_READ)) {
+      throw new RemoteRequestError(
+        "capability_disabled",
+        "task reads are unavailable on the remote device",
+      );
+    }
+    return this.request<RemoteTaskResult>("task.detail", params);
+  }
+
+  async mutateTask(
+    params: RemoteTaskMutationParams,
+  ): Promise<RemoteTaskMutationResult> {
+    if (!this.client.hasCapability(CAPABILITY_TASK_WRITE)) {
+      throw new RemoteRequestError(
+        "capability_disabled",
+        "task writes are unavailable on the remote device",
+      );
+    }
+    return this.request<RemoteTaskMutationResult>("task.mutate", params);
+  }
+
+  // -----------------------------------------------------------------------
   // boot / projects / agents
   // -----------------------------------------------------------------------
 
