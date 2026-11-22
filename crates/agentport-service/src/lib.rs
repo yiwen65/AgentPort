@@ -194,13 +194,13 @@ impl Default for ServiceSnapshot {
                 },
                 ServiceCapability {
                     name: agentport_remote_protocol::CAPABILITY_TASK_READ.into(),
-                    enabled: false,
-                    disabled_reason: Some("task provider backend is unavailable".into()),
+                    enabled: true,
+                    disabled_reason: None,
                 },
                 ServiceCapability {
                     name: agentport_remote_protocol::CAPABILITY_TASK_WRITE.into(),
-                    enabled: false,
-                    disabled_reason: Some("task provider backend is unavailable".into()),
+                    enabled: true,
+                    disabled_reason: None,
                 },
                 ServiceCapability {
                     name: "secret.metadata".into(),
