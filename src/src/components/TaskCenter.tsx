@@ -1061,8 +1061,8 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               <div className="task-center-filter-grid">
                 <label>Status<select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value as "all" | "open" | "closed")}><option value="all">All</option><option value="open">Open</option><option value="closed">Closed</option></select></label>
                 <TaskOptionPicker label="Author" options={authorOptions} selected={filterAuthor ? [filterAuthor] : []} onChange={(values) => setFilterAuthor(values[0] ?? "")} placeholder="All authors" multiple={false} />
-                <TaskOptionPicker label="Label" options={taskOptions.labels} selected={filterLabel ? [filterLabel] : []} onChange={(values) => setFilterLabel(values[0] ?? "")} loading={taskOptions.loading} placeholder="All labels" />
-                <TaskOptionPicker label="Assignee" options={taskOptions.assignees} selected={filterAssignee ? [filterAssignee] : []} onChange={(values) => setFilterAssignee(values[0] ?? "")} loading={taskOptions.loading} placeholder="All assignees" multiple={false} />
+                <TaskOptionPicker label="Label" options={taskOptions.labels} selected={filterLabel ? [filterLabel] : []} onChange={(values) => setFilterLabel(values[0] ?? "")} loading={taskOptions.loading} error={taskOptions.error} placeholder="All labels" />
+                <TaskOptionPicker label="Assignee" options={taskOptions.assignees} selected={filterAssignee ? [filterAssignee] : []} onChange={(values) => setFilterAssignee(values[0] ?? "")} loading={taskOptions.loading} error={taskOptions.error} placeholder="All assignees" multiple={false} />
                 {activeScope === "pulls" ? <label>Reviews<select value={filterReview} onChange={(event) => setFilterReview(event.target.value as ReviewFilter)}><option value="all">All reviews</option>{reviewFilterOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label> : null}
               </div>
             </div> : null}

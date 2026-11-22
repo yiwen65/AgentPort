@@ -874,51 +874,48 @@ fn load_gitlab_task_options(
 ) -> Result<TaskOptionsEnvelope, (&'static str, String)> {
     let (root, _repository, identity) = resolve_gitlab_checkout(paths, project_id)
         .map_err(|error| ("gitlab_options_unavailable", error))?;
-    let labels = glab_api(
+    let mut errors = Vec::new();
+    let labels = match glab_api(
         &root,
         &identity.host,
         &format!("projects/{}/labels?per_page=100", encode_path(&identity.project_path)),
-    )?
-    .into_iter()
-    .filter_map(|value| value.get("name").and_then(Value::as_str).map(str::to_owned))
-    .take(MAX_ITEMS)
-    .collect();
-    let members = glab_api(
+    ) {
+        Ok(values) => values
+            .into_iter()
+            .filter_map(|value| value.get("name").and_then(Value::as_str).map(str::to_owned))
+            .take(MAX_ITEMS)
+            .collect(),
+        Err((code, message)) => { errors.push(format!("{code}: {message}")); Vec::new() }
+    };
+    let members = match glab_api(
         &root,
         &identity.host,
-        &format!(
-            "projects/{}/members/all?per_page=100",
-            encode_path(&identity.project_path)
-        ),
-    )?
-    .into_iter()
-    .filter_map(gitlab_member_option)
-    .take(MAX_ITEMS)
-    .collect::<Vec<_>>();
-    let branches = glab_api(
+        &format!("projects/{}/members/all?per_page=100", encode_path(&identity.project_path)),
+    ) {
+        Ok(values) => values.into_iter().filter_map(gitlab_member_option).take(MAX_ITEMS).collect::<Vec<_>>(),
+        Err((code, message)) => { errors.push(format!("{code}: {message}")); Vec::new() }
+    };
+    let branches = match glab_api(
         &root,
         &identity.host,
-        &format!(
-            "projects/{}/repository/branches?per_page=100",
-            encode_path(&identity.project_path)
-        ),
-    )?
-    .into_iter()
-    .filter_map(|value| {
-        let name = value.get("name").and_then(Value::as_str)?.trim();
-        (!name.is_empty()).then(|| TaskOption {
-            id: name.to_owned(),
-            name: name.to_owned(),
-        })
-    })
-    .take(MAX_ITEMS)
-    .collect();
+        &format!("projects/{}/repository/branches?per_page=100", encode_path(&identity.project_path)),
+    ) {
+        Ok(values) => values.into_iter().filter_map(|value| {
+            let name = value.get("name").and_then(Value::as_str)?.trim();
+            (!name.is_empty()).then(|| TaskOption { id: name.to_owned(), name: name.to_owned() })
+        }).take(MAX_ITEMS).collect(),
+        Err((code, message)) => { errors.push(format!("{code}: {message}")); Vec::new() }
+    };
+    let error = (!errors.is_empty()).then(|| crate::task_options::TaskOptionsError {
+        code: "gitlab_options_partial".into(),
+        message: errors.join("; "),
+    });
     Ok(TaskOptionsEnvelope {
         labels,
         assignees: members.clone(),
         branches,
         reviewers: members,
-        error: None,
+        error,
     })
 }
 
