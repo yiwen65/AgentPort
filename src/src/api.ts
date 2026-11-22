@@ -59,6 +59,8 @@ import type {
   GitWorkspaceCommandError,
   GithubTaskEnvelope,
   GithubTaskScope,
+  GitlabTaskEnvelope,
+  GitlabTaskScope,
   CommitAiConfig,
   CommitAiLanguage,
   CommitAiProvider,
@@ -259,6 +261,8 @@ export const localApi = {
     invoke<ProjectView[]>("list_projects", { activeSession }),
   listGithubTasks: (projectId: string, scope: GithubTaskScope) =>
     invoke<GithubTaskEnvelope>("list_github_tasks", { projectId, scope }),
+  listGitlabTasks: (projectId: string, scope: GitlabTaskScope) =>
+    invoke<GitlabTaskEnvelope>("list_gitlab_tasks", { projectId, scope }),
   probeAgents: (preserveSelections = false) =>
     invoke<ProbeOutcome[]>("probe_agents", { preserveSelections }),
   probeAgent: (agent: string, path: string | null) =>

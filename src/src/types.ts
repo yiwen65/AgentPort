@@ -624,6 +624,23 @@ export interface GithubTaskEnvelope {
   error: GithubTaskError | null;
 }
 
+export type GitlabTaskScope = "issues" | "pulls" | "boards";
+
+export interface GitlabTaskRepository {
+  host: string;
+  namespace: string;
+  name: string;
+  remoteUrl: string;
+  projectPath: string;
+}
+
+export interface GitlabTaskEnvelope {
+  scope: string;
+  repository: GitlabTaskRepository | null;
+  items: unknown[];
+  error: { code: string; message: string } | null;
+}
+
 /** Git checkout state used by local-branch management. */
 export interface RepositoryStatus {
   projectId: string;
