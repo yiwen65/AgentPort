@@ -1,7 +1,7 @@
 // App root: boot sequence, backend event wiring, global keyboard shortcuts
 // (PRD 7.1), layout, dialog routing.
 
-import { lazy, Suspense, useEffect, useRef, type CSSProperties } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { forwardNativeDrag } from "./nativeDrag";
 import {
@@ -78,6 +78,7 @@ import { piTerminalShortcutSequence } from "./piTerminalShortcuts";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import TopBar from "./components/TopBar";
+import TaskCenter from "./components/TaskCenter";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import Sidebar from "./components/Sidebar";
 import TooltipHost from "./components/Tooltip";
@@ -619,6 +620,7 @@ export default function App() {
   const activeSessionId = useStore((state) => state.activeSessionId);
   const activeDevice = useStore((state) => state.activeDevice);
   const gitCenterOpen = useStore((state) => state.gitCenter.open);
+  const [taskCenterOpen, setTaskCenterOpen] = useState(false);
   useBoot();
   useHotkeys();
   useWindowDragClass();
@@ -691,7 +693,7 @@ export default function App() {
         } as CSSProperties
       }
     >
-      <TopBar />
+      <TopBar taskCenterOpen={taskCenterOpen} onTaskCenterToggle={() => setTaskCenterOpen((open) => !open)} />
       <div className="main">
         <Sidebar collapsed={sidebarCollapsed} width={sidebarWidth} anim={sidebarAnim} />
         <SplitHandle collapsed={sidebarCollapsed} width={sidebarWidth} />
@@ -713,6 +715,7 @@ export default function App() {
           ) : null}
         </div>
       </div>
+      <TaskCenter open={taskCenterOpen} onClose={() => setTaskCenterOpen(false)} />
       <Suspense fallback={null}>
         <DialogRouter />
       </Suspense>

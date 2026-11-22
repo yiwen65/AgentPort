@@ -45,6 +45,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 mod commit_ai;
 mod external_agents;
+mod github_tasks;
 mod markdown_images;
 mod git_commands;
 mod git_workspace_commands;
@@ -5251,6 +5252,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             markdown_images::markdown_image_fetch,
             markdown_images::markdown_image_validate,
+            github_tasks::list_github_tasks,
             document_image_open,
             document_image_chunk,
             document_image_finish,

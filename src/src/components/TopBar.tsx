@@ -112,6 +112,15 @@ function IconGitCenter() {
   );
 }
 
+function IconTasks() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <rect x="3.5" y="3.5" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="1.4" />
+      <path d="m6.5 7.5 1.2 1.2 2.1-2.2M6.5 12.5l1.2 1.2 2.1-2.2M11.5 8h3M11.5 13h3" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function IconBell() {
   return (
     <svg width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -154,7 +163,13 @@ function IconClose() {
   );
 }
 
-export default function TopBar() {
+export default function TopBar({
+  taskCenterOpen = false,
+  onTaskCenterToggle,
+}: {
+  taskCenterOpen?: boolean;
+  onTaskCenterToggle?: () => void;
+}) {
   const { t } = useTranslation(["shell", "git"]);
   const activeSession = useStore((state) =>
     findSession(state.projects, state.activeSessionId),
@@ -339,6 +354,16 @@ export default function TopBar() {
         {sidebarCollapsed ? <DevicePicker /> : null}
         <DocumentPanelUnfoldButton />
         <ExplorerToggleButton />
+        <button
+          className="window-control sidebar-toggle"
+          onClick={onTaskCenterToggle}
+          aria-label={taskCenterOpen ? "Close GitHub Task Center" : "Open GitHub Task Center"}
+          aria-pressed={taskCenterOpen}
+          data-tip={taskCenterOpen ? "Close GitHub Task Center" : "Open GitHub Task Center"}
+          data-tauri-drag-region="false"
+        >
+          <IconTasks />
+        </button>
         <button
           className="window-control sidebar-toggle"
           onClick={(e) => openSurfaceMenu(e.currentTarget)}

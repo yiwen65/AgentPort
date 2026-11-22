@@ -57,6 +57,8 @@ import type {
   GitResolvedFile,
   GitStateInvalidated,
   GitWorkspaceCommandError,
+  GithubTaskEnvelope,
+  GithubTaskScope,
   CommitAiConfig,
   CommitAiLanguage,
   CommitAiProvider,
@@ -255,6 +257,8 @@ export const localApi = {
   boot: () => invoke<BootInfo>("boot"),
   listProjects: (activeSession: string | null) =>
     invoke<ProjectView[]>("list_projects", { activeSession }),
+  listGithubTasks: (projectId: string, scope: GithubTaskScope) =>
+    invoke<GithubTaskEnvelope>("list_github_tasks", { projectId, scope }),
   probeAgents: (preserveSelections = false) =>
     invoke<ProbeOutcome[]>("probe_agents", { preserveSelections }),
   probeAgent: (agent: string, path: string | null) =>

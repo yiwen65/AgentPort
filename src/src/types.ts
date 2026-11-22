@@ -568,6 +568,62 @@ export interface RestartResult {
   hostPid: number;
 }
 
+/** Read-only GitHub task discovery scoped to one local AgentPort project. */
+export type GithubTaskScope = "issues" | "pulls" | "projects";
+
+export interface GithubRepository {
+  host: string;
+  owner: string;
+  name: string;
+  remoteUrl: string;
+}
+
+export interface GithubIssue {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  author: string | null;
+  updatedAt: string | null;
+  labels: string[];
+}
+
+export interface GithubPullRequest {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  author: string | null;
+  updatedAt: string | null;
+  draft: boolean;
+}
+
+export interface GithubProject {
+  number: number;
+  title: string;
+  url: string | null;
+  shortDescription: string | null;
+  updatedAt: string | null;
+  closed: boolean;
+}
+
+export type GithubTaskData =
+  | { kind: "issues"; items: GithubIssue[] }
+  | { kind: "pulls"; items: GithubPullRequest[] }
+  | { kind: "projects"; items: GithubProject[] };
+
+export interface GithubTaskError {
+  code: string;
+  message: string;
+}
+
+export interface GithubTaskEnvelope {
+  scope: string;
+  repository: GithubRepository | null;
+  data: GithubTaskData | null;
+  error: GithubTaskError | null;
+}
+
 /** Git checkout state used by local-branch management. */
 export interface RepositoryStatus {
   projectId: string;
