@@ -82,7 +82,7 @@ export function TaskOptionPicker({
         )) : <span className="task-option-picker-placeholder">{loading ? "Loading repository options…" : placeholder}</span>}
         <span className="task-option-picker-chevron" aria-hidden="true">⌄</span>
       </div>
-      {error ? <span className="task-option-picker-error">{error}</span> : null}
+      {error && options.length === 0 ? <span className="task-option-picker-error">{error}</span> : null}
       {open ? (
         <div className="task-option-picker-menu" role="listbox" aria-label={`${label} options`}>
           <input
