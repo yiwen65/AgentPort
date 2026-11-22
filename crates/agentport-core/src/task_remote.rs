@@ -9,16 +9,26 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
+const CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRemote {
+    /// Hostname used by `gh`/`glab` configuration and authentication.
     pub host: String,
+    /// Optional port from the Git remote URL. `glab` keeps its auth key by
+    /// hostname, so callers pass `host` to the CLI while this port remains in
+    /// the credential-free canonical URL.
+    pub port: Option<u16>,
     pub path: String,
 }
 
 impl TaskRemote {
     pub fn canonical_url(&self) -> String {
-        format!("https://{}/{}", self.host, self.path)
+        let authority = self
+            .port
+            .map(|port| format!("{}:{port}", self.host))
+            .unwrap_or_else(|| self.host.clone());
+        format!("https://{authority}/{}", self.path)
     }
 }
 
@@ -72,13 +82,13 @@ pub fn parse_remote(remote: &str) -> Option<TaskRemote> {
         return None;
     };
 
-    let host = normalize_host(authority)?;
+    let (host, port) = normalize_host(authority)?;
     let path = normalize_path(raw_path)?;
-    Some(TaskRemote { host, path })
+    Some(TaskRemote { host, port, path })
 }
 
 pub fn provider_for_host(host: &str) -> Option<TaskProvider> {
-    let host = host.trim_end_matches('.');
+    let host = host_without_port(host).trim_end_matches('.');
     if host.eq_ignore_ascii_case("github.com") {
         return Some(TaskProvider::Github);
     }
@@ -93,6 +103,41 @@ pub fn provider_for_host(host: &str) -> Option<TaskProvider> {
         return Some(TaskProvider::Gitlab);
     }
     None
+}
+
+/// Resolve a self-hosted GitLab host from the device-local `glab` account.
+/// The command's output is discarded; only its exit status is observed.
+pub fn provider_for_remote(remote: &TaskRemote) -> Option<TaskProvider> {
+    provider_for_host(&remote.host).or_else(|| {
+        command_succeeded(
+            "glab",
+            &["auth", "status", "--hostname", remote.host.as_str()],
+        )
+        .then_some(TaskProvider::Gitlab)
+    })
+}
+
+/// Remove a GitLab installation subfolder from a repository URL. Self-managed
+/// instances may be mounted at `https://host/gitlab/`, while GitLab API paths
+/// still start at the project namespace.
+pub fn gitlab_project_path(remote: &TaskRemote) -> String {
+    let Some(subfolder) = command_text(
+        "glab",
+        &["config", "get", "subfolder", "--host", remote.host.as_str()],
+    )
+    .ok()
+    .map(|value| value.trim_matches('/').to_owned())
+    .filter(|value| valid_subfolder(value)) else {
+        return remote.path.clone();
+    };
+    strip_gitlab_subfolder(&remote.path, &subfolder).unwrap_or_else(|| remote.path.clone())
+}
+
+fn strip_gitlab_subfolder(path: &str, subfolder: &str) -> Option<String> {
+    path.strip_prefix(subfolder)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .filter(|path| is_valid_project_path(path))
+        .map(str::to_owned)
 }
 
 pub fn github_repository(path: &str) -> Option<(String, String)> {
@@ -114,16 +159,27 @@ pub fn is_valid_project_path(path: &str) -> bool {
         && segments.all(valid_path_part)
 }
 
-fn normalize_host(authority: &str) -> Option<String> {
+fn normalize_host(authority: &str) -> Option<(String, Option<u16>)> {
     let authority = authority.split(['?', '#']).next()?.trim();
     let host_port = authority.rsplit('@').next()?.trim();
     if host_port.is_empty() {
         return None;
     }
-    let host = if let Some(rest) = host_port.strip_prefix('[') {
-        rest.split_once(']')?.0
+    let (host, port) = if let Some(rest) = host_port.strip_prefix('[') {
+        let (host, suffix) = rest.split_once(']')?;
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            Some(parse_port(suffix.strip_prefix(':')?)?)
+        };
+        (host, port)
+    } else if let Some((host, port)) = host_port.rsplit_once(':') {
+        if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        (host, Some(parse_port(port)?))
     } else {
-        host_port.split(':').next()?
+        (host_port, None)
     };
     if host.is_empty()
         || !host
@@ -132,7 +188,18 @@ fn normalize_host(authority: &str) -> Option<String> {
     {
         return None;
     }
-    Some(host.to_ascii_lowercase())
+    Some((host.to_ascii_lowercase(), port))
+}
+
+fn parse_port(value: &str) -> Option<u16> {
+    let port = value.parse().ok()?;
+    (port > 0).then_some(port)
+}
+
+fn host_without_port(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| host.rsplit_once(':').map(|(host, _)| host).unwrap_or(host))
 }
 
 fn normalize_path(raw_path: &str) -> Option<String> {
@@ -163,6 +230,10 @@ fn valid_github_part(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+fn valid_subfolder(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && value.split('/').all(valid_path_part)
+}
+
 fn valid_path_part(value: &str) -> bool {
     !value.is_empty()
         && value != "."
@@ -173,26 +244,31 @@ fn valid_path_part(value: &str) -> bool {
 }
 
 fn git_text(root: &str, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command_args = vec!["-C", root];
+    command_args.extend_from_slice(args);
+    command_text("git", &command_args)
+}
+
+fn command_text(program: &str, args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new(program);
     command
-        .args(["-C", root])
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|_| "git is not available".to_string())?;
+        .map_err(|_| format!("{program} is not available"))?;
     let started = Instant::now();
     loop {
         match child
             .try_wait()
-            .map_err(|_| "git failed while running".to_string())?
+            .map_err(|_| format!("{program} failed while running"))?
         {
             Some(status) => {
                 let output = child
                     .wait_with_output()
-                    .map_err(|_| "git output could not be read".to_string())?;
+                    .map_err(|_| format!("{program} output could not be read"))?;
                 if !status.success() {
                     return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
                 }
@@ -201,9 +277,38 @@ fn git_text(root: &str, args: &[&str]) -> Result<String, String> {
             None if started.elapsed() >= COMMAND_TIMEOUT => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("git timed out".into());
+                return Err(format!("{program} timed out"));
             }
             None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}
+
+fn command_succeeded(program: &str, args: &[&str]) -> bool {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if started.elapsed() >= CLI_PROBE_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
         }
     }
 }
@@ -216,6 +321,7 @@ mod tests {
     fn parses_supported_remote_forms_and_strips_metadata() {
         let expected = TaskRemote {
             host: "github.com".into(),
+            port: None,
             path: "octo-org/repo".into(),
         };
         assert_eq!(
@@ -224,7 +330,11 @@ mod tests {
         );
         assert_eq!(
             parse_remote("ssh://git@github.com:22/octo-org/repo.git?x=1#top"),
-            Some(expected.clone())
+            Some(TaskRemote {
+                host: "github.com".into(),
+                port: Some(22),
+                path: "octo-org/repo".into(),
+            })
         );
         assert_eq!(
             parse_remote("https://user:secret@github.com/octo-org/repo.git?x=1#top"),
@@ -247,6 +357,18 @@ mod tests {
     }
 
     #[test]
+    fn strips_self_hosted_gitlab_installation_subfolders() {
+        assert_eq!(
+            strip_gitlab_subfolder("gitlab/tiandriver/tiandrive", "gitlab"),
+            Some("tiandriver/tiandrive".into())
+        );
+        assert_eq!(
+            strip_gitlab_subfolder("gitlabx/tiandriver/tiandrive", "gitlab"),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_malformed_and_ambiguous_remotes() {
         assert_eq!(parse_remote("file:///tmp/repo"), None);
         assert_eq!(parse_remote("https://github.com/owner"), None);
@@ -254,6 +376,7 @@ mod tests {
             parse_remote("https://github.com/owner/repo/issues"),
             Some(TaskRemote {
                 host: "github.com".into(),
+                port: None,
                 path: "owner/repo/issues".into()
             })
         );

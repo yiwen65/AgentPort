@@ -10,7 +10,8 @@ use tauri::State;
 
 use crate::AppState;
 use agentport_core::task_remote::{
-    is_valid_project_path, parse_remote, provider_for_host, resolve_main_remote, TaskProvider,
+    gitlab_project_path, is_valid_project_path, parse_remote, provider_for_remote,
+    resolve_main_remote, TaskProvider, TaskRemote,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
@@ -667,13 +668,25 @@ fn gitlab_remote(root: &str) -> Result<(RemoteIdentity, String), (&'static str, 
             format!("The origin/main upstream has no supported GitLab remote: {message}"),
         )
     })?;
-    if provider_for_host(&remote.host) != Some(TaskProvider::Gitlab) {
+    if provider_for_remote(&remote) != Some(TaskProvider::Gitlab) {
         return Err((
             "gitlab_remote_required",
             "The origin/main upstream is not a recognized GitLab host".into(),
         ));
     }
-    let identity = parse_gitlab_remote(&remote.canonical_url()).ok_or((
+    let project_path = gitlab_project_path(&remote);
+    if !is_valid_project_path(&project_path) {
+        return Err((
+            "gitlab_remote_required",
+            "The origin/main upstream is not a supported GitLab repository".into(),
+        ));
+    }
+    let normalized_remote = TaskRemote {
+        host: remote.host.clone(),
+        port: remote.port,
+        path: project_path,
+    };
+    let identity = parse_gitlab_remote(&normalized_remote.canonical_url()).ok_or((
         "gitlab_remote_required",
         "The origin/main upstream is not a supported GitLab repository".into(),
     ))?;

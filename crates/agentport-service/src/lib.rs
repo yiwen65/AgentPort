@@ -1347,7 +1347,7 @@ fn task_remote(
         "gitlab" => Some(agentport_core::task_remote::TaskProvider::Gitlab),
         _ => None,
     };
-    if agentport_core::task_remote::provider_for_host(&remote.host) != expected {
+    if agentport_core::task_remote::provider_for_remote(&remote) != expected {
         return Err("origin/main remote does not match the requested task provider".into());
     }
     let (namespace, name) = match expected {
@@ -1359,11 +1359,11 @@ fn task_remote(
             (owner, name)
         }
         Some(agentport_core::task_remote::TaskProvider::Gitlab) => {
-            if !agentport_core::task_remote::is_valid_project_path(&remote.path) {
+            let project_path = agentport_core::task_remote::gitlab_project_path(&remote);
+            if !agentport_core::task_remote::is_valid_project_path(&project_path) {
                 return Err("origin/main remote has no valid GitLab project path".into());
             }
-            let (namespace, name) = remote
-                .path
+            let (namespace, name) = project_path
                 .rsplit_once('/')
                 .ok_or_else(|| "origin/main remote has no repository path".to_string())?;
             (namespace.to_string(), name.to_string())

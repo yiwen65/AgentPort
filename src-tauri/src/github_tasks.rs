@@ -14,7 +14,8 @@ use tauri::State;
 
 use crate::AppState;
 use agentport_core::task_remote::{
-    github_repository, parse_remote, provider_for_host, resolve_main_remote, TaskProvider,
+    github_repository, gitlab_project_path, is_valid_project_path, parse_remote,
+    provider_for_remote, resolve_main_remote, TaskProvider,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
@@ -1253,7 +1254,7 @@ fn detect_task_provider_blocking(
         Ok(remote) => remote,
         Err(error) => return TaskProviderDetection::failed("remote_unavailable", error),
     };
-    let provider = match provider_for_host(&remote.host) {
+    let provider = match provider_for_remote(&remote) {
         Some(provider) => provider,
         None => {
             let canonical_url = remote.canonical_url();
@@ -1269,17 +1270,29 @@ fn detect_task_provider_blocking(
             return detection;
         }
     };
-    if provider == TaskProvider::Github && github_repository(&remote.path).is_none() {
+    let project_path = match provider {
+        TaskProvider::Github => remote.path.clone(),
+        TaskProvider::Gitlab => gitlab_project_path(&remote),
+    };
+    let valid_repository = match provider {
+        TaskProvider::Github => github_repository(&project_path).is_some(),
+        TaskProvider::Gitlab => is_valid_project_path(&project_path),
+    };
+    if !valid_repository {
         let canonical_url = remote.canonical_url();
         let host = remote.host.clone();
-        let path = remote.path.clone();
-        let mut detection = TaskProviderDetection::failed(
-            "invalid_repository",
-            "The origin/main remote is not a valid GitHub owner/repository path",
-        );
+        let message = match provider {
+            TaskProvider::Github => {
+                "The origin/main remote is not a valid GitHub owner/repository path"
+            }
+            TaskProvider::Gitlab => {
+                "The origin/main remote is not a valid GitLab namespace/project path"
+            }
+        };
+        let mut detection = TaskProviderDetection::failed("invalid_repository", message);
         detection.host = Some(host);
         detection.remote_url = Some(canonical_url);
-        detection.repository = Some(path);
+        detection.repository = Some(project_path);
         return detection;
     }
     let canonical_url = remote.canonical_url();
@@ -1287,7 +1300,7 @@ fn detect_task_provider_blocking(
         provider: Some(provider.as_str().into()),
         host: Some(remote.host),
         remote_url: Some(canonical_url),
-        repository: Some(remote.path),
+        repository: Some(project_path),
         error_code: None,
         error: None,
     }
