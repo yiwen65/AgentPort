@@ -421,18 +421,6 @@ export class RemoteBackend {
   // task providers
   // -----------------------------------------------------------------------
 
-  listTasks(params: RemoteTaskListParams): Promise<RemoteTaskResult> {
-    return this.request<RemoteTaskResult>("task.list", params);
-  }
-
-  getTaskDetail(params: RemoteTaskDetailParams): Promise<RemoteTaskResult> {
-    return this.request<RemoteTaskResult>("task.detail", params);
-  }
-
-  mutateTask(params: RemoteTaskMutationParams): Promise<RemoteTaskMutationResult> {
-    return this.request<RemoteTaskMutationResult>("task.mutate", params);
-  }
-
   // -----------------------------------------------------------------------
   // task hub (provider execution remains on the remote device)
   // -----------------------------------------------------------------------
