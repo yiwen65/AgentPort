@@ -420,6 +420,15 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
   const shellRef = useRef<HTMLElement>(null);
   const { items, repository, loading, error, scopeErrors, refresh } = useTasks(activeProjectId, provider, open);
+  useEffect(() => {
+    if (!open || provider !== "github") return;
+    const errors = Object.values(scopeErrors).filter((value): value is string => Boolean(value)).join(" ").toLowerCase();
+    if (errors.includes("github_remote_required") || errors.includes("no supported github")) {
+      setProvider("gitlab");
+      setActiveScope("issues");
+      setSelectedId(null);
+    }
+  }, [open, provider, scopeErrors]);
   const activeItems = items[activeScope];
   const activeScopeMeta = scopeMeta(activeScope);
   const activeError = error ?? scopeErrors[activeScope];
@@ -477,13 +486,6 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
 
   if (!open) return null;
   const supported = supportedScopes(provider);
-  const chooseProvider = (nextProvider: Provider) => {
-    setProvider(nextProvider);
-    setActiveScope("issues");
-    setSelectedId(null);
-    setQuery("");
-    setViewMode("list");
-  };
   const chooseScope = (scope: TaskScope) => {
     setActiveScope(scope);
     setSelectedId(null);
@@ -524,11 +526,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
         </header>
 
         <div className="task-center-mobile-nav" aria-label="Task Hub navigation">
-          {(["github", "gitlab"] as Provider[]).map((candidate) => (
-            <button key={candidate} type="button" aria-pressed={provider === candidate} onClick={() => chooseProvider(candidate)}>
-              <ProviderMark provider={candidate} /> {providerLabels[candidate]}
-            </button>
-          ))}
+          <span className="task-center-detected-provider"><ProviderMark provider={provider} /> {providerLabels[provider]}</span>
           <span className="task-center-mobile-nav-divider" aria-hidden="true" />
           {supported.map((scope) => (
             <button key={scope.id} type="button" aria-pressed={activeScope === scope.id} onClick={() => chooseScope(scope.id)}>
@@ -541,19 +539,11 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           <aside className="task-center-source-rail" aria-label="Task sources">
             <div className="task-center-source-heading">Sources</div>
             <div className="task-center-source-list">
-              {(["github", "gitlab"] as Provider[]).map((candidate) => (
-                <button
-                  key={candidate}
-                  className={`task-center-source-button${provider === candidate ? " is-active" : ""}`}
-                  type="button"
-                  aria-pressed={provider === candidate}
-                  onClick={() => chooseProvider(candidate)}
-                >
-                  <ProviderMark provider={candidate} />
-                  <span className="task-center-source-copy"><strong>{providerLabels[candidate]}</strong><small>{candidate === "github" ? "Issues, PRs & Projects" : "Issues, MRs & Boards"}</small></span>
-                  <span className="task-center-source-chevron" aria-hidden="true">›</span>
-                </button>
-              ))}
+              <div className="task-center-source-button is-active" aria-label={`Detected ${providerLabels[provider]} source`}>
+                <ProviderMark provider={provider} />
+                <span className="task-center-source-copy"><strong>{providerLabels[provider]}</strong><small>Detected from project remote</small></span>
+                <span className="task-center-source-chevron" aria-hidden="true">✓</span>
+              </div>
             </div>
             <div className="task-center-source-divider" />
             <div className="task-center-source-heading">Views</div>
