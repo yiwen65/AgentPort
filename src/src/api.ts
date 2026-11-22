@@ -59,8 +59,14 @@ import type {
   GitWorkspaceCommandError,
   GithubTaskEnvelope,
   GithubTaskScope,
+  GithubTaskDetailEnvelope,
+  GithubTaskMutationRequest,
+  GithubTaskMutationOutcome,
   GitlabTaskEnvelope,
   GitlabTaskScope,
+  GitlabTaskDetailEnvelope,
+  GitlabTaskMutationRequest,
+  GitlabTaskMutationOutcome,
   CommitAiConfig,
   CommitAiLanguage,
   CommitAiProvider,
@@ -261,8 +267,16 @@ export const localApi = {
     invoke<ProjectView[]>("list_projects", { activeSession }),
   listGithubTasks: (projectId: string, scope: GithubTaskScope) =>
     invoke<GithubTaskEnvelope>("list_github_tasks", { projectId, scope }),
+  getGithubTask: (projectId: string, kind: string, number: number) =>
+    invoke<GithubTaskDetailEnvelope>("get_github_task", { projectId, kind, number }),
+  mutateGithubTask: (projectId: string, request: GithubTaskMutationRequest) =>
+    invoke<GithubTaskMutationOutcome>("mutate_github_task", { projectId, request }),
   listGitlabTasks: (projectId: string, scope: GitlabTaskScope) =>
     invoke<GitlabTaskEnvelope>("list_gitlab_tasks", { projectId, scope }),
+  getGitlabTask: (projectId: string, kind: string, number: number) =>
+    invoke<GitlabTaskDetailEnvelope>("get_gitlab_task", { projectId, kind, number }),
+  mutateGitlabTask: (projectId: string, request: GitlabTaskMutationRequest) =>
+    invoke<GitlabTaskMutationOutcome>("mutate_gitlab_task", { projectId, request }),
   probeAgents: (preserveSelections = false) =>
     invoke<ProbeOutcome[]>("probe_agents", { preserveSelections }),
   probeAgent: (agent: string, path: string | null) =>

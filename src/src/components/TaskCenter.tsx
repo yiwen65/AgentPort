@@ -307,21 +307,48 @@ function TaskDetail({
   task,
   scope,
   provider,
+  projectId,
   onClose,
 }: {
   task: TaskRecord;
   scope: TaskScope;
   provider: Provider;
+  projectId: string | null;
   onClose: () => void;
 }) {
-  const url = taskUrl(task);
-  const labels = taskLabels(task);
-  const summary = taskSummary(task);
-  const author = taskAuthor(task);
-  const updatedAt = taskUpdatedAt(task);
-  const state = taskState(task);
-  const review = firstText(task, ["reviewDecision", "reviewStatus", "pipelineStatus", "checkState"]);
-  const branch = firstText(task, ["headRefName", "sourceBranch", "source_branch", "branch"]);
+  const [detail, setDetail] = useState<TaskRecord | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const numberValue = task.number ?? task.iid;
+  const number = typeof numberValue === "number" ? numberValue : Number(numberValue);
+  useEffect(() => {
+    if (!projectId || !Number.isInteger(number) || (scope !== "issues" && scope !== "pulls")) return;
+    let cancelled = false;
+    setDetailLoading(true);
+    setDetailError(null);
+    const request = provider === "github"
+      ? api.getGithubTask(projectId, scope === "pulls" ? "pull_request" : "issue", number)
+      : api.getGitlabTask(projectId, scope === "pulls" ? "merge_request" : "issue", number);
+    void request.then((value) => {
+      if (cancelled) return;
+      const record = asRecord(value);
+      const data = asRecord(record?.data);
+      const error = asRecord(record?.error);
+      setDetail(data);
+      setDetailError(typeof error?.message === "string" ? error.message : null);
+    }).catch((reason: unknown) => { if (!cancelled) setDetailError(errorText(reason)); })
+      .finally(() => { if (!cancelled) setDetailLoading(false); });
+    return () => { cancelled = true; };
+  }, [projectId, provider, scope, number]);
+  const shownTask = detail ?? task;
+  const url = taskUrl(shownTask);
+  const labels = taskLabels(shownTask);
+  const summary = taskSummary(shownTask);
+  const author = taskAuthor(shownTask);
+  const updatedAt = taskUpdatedAt(shownTask);
+  const state = taskState(shownTask);
+  const review = firstText(shownTask, ["reviewDecision", "reviewStatus", "pipelineStatus", "checkState"]);
+  const branch = firstText(shownTask, ["headRefName", "sourceBranch", "source_branch", "branch"]);
   return (
     <aside className="task-center-detail is-open" aria-label="Task details">
       <header className="task-center-detail-head">
@@ -341,6 +368,8 @@ function TaskDetail({
         <div className="task-center-detail-actions">
           {url ? <a className="task-center-open-link" href={url} target="_blank" rel="noreferrer">Open in {providerLabels[provider]} <span aria-hidden="true">↗</span></a> : <span className="task-center-no-link">No provider link</span>}
         </div>
+        {detailLoading ? <p className="task-center-detail-muted">Loading provider detail…</p> : null}
+        {detailError ? <p className="task-center-detail-error">{detailError}</p> : null}
         {summary ? <p className="task-center-detail-summary">{summary}</p> : <p className="task-center-detail-muted">No description was provided for this task.</p>}
         <section className="task-center-detail-section" aria-labelledby="task-center-facts-heading">
           <h5 id="task-center-facts-heading">Task facts</h5>
@@ -361,7 +390,7 @@ function TaskDetail({
         ) : null}
         <section className="task-center-detail-note">
           <span className="task-center-note-mark" aria-hidden="true">●</span>
-          <p>Read-only view. Credentials stay on this device and are never included in task data.</p>
+          <p>{detail ? "Provider detail loaded. Credentials stay on this device and are never included in task data." : "Detail and mutation capabilities depend on the provider and target device."}</p>
         </section>
       </div>
     </aside>
@@ -622,7 +651,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
             </div>
           </main>
 
-          {selectedTask ? <TaskDetail task={selectedTask} scope={activeScope} provider={provider} onClose={() => setSelectedId(null)} /> : <aside className="task-center-detail task-center-detail-empty" aria-label="Task details"><div className="task-center-detail-empty-content"><span aria-hidden="true">↖</span><h3>Select a task</h3><p>Choose an item from the list to inspect its details.</p></div></aside>}
+          {selectedTask ? <TaskDetail task={selectedTask} scope={activeScope} provider={provider} projectId={activeProjectId} onClose={() => setSelectedId(null)} /> : <aside className="task-center-detail task-center-detail-empty" aria-label="Task details"><div className="task-center-detail-empty-content"><span aria-hidden="true">↖</span><h3>Select a task</h3><p>Choose an item from the list to inspect its details.</p></div></aside>}
         </div>
       </section>
     </div>

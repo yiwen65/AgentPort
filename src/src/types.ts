@@ -620,8 +620,36 @@ export interface GithubTaskError {
 export interface GithubTaskEnvelope {
   scope: string;
   repository: GithubRepository | null;
+  capabilities?: Record<string, boolean>;
   data: GithubTaskData | null;
   error: GithubTaskError | null;
+}
+
+export interface GithubTaskDetailEnvelope {
+  repository: GithubRepository | null;
+  capabilities?: Record<string, boolean>;
+  data: Record<string, unknown> | null;
+  error: GithubTaskError | null;
+}
+
+export interface GithubTaskMutationRequest {
+  kind: string;
+  number: number;
+  operation: string;
+  body?: string;
+  state?: string;
+  labels?: string[];
+  assignees?: string[];
+  reviewEvent?: string;
+  mergeMethod?: string;
+  expectedRevision?: string;
+}
+
+export interface GithubTaskMutationOutcome {
+  status: string;
+  data: Record<string, unknown> | null;
+  error: GithubTaskError | null;
+  readBackRequired: boolean;
 }
 
 export type GitlabTaskScope = "issues" | "pulls" | "boards";
@@ -637,8 +665,34 @@ export interface GitlabTaskRepository {
 export interface GitlabTaskEnvelope {
   scope: string;
   repository: GitlabTaskRepository | null;
+  capabilities?: Record<string, boolean>;
   items: unknown[];
   error: { code: string; message: string } | null;
+}
+
+export interface GitlabTaskDetailEnvelope {
+  repository: GitlabTaskRepository | null;
+  capabilities?: Record<string, boolean>;
+  data: Record<string, unknown> | null;
+  error: { code: string; message: string } | null;
+}
+
+export interface GitlabTaskMutationRequest {
+  kind: string;
+  number: number;
+  operation: string;
+  body?: string;
+  state?: string;
+  labels?: string[];
+  assignees?: string[];
+  expectedRevision?: string;
+}
+
+export interface GitlabTaskMutationOutcome {
+  status: string;
+  data: Record<string, unknown> | null;
+  error: { code: string; message: string } | null;
+  readBackRequired: boolean;
 }
 
 /** Git checkout state used by local-branch management. */
