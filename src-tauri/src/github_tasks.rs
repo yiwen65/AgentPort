@@ -8,6 +8,7 @@ use agentport_core::db::Db;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -136,6 +137,7 @@ pub struct GithubPullRequest {
     pub author: Option<String>,
     pub updated_at: Option<String>,
     pub draft: bool,
+    pub review_statuses: Vec<String>,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
 }
@@ -1814,6 +1816,106 @@ fn fetch_issues(
     Ok(GithubTaskData::Issues(issues))
 }
 
+fn fetch_github_pull_review_statuses(
+    root: &str,
+    identity: &RemoteIdentity,
+) -> HashMap<u64, Vec<String>> {
+    let query = "query($owner:String!,$repo:String!){viewer{login} repository(owner:$owner,name:$repo){pullRequests(first:50,states:[OPEN,CLOSED,MERGED],orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number,state,isDraft,reviewDecision,reviews(last:50){nodes{state author{login}}} reviewRequests(first:50){nodes{requestedReviewer{... on User{login} ... on Team{name}}}}}}}}";
+    let output = match gh_api(
+        root,
+        &[
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-f",
+            &format!("owner={}", identity.owner),
+            "-f",
+            &format!("repo={}", identity.name),
+        ],
+    ) {
+        Ok(output) => output,
+        Err(_) => return HashMap::new(),
+    };
+    let value: Value = match parse_json(&output) {
+        Ok(value) => value,
+        Err(_) => return HashMap::new(),
+    };
+    let viewer = value
+        .pointer("/data/viewer/login")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(nodes) = value
+        .pointer("/data/repository/pullRequests/nodes")
+        .and_then(Value::as_array)
+    else {
+        return HashMap::new();
+    };
+    let mut result = HashMap::new();
+    for node in nodes {
+        let Some(number) = node.get("number").and_then(Value::as_u64) else { continue };
+        let state = node.get("state").and_then(Value::as_str).unwrap_or("");
+        let draft = node.get("isDraft").and_then(Value::as_bool).unwrap_or(false);
+        let reviews = node
+            .pointer("/reviews/nodes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let requests = node
+            .pointer("/reviewRequests/nodes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut statuses = Vec::new();
+        let mut reviewed_by_viewer = false;
+        for review in &reviews {
+            let author = review.pointer("/author/login").and_then(Value::as_str).unwrap_or("");
+            if !viewer.is_empty() && author == viewer {
+                reviewed_by_viewer = true;
+            }
+            match review.get("state").and_then(Value::as_str).unwrap_or("") {
+                "CHANGES_REQUESTED" => push_review_status(&mut statuses, "changes_requested"),
+                "APPROVED" => push_review_status(&mut statuses, "approved"),
+                _ => {}
+            }
+        }
+        if node.get("reviewDecision").and_then(Value::as_str) == Some("APPROVED") {
+            push_review_status(&mut statuses, "approved");
+        }
+        if node.get("reviewDecision").and_then(Value::as_str) == Some("CHANGES_REQUESTED") {
+            push_review_status(&mut statuses, "changes_requested");
+        }
+        let mut viewer_requested = false;
+        let mut team_requested = false;
+        for request in &requests {
+            if let Some(login) = request.pointer("/requestedReviewer/login").and_then(Value::as_str) {
+                if login == viewer { viewer_requested = true; }
+            }
+            if request.pointer("/requestedReviewer/name").is_some() {
+                team_requested = true;
+            }
+        }
+        if viewer_requested { push_review_status(&mut statuses, "awaiting_review_from_you"); }
+        if team_requested { push_review_status(&mut statuses, "awaiting_review_from_you_or_team"); }
+        if !requests.is_empty() || (state == "OPEN" && !draft && reviews.is_empty()) {
+            push_review_status(&mut statuses, "review_required");
+        }
+        if !viewer.is_empty() && reviewed_by_viewer {
+            push_review_status(&mut statuses, "reviewed_by_you");
+        } else if !viewer.is_empty() && !reviews.is_empty() {
+            push_review_status(&mut statuses, "not_reviewed_by_you");
+        }
+        if statuses.is_empty() { push_review_status(&mut statuses, "no_reviews"); }
+        result.insert(number, statuses);
+    }
+    result
+}
+
+fn push_review_status(statuses: &mut Vec<String>, status: &str) {
+    if !statuses.iter().any(|value| value == status) {
+        statuses.push(status.to_owned());
+    }
+}
+
 fn fetch_pulls(
     root: &str,
     identity: &RemoteIdentity,
@@ -1831,6 +1933,7 @@ fn fetch_pulls(
         ],
     )?;
     let entries: Vec<PullApi> = parse_json(&output)?;
+    let review_statuses = fetch_github_pull_review_statuses(root, identity);
     Ok(GithubTaskData::Pulls(
         entries
             .into_iter()
@@ -1842,6 +1945,7 @@ fn fetch_pulls(
                 author: entry.user.map(|user| user.login),
                 updated_at: entry.updated_at,
                 draft: entry.draft,
+                review_statuses: review_statuses.get(&entry.number).cloned().unwrap_or_default(),
                 labels: entry.labels.into_iter().map(|label| label.name).collect(),
                 assignees: entry.assignees.into_iter().map(|user| user.login).collect(),
             })

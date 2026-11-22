@@ -623,6 +623,7 @@ export interface GithubPullRequest {
   author: string | null;
   updatedAt: string | null;
   draft: boolean;
+  reviewStatuses?: string[];
 }
 
 export interface GithubProject {

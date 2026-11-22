@@ -985,7 +985,10 @@ fn load_tasks(
         "boards" => format!("projects/{}/boards", encode_path(&identity.project_path)),
         _ => unreachable!(),
     };
-    let items = glab_api(&root, &identity.host, &endpoint)?;
+    let mut items = glab_api(&root, &identity.host, &endpoint)?;
+    if scope == "pulls" {
+        annotate_gitlab_review_statuses(&mut items);
+    }
     Ok(GitlabTaskEnvelope {
         scope: scope.into(),
         repository: Some(repository),
@@ -1054,6 +1057,24 @@ fn encode_path(value: &str) -> String {
             other => format!("%{other:02X}"),
         })
         .collect()
+}
+
+fn annotate_gitlab_review_statuses(items: &mut [Value]) {
+    for item in items {
+        let mut statuses = Vec::new();
+        if item.get("approved").and_then(Value::as_bool) == Some(true)
+            || item.get("approved_by").and_then(Value::as_array).is_some_and(|values| !values.is_empty())
+        {
+            statuses.push("approved");
+        }
+        if item.get("reviewers").and_then(Value::as_array).is_some_and(|values| !values.is_empty()) {
+            statuses.push("review_required");
+        }
+        if statuses.is_empty() {
+            statuses.push("no_reviews");
+        }
+        item["reviewStatuses"] = Value::Array(statuses.into_iter().map(|status| Value::String(status.into())).collect());
+    }
 }
 
 fn glab_api(root: &str, host: &str, endpoint: &str) -> Result<Vec<Value>, (&'static str, String)> {

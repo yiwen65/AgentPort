@@ -19,6 +19,18 @@ type TaskResponse = {
 };
 
 type ComposerKind = "issue" | "pull_request" | "merge_request";
+type ReviewFilter = "all" | "no_reviews" | "review_required" | "approved" | "changes_requested" | "reviewed_by_you" | "not_reviewed_by_you" | "awaiting_review_from_you" | "awaiting_review_from_you_or_team";
+
+const reviewFilterOptions: Array<{ value: Exclude<ReviewFilter, "all">; label: string }> = [
+  { value: "no_reviews", label: "No reviews" },
+  { value: "review_required", label: "Review required" },
+  { value: "approved", label: "Approved review" },
+  { value: "changes_requested", label: "Changes requested" },
+  { value: "reviewed_by_you", label: "Reviewed by you" },
+  { value: "not_reviewed_by_you", label: "Not reviewed by you" },
+  { value: "awaiting_review_from_you", label: "Awaiting review from you" },
+  { value: "awaiting_review_from_you_or_team", label: "Awaiting review from you or your team" },
+];
 
 type TaskMutationFields = {
   title?: string;
@@ -155,6 +167,20 @@ function taskAssignees(task: TaskRecord): string[] {
     const name = record ? firstText(record, ["login", "username", "name", "handle"]) : "";
     return name ? [name] : [];
   });
+}
+
+function taskReviewStatuses(task: TaskRecord): string[] {
+  const raw = task.reviewStatuses ?? task.reviewStatus ?? task.reviewDecision ?? task.approvalStatus;
+  const statuses = typeof raw === "string" && raw.trim()
+    ? [raw.trim().toLowerCase()]
+    : Array.isArray(raw)
+      ? raw.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim().toLowerCase())
+      : [];
+  if (statuses.length > 0) return statuses;
+  const state = taskState(task).toLowerCase();
+  return state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")
+    ? task.draft === true ? ["no_reviews"] : ["review_required"]
+    : ["no_reviews"];
 }
 
 function taskLabels(task: TaskRecord): string[] {
@@ -588,6 +614,8 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const [assignedOnly, setAssignedOnly] = useState(false);
   const [filterLabel, setFilterLabel] = useState("");
   const [filterAssignee, setFilterAssignee] = useState("");
+  const [filterAuthor, setFilterAuthor] = useState("");
+  const [filterReview, setFilterReview] = useState<ReviewFilter>("all");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [mutationBusy, setMutationBusy] = useState(false);
   const [mutationNotice, setMutationNotice] = useState<{ tone: "success" | "error" | "unknown"; text: string } | null>(null);
@@ -650,20 +678,33 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const normalizedLabel = filterLabel.trim().toLowerCase();
   const selectedAssigneeOption = taskOptions.assignees.find((option) => option.id === filterAssignee);
   const normalizedAssignee = (selectedAssigneeOption?.name ?? filterAssignee).trim().toLowerCase();
+  const authorOptions = useMemo(() => {
+    const unique = new Map<string, TaskOption>();
+    for (const task of activeItems) {
+      const author = taskAuthor(task);
+      if (author) unique.set(author, { id: author, name: author });
+    }
+    return [...unique.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }, [activeItems]);
+  const normalizedAuthor = filterAuthor.trim().toLowerCase();
   const filteredItems = useMemo(() => activeItems.filter((task) => {
     const state = taskState(task).toLowerCase();
     const closed = state.includes("closed") || state.includes("merged") || state.includes("done") || state.includes("complete");
     const labels = taskLabels(task);
     const assignees = taskAssignees(task);
-    const searchable = [taskTitle(task), taskSummary(task) ?? "", taskState(task), taskAuthor(task) ?? "", ...labels, ...assignees].join(" ").toLowerCase();
+    const author = taskAuthor(task) ?? "";
+    const reviewStatuses = taskReviewStatuses(task);
+    const searchable = [taskTitle(task), taskSummary(task) ?? "", taskState(task), author, ...labels, ...assignees].join(" ").toLowerCase();
     if (normalizedQuery && !searchable.includes(normalizedQuery)) return false;
     if (filterStatus === "open" && closed) return false;
     if (filterStatus === "closed" && !closed) return false;
     if (assignedOnly && assignees.length === 0) return false;
     if (normalizedLabel && !labels.some((label) => label.toLowerCase().includes(normalizedLabel))) return false;
     if (normalizedAssignee && !assignees.some((assignee) => assignee.toLowerCase().includes(normalizedAssignee))) return false;
+    if (normalizedAuthor && !author.toLowerCase().includes(normalizedAuthor)) return false;
+    if (activeScope === "pulls" && filterReview !== "all" && !reviewStatuses.includes(filterReview)) return false;
     return true;
-  }), [activeItems, assignedOnly, filterAssignee, filterLabel, filterStatus, normalizedAssignee, normalizedLabel, normalizedQuery, taskOptions.assignees]);
+  }), [activeItems, activeScope, assignedOnly, filterAssignee, filterAuthor, filterLabel, filterReview, filterStatus, normalizedAssignee, normalizedAuthor, normalizedLabel, normalizedQuery, taskOptions.assignees]);
   const selectedTask = useMemo(() => {
     if (selectedId) {
       const match = filteredItems.find((task) => taskIdentity(task) === selectedId);
@@ -834,12 +875,12 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = activeScope === "issues"
       ? [
         { id: "open", label: "Open", items: [] },
-        { id: "done", label: "Closed", items: [] },
+        { id: "done", label: "Done", items: [] },
       ]
       : [
-        { id: "open", label: "Open / Draft", items: [] },
+        { id: "open", label: "Open", items: [] },
         { id: "review", label: "In review", items: [] },
-        { id: "done", label: "Merged / Closed", items: [] },
+        { id: "done", label: "Done", items: [] },
       ];
     for (const task of filteredItems) {
       const tone = taskTone(task, activeScope);
@@ -879,6 +920,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     setActiveScope(scope);
     setSelectedId(null);
     setQuery("");
+    setFilterReview("all");
     setMutationNotice(null);
   };
   const openComposer = () => {
@@ -1002,7 +1044,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               <div className="task-center-filter-chips" role="group" aria-label="Quick filters">
                 <button type="button" className={filterStatus === "open" ? "is-active" : ""} aria-pressed={filterStatus === "open"} onClick={() => setFilterStatus(filterStatus === "open" ? "all" : "open")}>Open</button>
                 <button type="button" className={assignedOnly ? "is-active" : ""} aria-pressed={assignedOnly} onClick={() => setAssignedOnly(!assignedOnly)}>Assigned</button>
-                <button type="button" className={filtersOpen ? "is-active" : ""} aria-pressed={filtersOpen} onClick={() => setFiltersOpen(!filtersOpen)}>Filters{filterLabel || filterAssignee || filterStatus === "closed" ? " ·" : ""}</button>
+                <button type="button" className={filtersOpen ? "is-active" : ""} aria-pressed={filtersOpen} onClick={() => setFiltersOpen(!filtersOpen)}>Filters{filterLabel || filterAssignee || filterAuthor || filterReview !== "all" || filterStatus === "closed" ? " ·" : ""}</button>
               </div>
               <label className="task-center-search">
                 <span aria-hidden="true">⌕</span>
@@ -1015,11 +1057,13 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               </div>
             </div>
             {filtersOpen ? <div className="task-center-filter-popover" role="dialog" aria-label="Task filters">
-              <div className="task-center-filter-popover-head"><strong>Filter tasks</strong><button type="button" onClick={() => { setFilterStatus("all"); setAssignedOnly(false); setFilterLabel(""); setFilterAssignee(""); setQuery(""); }}>Clear all</button></div>
+              <div className="task-center-filter-popover-head"><strong>Filter tasks</strong><button type="button" onClick={() => { setFilterStatus("all"); setAssignedOnly(false); setFilterLabel(""); setFilterAssignee(""); setFilterAuthor(""); setFilterReview("all"); setQuery(""); }}>Clear all</button></div>
               <div className="task-center-filter-grid">
                 <label>Status<select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value as "all" | "open" | "closed")}><option value="all">All</option><option value="open">Open</option><option value="closed">Closed</option></select></label>
+                <TaskOptionPicker label="Author" options={authorOptions} selected={filterAuthor ? [filterAuthor] : []} onChange={(values) => setFilterAuthor(values[0] ?? "")} placeholder="All authors" multiple={false} />
                 <TaskOptionPicker label="Label" options={taskOptions.labels} selected={filterLabel ? [filterLabel] : []} onChange={(values) => setFilterLabel(values[0] ?? "")} loading={taskOptions.loading} placeholder="All labels" />
                 <TaskOptionPicker label="Assignee" options={taskOptions.assignees} selected={filterAssignee ? [filterAssignee] : []} onChange={(values) => setFilterAssignee(values[0] ?? "")} loading={taskOptions.loading} placeholder="All assignees" multiple={false} />
+                {activeScope === "pulls" ? <label>Reviews<select value={filterReview} onChange={(event) => setFilterReview(event.target.value as ReviewFilter)}><option value="all">All reviews</option>{reviewFilterOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label> : null}
               </div>
             </div> : null}
             {mutationNotice ? <div className={`task-center-mutation-notice is-${mutationNotice.tone}`} role={mutationNotice.tone === "success" ? "status" : "alert"}>{mutationNotice.text}</div> : null}
