@@ -118,10 +118,13 @@ function taskState(task: TaskRecord): string {
   return "Open";
 }
 
-function taskTone(task: TaskRecord): "open" | "review" | "done" | "muted" {
+function taskTone(task: TaskRecord, scope: TaskScope): "open" | "review" | "done" | "muted" {
   const state = taskState(task).toLowerCase();
-  if (task.draft === true || state.includes("draft") || state.includes("review")) return "review";
   if (state.includes("closed") || state.includes("merged") || state.includes("done") || state.includes("complete")) return "done";
+  if (scope === "pulls") {
+    if (task.draft === true || state.includes("draft")) return "open";
+    if (state.includes("review") || state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")) return "review";
+  }
   if (state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")) return "open";
   return "muted";
 }
@@ -380,7 +383,7 @@ function TaskRow({
         aria-pressed={selected}
         onClick={onSelect}
       >
-        <span className={`task-center-status-dot task-center-status-dot-${taskTone(task)}`} aria-hidden="true" />
+        <span className={`task-center-status-dot task-center-status-dot-${taskTone(task, scope)}`} aria-hidden="true" />
         <span className="task-center-row-copy">
           <span className="task-center-row-title">{taskTitle(task)}</span>
           <span className="task-center-row-meta">
@@ -464,7 +467,7 @@ function TaskDetail({
       </header>
       <div className="task-center-detail-body">
         <div className="task-center-detail-title-row">
-          <span className={`task-center-status-dot task-center-status-dot-${taskTone(shownTask)}`} aria-hidden="true" />
+          <span className={`task-center-status-dot task-center-status-dot-${taskTone(shownTask, scope)}`} aria-hidden="true" />
           <span className="task-center-detail-state">{state}</span>
           {taskNumber(shownTask) ? <span className="task-center-detail-number">{taskNumber(shownTask)}</span> : null}
         </div>
@@ -828,18 +831,23 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     void performMutation(composerKind, 0, operation, fields);
   };
   const boardColumns = useMemo(() => {
-    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = [
-      { id: "open", label: "Open", items: [] },
-      { id: "review", label: "In review", items: [] },
-      { id: "done", label: "Done", items: [] },
-    ];
+    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = activeScope === "issues"
+      ? [
+        { id: "open", label: "Open", items: [] },
+        { id: "done", label: "Closed", items: [] },
+      ]
+      : [
+        { id: "open", label: "Open / Draft", items: [] },
+        { id: "review", label: "In review", items: [] },
+        { id: "done", label: "Merged / Closed", items: [] },
+      ];
     for (const task of filteredItems) {
-      const tone = taskTone(task);
+      const tone = taskTone(task, activeScope);
       const column = columns.find((candidate) => candidate.id === (tone === "done" ? "done" : tone === "review" ? "review" : "open"));
       column?.items.push(task);
     }
     return columns;
-  }, [filteredItems]);
+  }, [activeScope, filteredItems]);
 
   useEffect(() => {
     if (!open) return;
