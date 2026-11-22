@@ -127,6 +127,8 @@ import {
 
 /** terminal.geometry_v1 gates revisioned resize metadata on the bridge. */
 const CAPABILITY_TERMINAL_GEOMETRY = "terminal.geometry_v1";
+export const CAPABILITY_TASK_READ = "task.read";
+export const CAPABILITY_TASK_WRITE = "task.write";
 
 /** Bound on pre-registration event buffering per attachment (see RemoteBackend). */
 const MAX_PENDING_ATTACHMENT_EVENTS = 4096;
@@ -266,6 +268,9 @@ export const ROUTING = {
     "listDocumentDirectory",
     "searchDocumentFiles",
     "createDocumentEntry",
+    "listTasks",
+    "getTaskDetail",
+    "mutateTask",
   ],
 } as const;
 

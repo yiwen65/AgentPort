@@ -48,8 +48,8 @@ use agentport_remote_protocol::{
     SessionCreateParams, SessionDetachParams, SessionIdParams, SessionInputParams,
     SessionPinParams, SessionPollParams, SessionRenameParams,
     SessionRestartParams, SessionSeenParams, SessionStopParams, SessionStructuredPromptParams,
-    SessionUnreadParams, WorktreeCreateParams, WorktreeIdParams, WorktreePreviewParams,
-    WorktreeProjectParams,
+    SessionUnreadParams, TaskDetailParams, TaskListParams, TaskMutationParams,
+    WorktreeCreateParams, WorktreeIdParams, WorktreePreviewParams, WorktreeProjectParams,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,13 @@ pub enum ServiceError {
     AttachmentNotFound,
     #[error("remote request is invalid")]
     InvalidRequest,
+    /// The task provider integration is not installed in this service build.
+    /// Credentials remain device-local; callers receive an explicit capability
+    /// error instead of falling back to execution on the desktop.
+    #[error("task provider is unavailable on the target device")]
+    TaskProviderUnavailable,
+    #[error("task mutation payload contains credential fields")]
+    TaskCredentialsForbidden,
     #[error(transparent)]
     ProjectDirectory(#[from] ProjectDirectoryError),
     #[error(transparent)]
@@ -184,6 +191,16 @@ impl Default for ServiceSnapshot {
                     name: "project.write".into(),
                     enabled: true,
                     disabled_reason: None,
+                },
+                ServiceCapability {
+                    name: agentport_remote_protocol::CAPABILITY_TASK_READ.into(),
+                    enabled: false,
+                    disabled_reason: Some("task provider backend is unavailable".into()),
+                },
+                ServiceCapability {
+                    name: agentport_remote_protocol::CAPABILITY_TASK_WRITE.into(),
+                    enabled: false,
+                    disabled_reason: Some("task provider backend is unavailable".into()),
                 },
                 ServiceCapability {
                     name: "secret.metadata".into(),
@@ -704,6 +721,21 @@ pub trait RemoteService: Send + Sync {
         _params: serde_json::Value,
     ) -> Result<serde_json::Value> {
         Err(ServiceError::InvalidRequest)
+    }
+    /// Task provider execution is deliberately a service-side hook. The
+    /// default build has no provider hook and reports that fact explicitly;
+    /// it never asks the desktop to execute a target-local task request.
+    fn list_tasks(&self, _params: TaskListParams) -> Result<serde_json::Value> {
+        Err(ServiceError::TaskProviderUnavailable)
+    }
+    fn task_detail(&self, _params: TaskDetailParams) -> Result<serde_json::Value> {
+        Err(ServiceError::TaskProviderUnavailable)
+    }
+    fn mutate_task(&self, params: TaskMutationParams) -> Result<serde_json::Value> {
+        if params.contains_credential_fields() {
+            return Err(ServiceError::TaskCredentialsForbidden);
+        }
+        Err(ServiceError::TaskProviderUnavailable)
     }
     fn save_commit_ai_config(
         &self,

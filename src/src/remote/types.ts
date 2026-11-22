@@ -156,6 +156,46 @@ export interface RemoteServiceSnapshot {
   };
 }
 
+/** Task providers execute on the remote device using its local CLI config. */
+export type RemoteTaskProvider = "github" | "gitlab";
+
+export interface RemoteTaskListParams {
+  provider: RemoteTaskProvider;
+  projectId: string;
+  scope: string;
+  cursor?: string | null;
+  limit?: number | null;
+}
+
+export interface RemoteTaskDetailParams {
+  provider: RemoteTaskProvider;
+  projectId: string;
+  itemId: string;
+  scope?: string | null;
+}
+
+/** Mutation payloads contain task data only; credentials are never accepted. */
+export type RemoteTaskMutationPayload = Record<string, unknown>;
+
+export interface RemoteTaskMutationParams {
+  provider: RemoteTaskProvider;
+  projectId: string;
+  operation: string;
+  payload: RemoteTaskMutationPayload;
+  expectedRevision?: string | null;
+  idempotencyKey?: string | null;
+}
+
+/** Provider-specific task envelopes remain opaque to the remote transport. */
+export type RemoteTaskResult = Record<string, unknown>;
+
+export interface RemoteTaskMutationResult extends RemoteTaskResult {
+  outcome?: "applied" | "not_executed" | "unknown" | string;
+  readBack?: unknown;
+  authoritative?: unknown;
+  revision?: string | null;
+}
+
 export interface RemoteBootSnapshot {
   reconciledSessions: number;
   service: RemoteServiceSnapshot;

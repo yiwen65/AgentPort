@@ -357,9 +357,9 @@ export default function TopBar({
         <button
           className="window-control sidebar-toggle"
           onClick={onTaskCenterToggle}
-          aria-label={taskCenterOpen ? "Close GitHub Task Center" : "Open GitHub Task Center"}
+          aria-label={taskCenterOpen ? "Close Task Hub" : "Open Task Hub"}
           aria-pressed={taskCenterOpen}
-          data-tip={taskCenterOpen ? "Close GitHub Task Center" : "Open GitHub Task Center"}
+          data-tip={taskCenterOpen ? "Close Task Hub" : "Open Task Hub"}
           data-tauri-drag-region="false"
         >
           <IconTasks />

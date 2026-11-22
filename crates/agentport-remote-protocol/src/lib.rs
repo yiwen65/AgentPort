@@ -17,6 +17,10 @@ pub const PROTOCOL_MINOR: u16 = 1;
 pub const EVENT_PUSH_MINOR: u16 = 1;
 pub const CAPABILITY_SESSION_EVENT_PUSH: &str = "session.event_push";
 pub const CAPABILITY_TERMINAL_GEOMETRY: &str = "terminal.geometry_v1";
+/// Task reads execute against the provider credentials on the target device.
+pub const CAPABILITY_TASK_READ: &str = "task.read";
+/// Task mutations execute against the provider credentials on the target device.
+pub const CAPABILITY_TASK_WRITE: &str = "task.write";
 pub const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 
 /// Exact Bridge dispatch registry. Retry classification is tested against this
@@ -25,6 +29,9 @@ pub const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
 pub const METHOD_REGISTRY: &[&str] = &[
     "image.begin", "image.chunk", "image.finish", "image.abort",
     "boot",
+    "task.list",
+    "task.detail",
+    "task.mutate",
     "session.list",
     "session.files.list",
     "session.files.read",
@@ -143,6 +150,9 @@ pub const METHOD_REGISTRY: &[&str] = &[
 /// allowlist during review and capability negotiation.
 pub const MOBILE_V2_METHOD_ALLOWLIST: &[&str] = &[
     "boot",
+    // Mobile task surfaces are read-only; mutations stay desktop-only.
+    "task.list",
+    "task.detail",
     "session.list",
     "session.files.list",
     "session.files.read",
@@ -389,6 +399,8 @@ pub fn classify_method(method: &str) -> RetryClass {
     match method {
         "image.begin" | "image.chunk" | "image.finish" | "image.abort" => RetryClass::NonIdempotentWrite,
         "boot"
+        | "task.list"
+        | "task.detail"
         | "session.list"
         | "session.status"
         | "session.history"
@@ -507,7 +519,8 @@ pub fn classify_method(method: &str) -> RetryClass {
         | "document.create"
         | "secret.status"
         | "secret.add"
-        | "secret.delete" => RetryClass::NonIdempotentWrite,
+        | "secret.delete"
+        | "task.mutate" => RetryClass::NonIdempotentWrite,
         _ => RetryClass::Unknown,
     }
 }
@@ -640,6 +653,80 @@ pub struct ProjectDirectoryListParams {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectDirectoryResolveParams {
     pub path: String,
+}
+
+/// Provider task reads are intentionally scoped to a target-local project.
+/// Authentication is resolved by the provider CLI/configuration on that
+/// device; no credential fields are present in these wire DTOs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskListParams {
+    pub provider: String,
+    pub project_id: String,
+    pub scope: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDetailParams {
+    pub provider: String,
+    pub project_id: String,
+    pub item_id: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// Generic task mutation payload. The target service owns provider execution
+/// and must return an authoritative read-back or an explicit unknown outcome.
+/// This DTO intentionally contains no token, secret, or credential fields.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskMutationParams {
+    pub provider: String,
+    pub project_id: String,
+    pub operation: String,
+    pub payload: Value,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+impl TaskMutationParams {
+    /// Reject obvious credential-bearing payload keys before provider
+    /// dispatch. The normal desktop/mobile contracts do not send these keys;
+    /// this guard prevents accidental forwarding by generic callers.
+    pub fn contains_credential_fields(&self) -> bool {
+        fn forbidden(key: &str) -> bool {
+            matches!(
+                key.to_ascii_lowercase().replace(['_', '-'], "").as_str(),
+                "token"
+                    | "accesstoken"
+                    | "refreshtoken"
+                    | "apikey"
+                    | "password"
+                    | "secret"
+                    | "credential"
+                    | "credentials"
+                    | "authorization"
+                    | "privatekey"
+            )
+        }
+        fn visit(value: &Value) -> bool {
+            match value {
+                Value::Object(map) => map
+                    .iter()
+                    .any(|(key, value)| forbidden(key) || visit(value)),
+                Value::Array(values) => values.iter().any(visit),
+                _ => false,
+            }
+        }
+        visit(&self.payload)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1387,6 +1474,16 @@ mod tests {
 
     #[test]
     fn retry_registry_never_treats_unknown_as_read() {
+        for method in ["task.list", "task.detail"] {
+            assert!(METHOD_REGISTRY.contains(&method));
+            assert!(MOBILE_V2_METHOD_ALLOWLIST.contains(&method));
+            assert_eq!(classify_method(method), RetryClass::Read);
+            assert!(classify_method(method).allows_automatic_retry());
+        }
+        assert!(METHOD_REGISTRY.contains(&"task.mutate"));
+        assert!(!MOBILE_V2_METHOD_ALLOWLIST.contains(&"task.mutate"));
+        assert_eq!(classify_method("task.mutate"), RetryClass::NonIdempotentWrite);
+        assert!(!classify_method("task.mutate").allows_automatic_retry());
         assert_eq!(classify_method("session.list"), RetryClass::Read);
         assert_eq!(
             classify_method("settings.replace"),
@@ -1464,6 +1561,27 @@ mod tests {
         assert_eq!(history_next.relation_to(&history), CursorRelation::Gap);
         history_next.source_fingerprint = "sha256:b".into();
         assert_eq!(history_next.relation_to(&history), CursorRelation::Conflict);
+    }
+
+    #[test]
+    fn task_mutation_payload_rejects_credential_fields_and_keeps_mutations_desktop_only() {
+        let safe: TaskMutationParams = serde_json::from_value(serde_json::json!({
+            "provider": "github",
+            "projectId": "prj_1",
+            "operation": "comment",
+            "payload": {"body": "hello"}
+        }))
+        .unwrap();
+        assert!(!safe.contains_credential_fields());
+        let unsafe_payload: TaskMutationParams = serde_json::from_value(serde_json::json!({
+            "provider": "github",
+            "projectId": "prj_1",
+            "operation": "comment",
+            "payload": {"body": "hello", "apiKey": "never-on-wire"}
+        }))
+        .unwrap();
+        assert!(unsafe_payload.contains_credential_fields());
+        assert!(!MOBILE_V2_METHOD_ALLOWLIST.contains(&"task.mutate"));
     }
 
     #[test]

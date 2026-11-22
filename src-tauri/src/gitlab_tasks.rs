@@ -2,7 +2,7 @@
 //! configuration; no token is read into AgentPort memory or serialized.
 
 use agentport_core::db::Db;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -28,8 +28,126 @@ pub struct GitlabTaskRepository {
 pub struct GitlabTaskEnvelope {
     pub scope: String,
     pub repository: Option<GitlabTaskRepository>,
+    pub capabilities: GitlabTaskCapabilities,
     pub items: Vec<Value>,
     pub error: Option<GitlabTaskError>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabTaskCapabilities {
+    pub comments: bool,
+    pub status: bool,
+    pub labels: bool,
+    pub assignees: bool,
+    pub reviews: bool,
+    pub checks: bool,
+    pub projects: bool,
+    pub project_writes: bool,
+    pub merge: bool,
+}
+
+fn gitlab_capabilities() -> GitlabTaskCapabilities {
+    GitlabTaskCapabilities {
+        comments: true,
+        status: true,
+        labels: true,
+        assignees: true,
+        reviews: true,
+        checks: true,
+        projects: false,
+        project_writes: true,
+        merge: true,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabTaskComment {
+    pub id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub created_at: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabTaskReview {
+    pub id: String,
+    pub author: Option<String>,
+    pub state: String,
+    pub body: String,
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabTaskCheck {
+    pub name: String,
+    pub state: String,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabTaskDetail {
+    pub id: String,
+    pub kind: String,
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub url: String,
+    pub author: Option<String>,
+    pub updated_at: Option<String>,
+    pub body: String,
+    pub draft: bool,
+    pub merged: bool,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub comments: Vec<GitlabTaskComment>,
+    pub reviews: Vec<GitlabTaskReview>,
+    pub checks: Vec<GitlabTaskCheck>,
+    pub source_revision: Option<String>,
+    pub repository: GitlabTaskRepository,
+    pub partial: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GitlabTaskMutationRequest {
+    pub kind: String,
+    pub number: u64,
+    pub operation: String,
+    pub body: Option<String>,
+    pub state: Option<String>,
+    pub labels: Option<Vec<String>>,
+    pub assignees: Option<Vec<String>>,
+    pub review_event: Option<String>,
+    pub expected_revision: Option<String>,
+    pub board_id: Option<u64>,
+    pub list_id: Option<u64>,
+    pub position: Option<u64>,
+    pub label_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabTaskDetailEnvelope {
+    pub repository: Option<GitlabTaskRepository>,
+    pub capabilities: GitlabTaskCapabilities,
+    pub data: Option<GitlabTaskDetail>,
+    pub error: Option<GitlabTaskError>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabTaskMutationOutcome {
+    pub status: String,
+    pub data: Option<GitlabTaskDetail>,
+    pub error: Option<GitlabTaskError>,
+    pub read_back_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +177,88 @@ pub async fn list_gitlab_tasks(
             .await
             .map_err(|error| format!("GitLab task worker failed: {error}"))?;
     Ok(result.unwrap_or_else(|error| GitlabTaskEnvelope::error(&fallback_scope, error.0, error.1)))
+}
+
+#[tauri::command]
+pub async fn get_gitlab_task(
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    kind: String,
+    number: u64,
+) -> Result<GitlabTaskDetailEnvelope, String> {
+    let paths = state.paths.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        load_gitlab_detail(&paths, &project_id, &kind, number)
+    })
+    .await;
+    Ok(match result {
+        Ok(Ok(envelope)) => envelope,
+        Ok(Err(error)) => GitlabTaskDetailEnvelope::error("gitlab_unavailable", error),
+        Err(error) => GitlabTaskDetailEnvelope::error("backend_unavailable", error.to_string()),
+    })
+}
+
+#[tauri::command]
+pub async fn mutate_gitlab_task(
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    request: GitlabTaskMutationRequest,
+) -> Result<GitlabTaskMutationOutcome, String> {
+    let paths = state.paths.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        mutate_gitlab_task_blocking(&paths, &project_id, request)
+    })
+    .await;
+    Ok(match result {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => GitlabTaskMutationOutcome::unknown("gitlab_unavailable", error),
+        Err(error) => GitlabTaskMutationOutcome::unknown("backend_unavailable", error.to_string()),
+    })
+}
+
+fn load_gitlab_detail(
+    _paths: &agentport_core::paths::AppPaths,
+    _project_id: &str,
+    _kind: &str,
+    _number: u64,
+) -> Result<GitlabTaskDetailEnvelope, String> {
+    Err("GitLab detail endpoint is not available in this build".into())
+}
+
+fn mutate_gitlab_task_blocking(
+    _paths: &agentport_core::paths::AppPaths,
+    _project_id: &str,
+    _request: GitlabTaskMutationRequest,
+) -> Result<GitlabTaskMutationOutcome, String> {
+    Err("GitLab mutation endpoint is not available in this build".into())
+}
+
+impl GitlabTaskDetailEnvelope {
+    fn error(code: &str, message: String) -> Self {
+        Self {
+            repository: None,
+            capabilities: gitlab_capabilities(),
+            data: None,
+            error: Some(GitlabTaskError {
+                code: code.into(),
+                message,
+            }),
+        }
+    }
+}
+
+impl GitlabTaskMutationOutcome {
+    fn unknown(code: &str, message: String) -> Self {
+        Self {
+            status: "unknown".into(),
+            data: None,
+            error: Some(GitlabTaskError {
+                code: code.into(),
+                message,
+            }),
+            read_back_required: true,
+        }
+    }
 }
 
 fn load_tasks(
@@ -115,6 +315,7 @@ fn load_tasks(
     Ok(GitlabTaskEnvelope {
         scope: scope.into(),
         repository: Some(repository),
+        capabilities: gitlab_capabilities(),
         items,
         error: None,
     })
@@ -280,6 +481,7 @@ impl GitlabTaskEnvelope {
         Self {
             scope: scope.into(),
             repository: None,
+            capabilities: gitlab_capabilities(),
             items: Vec::new(),
             error: Some(GitlabTaskError {
                 code: code.into(),

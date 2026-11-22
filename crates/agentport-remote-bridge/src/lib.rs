@@ -17,8 +17,9 @@ use agentport_remote_protocol::{
     SessionCreateParams, SessionDetachParams, SessionIdParams, SessionInputParams,
     SessionPinParams, SessionPollParams, SessionRenameParams, SessionRestartParams,
     SessionSeenParams, SessionStopParams, SessionStructuredPromptParams, SessionUnreadParams,
-    WorktreeCreateParams, WorktreeIdParams, WorktreePreviewParams, WorktreeProjectParams,
-    CAPABILITY_SESSION_EVENT_PUSH, EVENT_PUSH_MINOR, MAX_FRAME_BYTES,
+    TaskDetailParams, TaskListParams, TaskMutationParams, WorktreeCreateParams, WorktreeIdParams,
+    WorktreePreviewParams, WorktreeProjectParams, CAPABILITY_SESSION_EVENT_PUSH,
+    EVENT_PUSH_MINOR, MAX_FRAME_BYTES,
 };
 use agentport_service::{
     RemoteService, ServiceError, ServiceSnapshot, SessionEvent, SessionSubscription,
@@ -112,6 +113,9 @@ struct SessionListParams {
 
 enum PreparedRequest {
     Boot,
+    TaskList(TaskListParams),
+    TaskDetail(TaskDetailParams),
+    TaskMutate(TaskMutationParams),
     AgentSupported,
     AgentProbe(AgentProbeParams),
     AgentProbeAll(AgentProbeAllParams),
@@ -653,6 +657,21 @@ fn handle_request<E: Write, S: RemoteService + Sync>(
         }
     };
 
+    if matches!(&prepared, PreparedRequest::TaskMutate(params) if params.contains_credential_fields()) {
+        return write_result(
+            writer,
+            request.request_id,
+            None,
+            ResultStatus::NotExecuted,
+            retry_class,
+            None,
+            Some(RemoteError {
+                code: "task_credentials_forbidden".into(),
+                message: "task mutation payload must not contain credentials".into(),
+            }),
+        );
+    }
+
     if matches!(
         &prepared,
         PreparedRequest::SessionControl(SessionControlParams {
@@ -778,6 +797,15 @@ fn handle_request<E: Write, S: RemoteService + Sync>(
     let result: agentport_service::Result<(Value, ResultStatus)> = match prepared {
         PreparedRequest::Boot => service
             .boot()
+            .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
+        PreparedRequest::TaskList(params) => service
+            .list_tasks(params)
+            .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
+        PreparedRequest::TaskDetail(params) => service
+            .task_detail(params)
+            .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
+        PreparedRequest::TaskMutate(params) => service
+            .mutate_task(params)
             .and_then(|value| serialize_service_value(value, ResultStatus::Succeeded)),
         PreparedRequest::AgentSupported => service
             .supported_agents()
@@ -1102,6 +1130,15 @@ fn prepare_request(
     let parsed = match method {
         // Preserve v1.0 behavior: boot historically ignored additive params.
         "boot" => PreparedRequest::Boot,
+        "task.list" => PreparedRequest::TaskList(
+            serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
+        ),
+        "task.detail" => PreparedRequest::TaskDetail(
+            serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
+        ),
+        "task.mutate" => PreparedRequest::TaskMutate(
+            serde_json::from_str(params).map_err(ProtocolError::InvalidJson)?,
+        ),
         "agent.supported" => {
             empty()?;
             PreparedRequest::AgentSupported
@@ -1408,6 +1445,12 @@ fn service_error_message(error: &ServiceError) -> String {
         }
         ServiceError::AttachmentNotFound => "remote attachment was not found".into(),
         ServiceError::InvalidRequest => "remote request is invalid".into(),
+        ServiceError::TaskProviderUnavailable => {
+            "task provider is unavailable on the target device".into()
+        }
+        ServiceError::TaskCredentialsForbidden => {
+            "task mutation payload must not contain credentials".into()
+        }
         ServiceError::InputOutcomeUnknown => "terminal input outcome is unknown".into(),
         ServiceError::AttachmentState => "remote attachment state is unavailable".into(),
         ServiceError::Serialization => "remote response serialization failed".into(),
@@ -1470,6 +1513,8 @@ fn service_error_result(
         }
         ServiceError::AttachmentNotFound
         | ServiceError::InvalidRequest
+        | ServiceError::TaskProviderUnavailable
+        | ServiceError::TaskCredentialsForbidden
         | ServiceError::PreconditionFailed
         | ServiceError::RiskAcknowledgementRequired => {
             (ResultStatus::NotExecuted, "request_not_executed")

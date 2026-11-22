@@ -6,6 +6,7 @@
 
 use agentport_core::db::Db;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -21,8 +22,39 @@ const MAX_ITEMS: usize = 50;
 pub struct GithubTaskEnvelope {
     pub scope: String,
     pub repository: Option<GithubRepository>,
+    pub capabilities: GithubTaskCapabilities,
     pub data: Option<GithubTaskData>,
     pub error: Option<GithubTaskError>,
+}
+
+/// Provider capabilities are returned with every read so the renderer never
+/// has to guess which mutation controls are safe to show.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubTaskCapabilities {
+    pub comments: bool,
+    pub status: bool,
+    pub labels: bool,
+    pub assignees: bool,
+    pub reviews: bool,
+    pub checks: bool,
+    pub projects: bool,
+    pub project_writes: bool,
+    pub merge: bool,
+}
+
+fn github_capabilities() -> GithubTaskCapabilities {
+    GithubTaskCapabilities {
+        comments: true,
+        status: true,
+        labels: true,
+        assignees: true,
+        reviews: true,
+        checks: true,
+        projects: true,
+        project_writes: true,
+        merge: true,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +91,7 @@ pub struct GithubIssue {
     pub author: Option<String>,
     pub updated_at: Option<String>,
     pub labels: Vec<String>,
+    pub assignees: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +104,8 @@ pub struct GithubPullRequest {
     pub author: Option<String>,
     pub updated_at: Option<String>,
     pub draft: bool,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +117,97 @@ pub struct GithubProject {
     pub short_description: Option<String>,
     pub updated_at: Option<String>,
     pub closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubTaskComment {
+    pub id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub created_at: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubTaskReview {
+    pub id: String,
+    pub author: Option<String>,
+    pub state: String,
+    pub body: String,
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubTaskCheck {
+    pub name: String,
+    pub state: String,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubTaskDetail {
+    pub id: String,
+    pub kind: String,
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub url: String,
+    pub author: Option<String>,
+    pub updated_at: Option<String>,
+    pub body: String,
+    pub draft: bool,
+    pub merged: bool,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub comments: Vec<GithubTaskComment>,
+    pub reviews: Vec<GithubTaskReview>,
+    pub checks: Vec<GithubTaskCheck>,
+    pub source_revision: Option<String>,
+    pub repository: GithubRepository,
+    pub partial: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GithubTaskMutationRequest {
+    pub kind: String,
+    pub number: u64,
+    pub operation: String,
+    pub body: Option<String>,
+    pub state: Option<String>,
+    pub labels: Option<Vec<String>>,
+    pub assignees: Option<Vec<String>>,
+    pub review_event: Option<String>,
+    pub merge_method: Option<String>,
+    pub project_number: Option<u64>,
+    pub project_id: Option<String>,
+    pub item_id: Option<String>,
+    pub field_id: Option<String>,
+    pub field_value: Option<String>,
+    pub expected_revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubTaskDetailEnvelope {
+    pub repository: Option<GithubRepository>,
+    pub capabilities: GithubTaskCapabilities,
+    pub data: Option<GithubTaskDetail>,
+    pub error: Option<GithubTaskError>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubTaskMutationOutcome {
+    pub status: String,
+    pub data: Option<GithubTaskDetail>,
+    pub error: Option<GithubTaskError>,
+    pub read_back_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +224,12 @@ struct IssueApi {
     html_url: String,
     user: Option<UserApi>,
     updated_at: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
     labels: Vec<LabelApi>,
+    #[serde(default)]
+    assignees: Vec<UserApi>,
     #[serde(default)]
     pull_request: Option<serde_json::Value>,
 }
@@ -112,7 +243,17 @@ struct PullApi {
     user: Option<UserApi>,
     updated_at: Option<String>,
     #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    labels: Vec<LabelApi>,
+    #[serde(default)]
+    assignees: Vec<UserApi>,
+    #[serde(default)]
+    merged: bool,
+    #[serde(default)]
+    head: Option<HeadApi>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +264,11 @@ struct UserApi {
 #[derive(Debug, Deserialize)]
 struct LabelApi {
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HeadApi {
+    sha: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +337,49 @@ pub async fn list_github_tasks(
     Ok(envelope)
 }
 
+/// Read one issue or pull request with its comments, reviews, and checks.
+/// Every child request remains bounded; optional child failures are surfaced as
+/// warnings instead of silently turning a partial detail into a false empty
+/// result.
+#[tauri::command]
+pub async fn get_github_task(
+    state: State<'_, AppState>,
+    project_id: String,
+    kind: String,
+    number: u64,
+) -> std::result::Result<GithubTaskDetailEnvelope, String> {
+    let paths = state.paths.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        load_github_detail(&paths, &project_id, &kind, number)
+    })
+    .await;
+    Ok(match result {
+        Ok(envelope) => envelope,
+        Err(error) => GithubTaskDetailEnvelope::error("backend_unavailable", error.to_string()),
+    })
+}
+
+/// Execute one guarded provider mutation. The command never reports success
+/// until a fresh provider read succeeds. A timeout/transport failure after the
+/// write may have reached the provider, so it is deliberately represented as
+/// `unknown` and is never retried automatically.
+#[tauri::command]
+pub async fn mutate_github_task(
+    state: State<'_, AppState>,
+    project_id: String,
+    request: GithubTaskMutationRequest,
+) -> std::result::Result<GithubTaskMutationOutcome, String> {
+    let paths = state.paths.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        mutate_github_task_blocking(&paths, &project_id, request)
+    })
+    .await;
+    Ok(match result {
+        Ok(outcome) => outcome,
+        Err(error) => GithubTaskMutationOutcome::unknown("backend_unavailable", error.to_string()),
+    })
+}
+
 fn load_tasks(
     paths: &agentport_core::paths::AppPaths,
     project_id: &str,
@@ -250,6 +439,712 @@ fn load_tasks(
         }
     }
     envelope
+}
+
+fn resolve_github_checkout(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+) -> Result<(String, GithubRepository, RemoteIdentity), (&'static str, String)> {
+    let db = Db::open_read(paths).map_err(|error| ("project_read_failed", error.to_string()))?;
+    let project = db
+        .get_project(project_id)
+        .map_err(|error| ("project_not_found", error.to_string()))?;
+    let checkout = project
+        .git_root_path
+        .as_deref()
+        .unwrap_or(&project.root_path);
+    let root = git_root(checkout)?;
+    let (identity, remote_url) = github_remote(&root)?;
+    let repository = GithubRepository {
+        host: "github.com".into(),
+        owner: identity.owner.clone(),
+        name: identity.name.clone(),
+        remote_url,
+    };
+    Ok((root, repository, identity))
+}
+
+fn load_github_detail(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+    kind: &str,
+    number: u64,
+) -> GithubTaskDetailEnvelope {
+    let (root, repository, identity) = match resolve_github_checkout(paths, project_id) {
+        Ok(value) => value,
+        Err(error) => return GithubTaskDetailEnvelope::error(error.0, error.1),
+    };
+    match fetch_github_detail(&root, &identity, &repository, kind, number) {
+        Ok(detail) => GithubTaskDetailEnvelope {
+            repository: Some(repository),
+            capabilities: github_capabilities(),
+            data: Some(detail),
+            error: None,
+        },
+        Err(error) => GithubTaskDetailEnvelope {
+            repository: Some(repository),
+            capabilities: github_capabilities(),
+            data: None,
+            error: Some(GithubTaskError {
+                code: error.0.into(),
+                message: error.1,
+            }),
+        },
+    }
+}
+
+fn fetch_github_detail(
+    root: &str,
+    identity: &RemoteIdentity,
+    repository: &GithubRepository,
+    kind: &str,
+    number: u64,
+) -> Result<GithubTaskDetail, (&'static str, String)> {
+    if number == 0 {
+        return Err((
+            "invalid_task",
+            "Task number must be greater than zero".into(),
+        ));
+    }
+    let kind = normalize_github_kind(kind)
+        .ok_or(("invalid_kind", "kind must be issue or pull_request".into()))?;
+    let segment = if kind == "pull_request" {
+        "pulls"
+    } else {
+        "issues"
+    };
+    let endpoint = format!(
+        "repos/{}/{}/{segment}/{number}",
+        identity.owner, identity.name
+    );
+    let main = gh_json(root, &endpoint)?;
+    let title = json_string(&main, "title").unwrap_or_else(|| "Untitled task".into());
+    let state = json_string(&main, "state").unwrap_or_else(|| "unknown".into());
+    let url = json_string(&main, "html_url").unwrap_or_default();
+    let author = main
+        .get("user")
+        .and_then(|value| value.get("login"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let updated_at = json_string(&main, "updated_at");
+    let body = json_string(&main, "body").unwrap_or_default();
+    let labels = json_names(main.get("labels"));
+    let assignees = json_users(main.get("assignees"));
+    let draft = main.get("draft").and_then(Value::as_bool).unwrap_or(false);
+    let merged = main.get("merged").and_then(Value::as_bool).unwrap_or(false)
+        || main.get("merged_at").is_some_and(|value| !value.is_null());
+    let source_revision = main
+        .get("head")
+        .and_then(|value| value.get("sha"))
+        .and_then(Value::as_str)
+        .or_else(|| main.get("sha").and_then(Value::as_str))
+        .map(str::to_owned);
+
+    let mut warnings = Vec::new();
+    let comments = match gh_json(root, &format!("{endpoint}/comments?per_page=100")) {
+        Ok(value) => json_comments(&value),
+        Err(error) => {
+            warnings.push(format!("comments: {}", error.1));
+            Vec::new()
+        }
+    };
+    let reviews = if kind == "pull_request" {
+        match gh_json(
+            root,
+            &format!(
+                "repos/{}/{}/pulls/{number}/reviews",
+                identity.owner, identity.name
+            ),
+        ) {
+            Ok(value) => json_reviews(&value),
+            Err(error) => {
+                warnings.push(format!("reviews: {}", error.1));
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let checks = if kind == "pull_request" {
+        match source_revision.as_deref() {
+            Some(sha) => match gh_json(
+                root,
+                &format!(
+                    "repos/{}/{}/commits/{sha}/check-runs?per_page=100",
+                    identity.owner, identity.name
+                ),
+            ) {
+                Ok(value) => json_checks(&value),
+                Err(error) => {
+                    warnings.push(format!("checks: {}", error.1));
+                    Vec::new()
+                }
+            },
+            None => {
+                warnings.push("checks: pull request has no source revision".into());
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let id = format!(
+        "github:{}/{}/{}:{number}",
+        identity.owner, identity.name, kind
+    );
+    Ok(GithubTaskDetail {
+        id,
+        kind: kind.into(),
+        number,
+        title,
+        state,
+        url,
+        author,
+        updated_at,
+        body,
+        draft,
+        merged,
+        labels,
+        assignees,
+        comments,
+        reviews,
+        checks,
+        source_revision,
+        repository: repository.clone(),
+        partial: !warnings.is_empty(),
+        warnings,
+    })
+}
+
+fn normalize_github_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "issue" | "issues" => Some("issue"),
+        "pull" | "pull_request" | "pulls" | "pr" => Some("pull_request"),
+        _ => None,
+    }
+}
+
+fn gh_json(root: &str, endpoint: &str) -> Result<Value, (&'static str, String)> {
+    let output = gh_api(root, &[endpoint])?;
+    parse_json(&output)
+}
+
+fn json_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn json_names(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .or_else(|| json_string(item, "name"))
+                })
+                .take(MAX_ITEMS)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_users(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    json_string(item, "login").or_else(|| json_string(item, "username"))
+                })
+                .take(MAX_ITEMS)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_comments(value: &Value) -> Vec<GithubTaskComment> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .take(MAX_ITEMS)
+                .filter_map(|item| {
+                    Some(GithubTaskComment {
+                        id: item.get("id")?.to_string().trim_matches('"').to_owned(),
+                        author: item
+                            .get("user")
+                            .and_then(|value| value.get("login"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        body: json_string(item, "body").unwrap_or_default(),
+                        created_at: json_string(item, "created_at"),
+                        url: json_string(item, "html_url"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_reviews(value: &Value) -> Vec<GithubTaskReview> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .take(MAX_ITEMS)
+                .filter_map(|item| {
+                    Some(GithubTaskReview {
+                        id: item.get("id")?.to_string().trim_matches('"').to_owned(),
+                        author: item
+                            .get("user")
+                            .and_then(|value| value.get("login"))
+                            .map(|value| value.as_str().unwrap_or_default().to_owned()),
+                        state: json_string(item, "state").unwrap_or_else(|| "unknown".into()),
+                        body: json_string(item, "body").unwrap_or_default(),
+                        submitted_at: json_string(item, "submitted_at"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn json_checks(value: &Value) -> Vec<GithubTaskCheck> {
+    value
+        .get("check_runs")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(MAX_ITEMS)
+                .filter_map(|item| {
+                    Some(GithubTaskCheck {
+                        name: json_string(item, "name")?,
+                        state: json_string(item, "conclusion")
+                            .or_else(|| json_string(item, "status"))
+                            .unwrap_or_else(|| "unknown".into()),
+                        url: json_string(item, "html_url")
+                            .or_else(|| json_string(item, "details_url")),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn mutate_github_task_blocking(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+    request: GithubTaskMutationRequest,
+) -> GithubTaskMutationOutcome {
+    let (root, repository, identity) = match resolve_github_checkout(paths, project_id) {
+        Ok(value) => value,
+        Err(error) => return GithubTaskMutationOutcome::failed(error.0, error.1),
+    };
+    if request.number == 0 {
+        return GithubTaskMutationOutcome::failed(
+            "invalid_task",
+            "Task number must be greater than zero".into(),
+        );
+    }
+    let normalized_kind = match normalize_github_kind(&request.kind) {
+        Some(kind) => kind,
+        None if request.operation.starts_with("project") => "project",
+        None => {
+            return GithubTaskMutationOutcome::failed(
+                "invalid_kind",
+                "kind must be issue, pull_request, or project".into(),
+            )
+        }
+    };
+    if let Some(expected) = request.expected_revision.as_deref() {
+        if normalized_kind == "project" {
+            return GithubTaskMutationOutcome::failed(
+                "invalid_revision",
+                "Project mutations do not accept task revisions".into(),
+            );
+        }
+        match fetch_github_detail(
+            &root,
+            &identity,
+            &repository,
+            normalized_kind,
+            request.number,
+        ) {
+            Ok(detail) if detail.source_revision.as_deref() == Some(expected) => {}
+            Ok(_) => {
+                return GithubTaskMutationOutcome::failed(
+                    "conflict",
+                    "The task changed on the provider; refresh before writing".into(),
+                )
+            }
+            Err(error) => return GithubTaskMutationOutcome::failed(error.0, error.1),
+        }
+    }
+    if let Err(failure) = execute_github_mutation(&root, &identity, &request, normalized_kind) {
+        return match failure {
+            GithubMutationFailure::Failed(code, message) => {
+                GithubTaskMutationOutcome::failed(code, message)
+            }
+            GithubMutationFailure::Unknown(code, message) => {
+                GithubTaskMutationOutcome::unknown(code, message)
+            }
+        };
+    }
+    if normalized_kind == "project" {
+        return match fetch_projects(&root, &identity) {
+            Ok(_) => GithubTaskMutationOutcome::succeeded(None),
+            Err(error) => GithubTaskMutationOutcome::unknown("github_readback_failed", error.1),
+        };
+    }
+    match fetch_github_detail(
+        &root,
+        &identity,
+        &repository,
+        normalized_kind,
+        request.number,
+    ) {
+        Ok(detail) if github_mutation_matches(&detail, &request) => {
+            GithubTaskMutationOutcome::succeeded(Some(detail))
+        }
+        Ok(_) => GithubTaskMutationOutcome::unknown(
+            "github_readback_mismatch",
+            "GitHub accepted the write but the requested state was not observed on read-back"
+                .into(),
+        ),
+        Err(error) => GithubTaskMutationOutcome::unknown("github_readback_failed", error.1),
+    }
+}
+
+#[derive(Debug)]
+enum GithubMutationFailure {
+    Failed(&'static str, String),
+    Unknown(&'static str, String),
+}
+
+fn execute_github_mutation(
+    root: &str,
+    identity: &RemoteIdentity,
+    request: &GithubTaskMutationRequest,
+    kind: &str,
+) -> Result<(), GithubMutationFailure> {
+    let is_project = kind == "project" || request.operation.starts_with("project");
+    if is_project {
+        return execute_github_project_mutation(root, request);
+    }
+    let segment = if kind == "pull_request" {
+        "pulls"
+    } else {
+        "issues"
+    };
+    let endpoint = format!(
+        "repos/{}/{}/{segment}/{}",
+        identity.owner, identity.name, request.number
+    );
+    let mut args = Vec::new();
+    match request.operation.as_str() {
+        "comment" => {
+            let body = required_body(request)?;
+            args = vec![
+                "--method".into(),
+                "POST".into(),
+                format!("{endpoint}/comments"),
+                "--field".into(),
+                format!("body={body}"),
+            ];
+        }
+        "status" | "state" => {
+            let state = request.state.as_deref().ok_or_else(|| {
+                GithubMutationFailure::Failed("invalid_mutation", "state is required".into())
+            })?;
+            if !matches!(state, "open" | "closed") {
+                return Err(GithubMutationFailure::Failed(
+                    "invalid_mutation",
+                    "state must be open or closed".into(),
+                ));
+            }
+            args = vec![
+                "--method".into(),
+                "PATCH".into(),
+                endpoint.clone(),
+                "--field".into(),
+                format!("state={state}"),
+            ];
+        }
+        "labels" => {
+            let labels = request.labels.as_deref().ok_or_else(|| {
+                GithubMutationFailure::Failed("invalid_mutation", "labels is required".into())
+            })?;
+            args = vec!["--method".into(), "PATCH".into(), endpoint.clone()];
+            if labels.is_empty() {
+                args.extend(["--field".into(), "labels[]=".into()]);
+            } else {
+                for label in labels.iter().take(MAX_ITEMS) {
+                    if label.trim().is_empty() || label.chars().count() > 100 {
+                        return Err(GithubMutationFailure::Failed(
+                            "invalid_mutation",
+                            "labels must be non-empty and at most 100 characters".into(),
+                        ));
+                    }
+                    args.extend(["--field".into(), format!("labels[]={label}")]);
+                }
+            }
+        }
+        "assignees" => {
+            let assignees = request.assignees.as_deref().ok_or_else(|| {
+                GithubMutationFailure::Failed("invalid_mutation", "assignees is required".into())
+            })?;
+            args = vec!["--method".into(), "PATCH".into(), endpoint.clone()];
+            if assignees.is_empty() {
+                args.extend(["--field".into(), "assignees[]=".into()]);
+            } else {
+                for assignee in assignees.iter().take(MAX_ITEMS) {
+                    if !valid_login(assignee) {
+                        return Err(GithubMutationFailure::Failed(
+                            "invalid_mutation",
+                            "assignees must be valid GitHub logins".into(),
+                        ));
+                    }
+                    args.extend(["--field".into(), format!("assignees[]={assignee}")]);
+                }
+            }
+        }
+        "review" => {
+            if kind != "pull_request" {
+                return Err(GithubMutationFailure::Failed(
+                    "unsupported_operation",
+                    "Reviews are available only for pull requests".into(),
+                ));
+            }
+            let event = request
+                .review_event
+                .as_deref()
+                .unwrap_or("COMMENT")
+                .to_ascii_uppercase();
+            if !matches!(event.as_str(), "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
+                return Err(GithubMutationFailure::Failed(
+                    "invalid_mutation",
+                    "review event must be APPROVE, REQUEST_CHANGES, or COMMENT".into(),
+                ));
+            }
+            let body = request.body.clone().unwrap_or_default();
+            args = vec![
+                "--method".into(),
+                "POST".into(),
+                format!("{endpoint}/reviews"),
+                "--field".into(),
+                format!("event={event}"),
+                "--field".into(),
+                format!("body={body}"),
+            ];
+        }
+        "merge" => {
+            if kind != "pull_request" {
+                return Err(GithubMutationFailure::Failed(
+                    "unsupported_operation",
+                    "Only pull requests can be merged".into(),
+                ));
+            }
+            let method = request
+                .merge_method
+                .as_deref()
+                .unwrap_or("merge")
+                .to_ascii_lowercase();
+            if !matches!(method.as_str(), "merge" | "squash" | "rebase") {
+                return Err(GithubMutationFailure::Failed(
+                    "invalid_mutation",
+                    "merge method must be merge, squash, or rebase".into(),
+                ));
+            }
+            args = vec![
+                "--method".into(),
+                "PUT".into(),
+                format!("{endpoint}/merge"),
+                "--field".into(),
+                format!("merge_method={method}"),
+            ];
+        }
+        _ => {
+            return Err(GithubMutationFailure::Failed(
+                "unsupported_operation",
+                "Unsupported GitHub task mutation".into(),
+            ))
+        }
+    }
+    gh_write(root, args)
+}
+
+fn execute_github_project_mutation(
+    root: &str,
+    request: &GithubTaskMutationRequest,
+) -> Result<(), GithubMutationFailure> {
+    let project_id = request
+        .project_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            GithubMutationFailure::Failed(
+                "invalid_mutation",
+                "project_id is required for Project writes".into(),
+            )
+        })?;
+    let (query, mut args) = if request.operation == "project_update" {
+        let title = request
+            .body
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                GithubMutationFailure::Failed(
+                    "invalid_mutation",
+                    "body contains the Project title and is required".into(),
+                )
+            })?;
+        ("mutation($projectId:ID!,$title:String!){updateProjectV2(input:{projectId:$projectId,title:$title}){projectV2{id}}}".to_owned(), vec![("projectId", project_id.to_owned()), ("title", title.to_owned())])
+    } else if request.operation == "project_item_update" {
+        let item_id = request
+            .item_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                GithubMutationFailure::Failed(
+                    "invalid_mutation",
+                    "item_id is required for Project item writes".into(),
+                )
+            })?;
+        let field_id = request
+            .field_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                GithubMutationFailure::Failed(
+                    "invalid_mutation",
+                    "field_id is required for Project item writes".into(),
+                )
+            })?;
+        let value = request.field_value.as_deref().ok_or_else(|| {
+            GithubMutationFailure::Failed(
+                "invalid_mutation",
+                "field_value is required for Project item writes".into(),
+            )
+        })?;
+        ("mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$value:String!){updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:{text:$value}}){projectV2Item{id}}}".to_owned(), vec![("projectId", project_id.to_owned()), ("itemId", item_id.to_owned()), ("fieldId", field_id.to_owned()), ("value", value.to_owned())])
+    } else {
+        return Err(GithubMutationFailure::Failed(
+            "unsupported_operation",
+            "Unsupported GitHub Project mutation".into(),
+        ));
+    };
+    args.insert(0, ("query", query));
+    let mut command = vec!["graphql".to_owned()];
+    for (key, value) in args {
+        command.extend(["--field".to_owned(), format!("{key}={value}")]);
+    }
+    gh_write(root, command)
+}
+
+fn required_body(request: &GithubTaskMutationRequest) -> Result<String, GithubMutationFailure> {
+    let body = request
+        .body
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            GithubMutationFailure::Failed("invalid_mutation", "body is required".into())
+        })?;
+    if body.chars().count() > 20_000 {
+        return Err(GithubMutationFailure::Failed(
+            "invalid_mutation",
+            "body is limited to 20,000 characters".into(),
+        ));
+    }
+    Ok(body)
+}
+
+fn valid_login(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 39
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn github_mutation_matches(detail: &GithubTaskDetail, request: &GithubTaskMutationRequest) -> bool {
+    match request.operation.as_str() {
+        "status" | "state" => request
+            .state
+            .as_deref()
+            .is_some_and(|state| detail.state.eq_ignore_ascii_case(state)),
+        "labels" => request
+            .labels
+            .as_ref()
+            .is_some_and(|labels| detail.labels == *labels),
+        "assignees" => request
+            .assignees
+            .as_ref()
+            .is_some_and(|assignees| detail.assignees == *assignees),
+        "merge" => detail.merged || detail.state.eq_ignore_ascii_case("merged"),
+        "comment" => request
+            .body
+            .as_ref()
+            .is_some_and(|body| detail.comments.iter().any(|comment| comment.body == *body)),
+        "review" => request
+            .body
+            .as_ref()
+            .is_none_or(|body| detail.reviews.iter().any(|review| review.body == *body)),
+        _ => true,
+    }
+}
+
+fn gh_write(root: &str, args: Vec<String>) -> Result<(), GithubMutationFailure> {
+    let mut command_args = vec![
+        "api".to_owned(),
+        "--hostname".to_owned(),
+        "github.com".to_owned(),
+    ];
+    command_args.extend(args);
+    let output = match run_command("gh", command_args, Some(root)) {
+        Ok(output) => output,
+        Err(error) if error.contains("timed out") => {
+            return Err(GithubMutationFailure::Unknown(
+                "github_write_unknown",
+                error,
+            ))
+        }
+        Err(error) if error.contains("not available") => {
+            return Err(GithubMutationFailure::Failed("gh_unavailable", error))
+        }
+        Err(error) => {
+            return Err(GithubMutationFailure::Unknown(
+                "github_write_unknown",
+                error,
+            ))
+        }
+    };
+    if output.success {
+        return Ok(());
+    }
+    let stderr = text_output(&output.stderr);
+    let lower = stderr.to_ascii_lowercase();
+    let code = if lower.contains("not logged in")
+        || lower.contains("authentication")
+        || lower.contains("auth")
+    {
+        "github_auth_required"
+    } else if lower.contains("rate limit") {
+        "github_rate_limited"
+    } else if lower.contains("forbidden") || lower.contains("permission") {
+        "github_forbidden"
+    } else {
+        "github_write_failed"
+    };
+    Err(GithubMutationFailure::Failed(
+        code,
+        truncate_message(stderr),
+    ))
 }
 
 fn git_root(checkout: &str) -> Result<String, (&'static str, String)> {
@@ -326,6 +1221,7 @@ fn fetch_issues(
             author: entry.user.map(|user| user.login),
             updated_at: entry.updated_at,
             labels: entry.labels.into_iter().map(|label| label.name).collect(),
+            assignees: entry.assignees.into_iter().map(|user| user.login).collect(),
         })
         .collect();
     Ok(GithubTaskData::Issues(issues))
@@ -359,6 +1255,8 @@ fn fetch_pulls(
                 author: entry.user.map(|user| user.login),
                 updated_at: entry.updated_at,
                 draft: entry.draft,
+                labels: entry.labels.into_iter().map(|label| label.name).collect(),
+                assignees: entry.assignees.into_iter().map(|user| user.login).collect(),
             })
             .collect(),
     ))
@@ -553,11 +1451,61 @@ fn valid_repo_part(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+impl GithubTaskDetailEnvelope {
+    fn error(code: &str, message: String) -> Self {
+        Self {
+            repository: None,
+            capabilities: github_capabilities(),
+            data: None,
+            error: Some(GithubTaskError {
+                code: code.into(),
+                message,
+            }),
+        }
+    }
+}
+
+impl GithubTaskMutationOutcome {
+    fn succeeded(data: Option<GithubTaskDetail>) -> Self {
+        Self {
+            status: "succeeded".into(),
+            data,
+            error: None,
+            read_back_required: false,
+        }
+    }
+
+    fn failed(code: &'static str, message: String) -> Self {
+        Self {
+            status: "failed".into(),
+            data: None,
+            error: Some(GithubTaskError {
+                code: code.into(),
+                message,
+            }),
+            read_back_required: false,
+        }
+    }
+
+    fn unknown(code: &'static str, message: String) -> Self {
+        Self {
+            status: "unknown".into(),
+            data: None,
+            error: Some(GithubTaskError {
+                code: code.into(),
+                message,
+            }),
+            read_back_required: true,
+        }
+    }
+}
+
 impl GithubTaskEnvelope {
     fn empty(scope: &str) -> Self {
         Self {
             scope: scope.to_owned(),
             repository: None,
+            capabilities: github_capabilities(),
             data: None,
             error: None,
         }
@@ -567,6 +1515,7 @@ impl GithubTaskEnvelope {
         Self {
             scope: scope.to_owned(),
             repository: None,
+            capabilities: github_capabilities(),
             data: None,
             error: Some(GithubTaskError {
                 code: code.into(),
