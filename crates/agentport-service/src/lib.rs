@@ -1476,32 +1476,170 @@ impl RemoteService for CoreService {
         let root = project.git_root_path.as_deref().unwrap_or(&project.root_path);
         let (host, namespace, name) = task_remote(root, &params.provider)
             .map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
-        let number = params.payload.get("number").and_then(serde_json::Value::as_u64).unwrap_or(0);
-        if number == 0 {
+        let operation = params.operation.as_str();
+        let is_create = matches!(
+            operation,
+            "create_issue" | "create_pull_request" | "create_merge_request"
+        );
+        let number = params
+            .payload
+            .get("number")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if number == 0 && !is_create {
             return Err(ServiceError::InvalidRequest);
         }
-        let operation = params.operation.as_str();
+        let project_path = task_path_encode(&format!("{namespace}/{name}"));
+        let task_kind = params
+            .payload
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("issue");
+        let gitlab_segment = if task_kind == "merge_request" {
+            "merge_requests"
+        } else {
+            "issues"
+        };
         let endpoint = match (params.provider.as_str(), operation) {
+            ("github", "create_issue") => format!("repos/{namespace}/{name}/issues"),
+            ("github", "create_pull_request") => format!("repos/{namespace}/{name}/pulls"),
             ("github", "comment") => format!("repos/{namespace}/{name}/issues/{number}/comments"),
             ("github", "state") => format!("repos/{namespace}/{name}/issues/{number}"),
+            ("github", "review") => format!("repos/{namespace}/{name}/pulls/{number}/reviews"),
             ("github", "merge") => format!("repos/{namespace}/{name}/pulls/{number}/merge"),
-            ("gitlab", "comment") => format!("projects/{}/issues/{number}/notes", task_path_encode(&format!("{namespace}/{name}"))),
-            ("gitlab", "state") => format!("projects/{}/issues/{number}", task_path_encode(&format!("{namespace}/{name}"))),
-            ("gitlab", "merge") => format!("projects/{}/merge_requests/{number}/merge", task_path_encode(&format!("{namespace}/{name}"))),
+            ("gitlab", "create_issue") => format!("projects/{project_path}/issues"),
+            ("gitlab", "create_merge_request") => format!("projects/{project_path}/merge_requests"),
+            ("gitlab", "comment") => format!("projects/{project_path}/{gitlab_segment}/{number}/notes"),
+            ("gitlab", "state") => format!("projects/{project_path}/{gitlab_segment}/{number}"),
+            ("gitlab", "review") => {
+                let event = params
+                    .payload
+                    .get("reviewEvent")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("APPROVE")
+                    .to_ascii_uppercase();
+                match event.as_str() {
+                    "APPROVE" => format!("projects/{project_path}/merge_requests/{number}/approve"),
+                    "UNAPPROVE" => format!("projects/{project_path}/merge_requests/{number}/unapprove"),
+                    "COMMENT" => format!("projects/{project_path}/merge_requests/{number}/notes"),
+                    _ => return Err(ServiceError::InvalidRequest),
+                }
+            }
+            ("gitlab", "merge") => format!("projects/{project_path}/merge_requests/{number}/merge"),
             _ => return Err(ServiceError::InvalidRequest),
         };
-        let body = params.payload.get("body").and_then(serde_json::Value::as_str).unwrap_or("");
-        let state = params.payload.get("state").and_then(serde_json::Value::as_str).unwrap_or("open");
+        let body = params
+            .payload
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let title = params
+            .payload
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let state = params
+            .payload
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("open");
         let mut fields = Vec::<String>::new();
-        if operation == "comment" { fields.extend(["--raw-field".into(), format!("body={body}")]); }
-        if operation == "state" { fields.extend(["--raw-field".into(), format!("state={state}")]); }
-        if operation == "merge" { fields.extend(["--raw-field".into(), format!("merge_method={}", params.payload.get("mergeMethod").and_then(serde_json::Value::as_str).unwrap_or("merge"))]); }
+        let raw = |fields: &mut Vec<String>, key: &str, value: String| {
+            fields.extend(["--raw-field".into(), format!("{key}={value}")]);
+        };
+        if is_create {
+            if title.trim().is_empty() {
+                return Err(ServiceError::InvalidRequest);
+            }
+            raw(&mut fields, "title", title.into());
+            if !body.trim().is_empty() {
+                raw(
+                    &mut fields,
+                    if params.provider == "github" { "body" } else { "description" },
+                    body.into(),
+                );
+            }
+            if operation == "create_pull_request" {
+                raw(
+                    &mut fields,
+                    "head",
+                    params.payload.get("head").and_then(serde_json::Value::as_str).unwrap_or("").into(),
+                );
+                raw(
+                    &mut fields,
+                    "base",
+                    params.payload.get("base").and_then(serde_json::Value::as_str).unwrap_or("").into(),
+                );
+            }
+            if operation == "create_merge_request" {
+                raw(
+                    &mut fields,
+                    "source_branch",
+                    params.payload.get("sourceBranch").and_then(serde_json::Value::as_str).unwrap_or("").into(),
+                );
+                raw(
+                    &mut fields,
+                    "target_branch",
+                    params.payload.get("targetBranch").and_then(serde_json::Value::as_str).unwrap_or("").into(),
+                );
+            }
+        } else if operation == "comment" || operation == "review" {
+            let key = if operation == "review" && params.provider == "gitlab" {
+                "body"
+            } else {
+                "body"
+            };
+            if !body.trim().is_empty() {
+                raw(&mut fields, key, body.into());
+            }
+            if operation == "review" && params.provider == "github" {
+                raw(
+                    &mut fields,
+                    "event",
+                    params.payload.get("reviewEvent").and_then(serde_json::Value::as_str).unwrap_or("COMMENT").into(),
+                );
+            }
+        } else if operation == "state" {
+            raw(&mut fields, if params.provider == "github" { "state" } else { "state_event" }, state.into());
+        } else if operation == "merge" {
+            raw(
+                &mut fields,
+                "merge_method",
+                params.payload.get("mergeMethod").and_then(serde_json::Value::as_str).unwrap_or("merge").into(),
+            );
+        }
+        let method = if is_create || operation == "comment" || operation == "review" {
+            "POST"
+        } else if operation == "state" {
+            if params.provider == "github" { "PATCH" } else { "PUT" }
+        } else {
+            "PUT"
+        };
         let program = if params.provider == "github" { "gh" } else { "glab" };
-        let mut args = vec!["api".to_string(), "--hostname".into(), host, "-X".into(), if operation == "comment" { "POST".into() } else if operation == "state" { "PATCH".into() } else { "PUT".into() }, endpoint];
+        let mut args = vec![
+            "api".to_string(),
+            "--hostname".into(),
+            host,
+            "-X".into(),
+            method.into(),
+            endpoint,
+        ];
         args.extend(fields);
-        let output = std::process::Command::new(program).args(&args).current_dir(root).stdin(std::process::Stdio::null()).output().map_err(|_| ServiceError::TaskProviderUnavailable)?;
-        if !output.status.success() { return Err(ServiceError::TaskProviderUnavailable); }
-        Ok(serde_json::json!({ "outcome": "applied", "readBack": true }))
+        let output = std::process::Command::new(program)
+            .args(&args)
+            .current_dir(root)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|_| ServiceError::TaskProviderUnavailable)?;
+        if !output.status.success() {
+            return Err(ServiceError::TaskProviderUnavailable);
+        }
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null);
+        Ok(serde_json::json!({
+            "outcome": "applied",
+            "readBack": true,
+            "response": response,
+        }))
     }
 
     fn task_detail(&self, params: TaskDetailParams) -> Result<serde_json::Value> {

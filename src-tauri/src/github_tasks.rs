@@ -206,6 +206,10 @@ pub struct GithubTaskMutationRequest {
     pub kind: String,
     pub number: u64,
     pub operation: String,
+    pub title: Option<String>,
+    pub head: Option<String>,
+    pub base: Option<String>,
+    pub draft: Option<bool>,
     pub body: Option<String>,
     pub state: Option<String>,
     pub labels: Option<Vec<String>>,
@@ -784,13 +788,17 @@ fn json_checks(value: &Value) -> Vec<GithubTaskCheck> {
 fn mutate_github_task_blocking(
     paths: &agentport_core::paths::AppPaths,
     project_id: &str,
-    request: GithubTaskMutationRequest,
+    mut request: GithubTaskMutationRequest,
 ) -> GithubTaskMutationOutcome {
     let (root, repository, identity) = match resolve_github_checkout(paths, project_id) {
         Ok(value) => value,
         Err(error) => return GithubTaskMutationOutcome::failed(error.0, error.1),
     };
-    if request.number == 0 {
+    let is_create = matches!(
+        request.operation.as_str(),
+        "create_issue" | "create_pull_request"
+    );
+    if request.number == 0 && !is_create {
         return GithubTaskMutationOutcome::failed(
             "invalid_task",
             "Task number must be greater than zero".into(),
@@ -830,15 +838,22 @@ fn mutate_github_task_blocking(
             Err(error) => return GithubTaskMutationOutcome::failed(error.0, error.1),
         }
     }
-    if let Err(failure) = execute_github_mutation(&root, &identity, &request, normalized_kind) {
-        return match failure {
-            GithubMutationFailure::Failed(code, message) => {
-                GithubTaskMutationOutcome::failed(code, message)
-            }
-            GithubMutationFailure::Unknown(code, message) => {
-                GithubTaskMutationOutcome::unknown(code, message)
-            }
-        };
+    let created_number = match execute_github_mutation(&root, &identity, &request, normalized_kind)
+    {
+        Ok(number) => number,
+        Err(failure) => {
+            return match failure {
+                GithubMutationFailure::Failed(code, message) => {
+                    GithubTaskMutationOutcome::failed(code, message)
+                }
+                GithubMutationFailure::Unknown(code, message) => {
+                    GithubTaskMutationOutcome::unknown(code, message)
+                }
+            };
+        }
+    };
+    if let Some(number) = created_number {
+        request.number = number;
     }
     if normalized_kind == "project" {
         return match fetch_projects(&root, &identity) {
@@ -876,10 +891,11 @@ fn execute_github_mutation(
     identity: &RemoteIdentity,
     request: &GithubTaskMutationRequest,
     kind: &str,
-) -> Result<(), GithubMutationFailure> {
+) -> Result<Option<u64>, GithubMutationFailure> {
     let is_project = kind == "project" || request.operation.starts_with("project");
     if is_project {
-        return execute_github_project_mutation(root, request);
+        execute_github_project_mutation(root, request)?;
+        return Ok(None);
     }
     let segment = if kind == "pull_request" {
         "pulls"
@@ -892,6 +908,65 @@ fn execute_github_mutation(
     );
     let mut args = Vec::new();
     match request.operation.as_str() {
+        "create_issue" => {
+            if kind != "issue" {
+                return Err(GithubMutationFailure::Failed(
+                    "unsupported_operation",
+                    "Issue creation requires kind=issue".into(),
+                ));
+            }
+            let title = required_title(request)?;
+            args = vec![
+                "--method".into(),
+                "POST".into(),
+                format!("repos/{}/{}/issues", identity.owner, identity.name),
+                "--field".into(),
+                format!("title={title}"),
+            ];
+            if let Some(body) = request
+                .body
+                .as_deref()
+                .filter(|body| !body.trim().is_empty())
+            {
+                validate_body(body)?;
+                args.extend(["--field".into(), format!("body={body}")]);
+            }
+            append_github_list_fields(&mut args, "labels", request.labels.as_deref(), false)?;
+            append_github_list_fields(&mut args, "assignees", request.assignees.as_deref(), true)?;
+        }
+        "create_pull_request" => {
+            if kind != "pull_request" {
+                return Err(GithubMutationFailure::Failed(
+                    "unsupported_operation",
+                    "Pull request creation requires kind=pull_request".into(),
+                ));
+            }
+            let title = required_title(request)?;
+            let head = required_branch(request.head.as_deref(), "head")?;
+            let base = required_branch(request.base.as_deref(), "base")?;
+            args = vec![
+                "--method".into(),
+                "POST".into(),
+                format!("repos/{}/{}/pulls", identity.owner, identity.name),
+                "--field".into(),
+                format!("title={title}"),
+                "--field".into(),
+                format!("head={head}"),
+                "--field".into(),
+                format!("base={base}"),
+            ];
+            if let Some(body) = request
+                .body
+                .as_deref()
+                .filter(|body| !body.trim().is_empty())
+            {
+                validate_body(body)?;
+                args.extend(["--field".into(), format!("body={body}")]);
+            }
+            if let Some(draft) = request.draft {
+                args.extend(["--field".into(), format!("draft={draft}")]);
+            }
+        }
         "comment" => {
             let body = required_body(request)?;
             args = vec![
@@ -1020,7 +1095,21 @@ fn execute_github_mutation(
             ))
         }
     }
-    gh_write(root, args)
+    let response = gh_write(root, args)?;
+    if request.operation == "create_issue" || request.operation == "create_pull_request" {
+        let number = response
+            .get("number")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                GithubMutationFailure::Unknown(
+                    "github_create_unknown",
+                    "GitHub accepted creation but did not return a task number".into(),
+                )
+            })?;
+        Ok(Some(number))
+    } else {
+        Ok(None)
+    }
 }
 
 fn execute_github_project_mutation(
@@ -1088,7 +1177,7 @@ fn execute_github_project_mutation(
     for (key, value) in args {
         command.extend(["--field".to_owned(), format!("{key}={value}")]);
     }
-    gh_write(root, command)
+    gh_write(root, command).map(|_| ())
 }
 
 fn required_body(request: &GithubTaskMutationRequest) -> Result<String, GithubMutationFailure> {
@@ -1099,13 +1188,78 @@ fn required_body(request: &GithubTaskMutationRequest) -> Result<String, GithubMu
         .ok_or_else(|| {
             GithubMutationFailure::Failed("invalid_mutation", "body is required".into())
         })?;
+    validate_body(&body)?;
+    Ok(body)
+}
+
+fn validate_body(body: &str) -> Result<(), GithubMutationFailure> {
     if body.chars().count() > 20_000 {
         return Err(GithubMutationFailure::Failed(
             "invalid_mutation",
             "body is limited to 20,000 characters".into(),
         ));
     }
-    Ok(body)
+    Ok(())
+}
+
+fn required_title(request: &GithubTaskMutationRequest) -> Result<String, GithubMutationFailure> {
+    let title = request
+        .title
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            GithubMutationFailure::Failed("invalid_mutation", "title is required".into())
+        })?;
+    if title.chars().count() > 256 {
+        return Err(GithubMutationFailure::Failed(
+            "invalid_mutation",
+            "title is limited to 256 characters".into(),
+        ));
+    }
+    Ok(title)
+}
+
+fn required_branch(value: Option<&str>, name: &str) -> Result<String, GithubMutationFailure> {
+    let branch = value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            GithubMutationFailure::Failed("invalid_mutation", format!("{name} is required"))
+        })?;
+    if branch.chars().count() > 512 || branch.chars().any(|character| character.is_control()) {
+        return Err(GithubMutationFailure::Failed(
+            "invalid_mutation",
+            format!("{name} is invalid or too long"),
+        ));
+    }
+    Ok(branch.to_owned())
+}
+
+fn append_github_list_fields(
+    args: &mut Vec<String>,
+    field: &str,
+    values: Option<&[String]>,
+    logins: bool,
+) -> Result<(), GithubMutationFailure> {
+    let Some(values) = values else {
+        return Ok(());
+    };
+    for value in values.iter().take(MAX_ITEMS) {
+        if logins {
+            if !valid_login(value) {
+                return Err(GithubMutationFailure::Failed(
+                    "invalid_mutation",
+                    "assignees must be valid GitHub logins".into(),
+                ));
+            }
+        } else if value.trim().is_empty() || value.chars().count() > 100 {
+            return Err(GithubMutationFailure::Failed(
+                "invalid_mutation",
+                "labels must be non-empty and at most 100 characters".into(),
+            ));
+        }
+        args.extend(["--field".into(), format!("{field}[]={value}")]);
+    }
+    Ok(())
 }
 
 fn valid_login(value: &str) -> bool {
@@ -1143,7 +1297,7 @@ fn github_mutation_matches(detail: &GithubTaskDetail, request: &GithubTaskMutati
     }
 }
 
-fn gh_write(root: &str, args: Vec<String>) -> Result<(), GithubMutationFailure> {
+fn gh_write(root: &str, args: Vec<String>) -> Result<Value, GithubMutationFailure> {
     let mut command_args = vec![
         "api".to_owned(),
         "--hostname".to_owned(),
@@ -1169,7 +1323,7 @@ fn gh_write(root: &str, args: Vec<String>) -> Result<(), GithubMutationFailure> 
         }
     };
     if output.success {
-        return Ok(());
+        return Ok(serde_json::from_slice(&output.stdout).unwrap_or(Value::Null));
     }
     let stderr = text_output(&output.stderr);
     let lower = stderr.to_ascii_lowercase();
@@ -1634,6 +1788,18 @@ mod tests {
         assert_eq!(parse_github_remote("https://gitlab.com/o/r.git"), None);
         assert_eq!(parse_github_remote("https://github.com/o/r/issues"), None);
         assert_eq!(parse_github_remote("file:///tmp/repo"), None);
+    }
+
+    #[test]
+    fn validates_create_fields() {
+        let request = GithubTaskMutationRequest {
+            title: Some("New task".into()),
+            ..Default::default()
+        };
+        assert_eq!(required_title(&request).unwrap(), "New task");
+        assert!(required_title(&GithubTaskMutationRequest::default()).is_err());
+        assert!(required_branch(Some(""), "head").is_err());
+        assert!(validate_body(&"x".repeat(20_001)).is_err());
     }
 
     #[test]

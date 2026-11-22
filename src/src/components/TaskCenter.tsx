@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import { api, errorText } from "../api";
 import { findSession, useStore } from "../store";
 import type { TaskProviderDetection } from "../types";
@@ -13,6 +14,20 @@ type TaskResponse = {
   data?: { items?: unknown[] } | null;
   items?: unknown[];
   error?: { message?: unknown; code?: unknown } | null;
+};
+
+type ComposerKind = "issue" | "pull_request" | "merge_request";
+
+type TaskMutationFields = {
+  title?: string;
+  body?: string;
+  state?: string;
+  head?: string;
+  base?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
+  draft?: boolean;
+  reviewEvent?: string;
 };
 
 type ScopeMeta = {
@@ -318,16 +333,22 @@ function TaskDetail({
   provider,
   projectId,
   onClose,
+  onMutate,
+  mutationBusy,
 }: {
   task: TaskRecord;
   scope: TaskScope;
   provider: Provider;
   projectId: string | null;
   onClose: () => void;
+  onMutate: (operation: string, fields?: TaskMutationFields) => void;
+  mutationBusy: boolean;
 }) {
   const [detail, setDetail] = useState<TaskRecord | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [commentBody, setCommentBody] = useState("");
+  const [reviewBody, setReviewBody] = useState("");
   const numberValue = task.number ?? task.iid;
   const number = typeof numberValue === "number" ? numberValue : Number(numberValue);
   useEffect(() => {
@@ -358,6 +379,11 @@ function TaskDetail({
   const state = taskState(shownTask);
   const review = firstText(shownTask, ["reviewDecision", "reviewStatus", "pipelineStatus", "checkState"]);
   const branch = firstText(shownTask, ["headRefName", "sourceBranch", "source_branch", "branch"]);
+  const isPull = scope === "pulls";
+  const isClosed = /closed|merged|done|complete/i.test(state);
+  const canChangeState = !/merged/i.test(state);
+  const reviewDisabled = /merged/i.test(state);
+  const stateValue = provider === "gitlab" ? (isClosed ? "reopen" : "close") : (isClosed ? "open" : "closed");
   return (
     <aside className="task-center-detail is-open" aria-label="Task details">
       <header className="task-center-detail-head">
@@ -369,14 +395,39 @@ function TaskDetail({
       </header>
       <div className="task-center-detail-body">
         <div className="task-center-detail-title-row">
-          <span className={`task-center-status-dot task-center-status-dot-${taskTone(task)}`} aria-hidden="true" />
+          <span className={`task-center-status-dot task-center-status-dot-${taskTone(shownTask)}`} aria-hidden="true" />
           <span className="task-center-detail-state">{state}</span>
-          {taskNumber(task) ? <span className="task-center-detail-number">{taskNumber(task)}</span> : null}
+          {taskNumber(shownTask) ? <span className="task-center-detail-number">{taskNumber(shownTask)}</span> : null}
         </div>
-        <h4 className="task-center-detail-title">{taskTitle(task)}</h4>
+        <h4 className="task-center-detail-title">{taskTitle(shownTask)}</h4>
         <div className="task-center-detail-actions">
           {url ? <a className="task-center-open-link" href={url} target="_blank" rel="noreferrer">Open in {providerLabels[provider]} <span aria-hidden="true">↗</span></a> : <span className="task-center-no-link">No provider link</span>}
         </div>
+        <section className="task-center-management-actions" aria-label="Task management">
+          {canChangeState ? (
+            <button type="button" disabled={mutationBusy} onClick={() => onMutate("state", { state: stateValue })}>
+              {isClosed ? "Reopen" : "Close"} {scopeMeta(scope).shortLabel.slice(0, -1)}
+            </button>
+          ) : null}
+          {isPull ? (
+            <>
+              <button type="button" disabled={mutationBusy || reviewDisabled} onClick={() => onMutate("review", { reviewEvent: "APPROVE" })}>Approve</button>
+              {provider === "github" ? <button type="button" disabled={mutationBusy || reviewDisabled} onClick={() => onMutate("review", { reviewEvent: "REQUEST_CHANGES", body: reviewBody })}>Request changes</button> : null}
+            </>
+          ) : null}
+        </section>
+        {isPull ? (
+          <div className="task-center-management-form">
+            <textarea value={reviewBody} onChange={(event) => setReviewBody(event.target.value)} placeholder="Review note (optional)" aria-label="Review note" />
+            <button type="button" disabled={mutationBusy || !reviewBody.trim()} onClick={() => { onMutate("review", { reviewEvent: "COMMENT", body: reviewBody }); setReviewBody(""); }}>Comment review</button>
+          </div>
+        ) : null}
+        {!isPull ? (
+          <div className="task-center-management-form">
+            <textarea value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Add a comment" aria-label="Task comment" />
+            <button type="button" disabled={mutationBusy || !commentBody.trim()} onClick={() => { onMutate("comment", { body: commentBody }); setCommentBody(""); }}>Comment</button>
+          </div>
+        ) : null}
         {detailLoading ? <p className="task-center-detail-muted">Loading provider detail…</p> : null}
         {detailError ? <p className="task-center-detail-error">{detailError}</p> : null}
         {summary ? <p className="task-center-detail-summary">{summary}</p> : <p className="task-center-detail-muted">No description was provided for this task.</p>}
@@ -445,6 +496,13 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const [composerKind, setComposerKind] = useState<ComposerKind | null>(null);
+  const [composerTitle, setComposerTitle] = useState("");
+  const [composerBody, setComposerBody] = useState("");
+  const [composerHead, setComposerHead] = useState("");
+  const [composerBase, setComposerBase] = useState("main");
+  const [mutationBusy, setMutationBusy] = useState(false);
+  const [mutationNotice, setMutationNotice] = useState<{ tone: "success" | "error" | "unknown"; text: string } | null>(null);
   const shellRef = useRef<HTMLElement>(null);
   const resolvedProvider = detectionReady && providerProjectId === activeProjectId ? provider : null;
   const { items, repository, loading, error, scopeErrors, refresh } = useTasks(activeProjectId, resolvedProvider, open);
@@ -507,6 +565,81 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     }
     return filteredItems[0] ?? activeItems[0] ?? null;
   }, [activeItems, filteredItems, selectedId]);
+  const performMutation = async (kind: string, number: number, operation: string, fields: TaskMutationFields = {}) => {
+    if (!activeProjectId || !visibleProvider || mutationBusy) return;
+    setMutationBusy(true);
+    setMutationNotice(null);
+    try {
+      const outcome = visibleProvider === "github"
+        ? await api.mutateGithubTask(activeProjectId, {
+          kind,
+          number,
+          operation,
+          title: fields.title,
+          head: fields.head,
+          base: fields.base,
+          draft: fields.draft,
+          body: fields.body,
+          state: fields.state,
+          reviewEvent: fields.reviewEvent,
+        })
+        : await api.mutateGitlabTask(activeProjectId, {
+          kind,
+          number,
+          operation,
+          title: fields.title,
+          sourceBranch: fields.sourceBranch,
+          targetBranch: fields.targetBranch,
+          body: fields.body,
+          state: fields.state,
+          reviewEvent: fields.reviewEvent,
+        });
+      if (outcome.status === "succeeded") {
+        setMutationNotice({ tone: "success", text: "Provider confirmed the change." });
+        refresh();
+        setSelectedId(null);
+        if (operation.startsWith("create_")) {
+          setComposerKind(null);
+          setComposerTitle("");
+          setComposerBody("");
+          setComposerHead("");
+          setComposerBase("main");
+        }
+      } else {
+        setMutationNotice({
+          tone: outcome.status === "unknown" ? "unknown" : "error",
+          text: outcome.error?.message ?? "The provider did not confirm this change.",
+        });
+      }
+    } catch (reason: unknown) {
+      setMutationNotice({ tone: "error", text: errorText(reason) });
+    } finally {
+      setMutationBusy(false);
+    }
+  };
+  const mutateSelectedTask = (operation: string, fields: TaskMutationFields = {}) => {
+    if (!selectedTask || !visibleProvider) return;
+    const value = selectedTask.number ?? selectedTask.iid;
+    const number = typeof value === "number" ? value : Number(value);
+    if (!Number.isInteger(number) || number <= 0) return;
+    const kind = activeScope === "pulls" ? (visibleProvider === "github" ? "pull_request" : "merge_request") : "issue";
+    void performMutation(kind, number, operation, fields);
+  };
+  const submitComposer = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!composerKind || !visibleProvider || !composerTitle.trim()) return;
+    const operation = composerKind === "issue" ? "create_issue" : visibleProvider === "github" ? "create_pull_request" : "create_merge_request";
+    const fields: TaskMutationFields = { title: composerTitle.trim(), body: composerBody };
+    if (composerKind === "pull_request") {
+      fields.head = composerHead.trim();
+      fields.base = composerBase.trim();
+    }
+    if (composerKind === "merge_request") {
+      fields.sourceBranch = composerHead.trim();
+      fields.targetBranch = composerBase.trim();
+    }
+    void performMutation(composerKind, 0, operation, fields);
+  };
   const boardColumns = useMemo(() => {
     const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = [
       { id: "open", label: "Open", items: [] },
@@ -551,6 +684,16 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     setActiveScope(scope);
     setSelectedId(null);
     setQuery("");
+    setMutationNotice(null);
+  };
+  const openComposer = () => {
+    if (!visibleProvider || (activeScope !== "issues" && activeScope !== "pulls")) return;
+    setComposerKind(activeScope === "issues" ? "issue" : visibleProvider === "github" ? "pull_request" : "merge_request");
+    setComposerTitle("");
+    setComposerBody("");
+    setComposerHead("");
+    setComposerBase("main");
+    setMutationNotice(null);
   };
   const titleRepository = repository ?? detection?.repository ?? "No repository detected";
   const statusText = detecting
@@ -646,7 +789,8 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
                 <p>{activeScopeMeta.description} <span aria-hidden="true">·</span> {filteredItems.length} of {activeItems.length}</p>
               </div>
               <div className="task-center-list-actions">
-                <button className="task-center-refresh-button" type="button" onClick={refresh} disabled={loading} aria-label="Refresh tasks">
+                {visibleProvider && (activeScope === "issues" || activeScope === "pulls") ? <button className="task-center-create-button" type="button" onClick={openComposer} disabled={mutationBusy}>New {activeScope === "issues" ? "issue" : visibleProvider === "github" ? "pull request" : "merge request"}</button> : null}
+                <button className="task-center-refresh-button" type="button" onClick={refresh} disabled={loading || mutationBusy} aria-label="Refresh tasks">
                   <span className={loading ? "task-center-refresh-icon is-spinning" : "task-center-refresh-icon"} aria-hidden="true">↻</span>
                   <span>{loading ? "Refreshing" : "Refresh"}</span>
                 </button>
@@ -663,6 +807,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
                 <button type="button" className={viewMode === "board" ? "is-active" : ""} aria-pressed={viewMode === "board"} onClick={() => setViewMode("board")}>Board</button>
               </div>
             </div>
+            {mutationNotice ? <div className={`task-center-mutation-notice is-${mutationNotice.tone}`} role={mutationNotice.tone === "success" ? "status" : "alert"}>{mutationNotice.text}</div> : null}
             {loading && activeItems.length > 0 ? <div className="task-center-stale-banner" role="status"><span className="task-center-stale-dot" aria-hidden="true" />Showing cached results while this view refreshes.</div> : null}
             <div className="task-center-list-body">
               {!visibleProvider ? <TaskDetectionState loading={detecting} detection={detection} /> : <>
@@ -709,9 +854,28 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
             </div>
           </main>
 
-          {selectedTask && visibleProvider ? <TaskDetail task={selectedTask} scope={activeScope} provider={visibleProvider} projectId={activeProjectId} onClose={() => setSelectedId(null)} /> : <aside className="task-center-detail task-center-detail-empty" aria-label="Task details"><div className="task-center-detail-empty-content"><span aria-hidden="true">↖</span><h3>{visibleProvider ? "Select a task" : "Task details unavailable"}</h3><p>{visibleProvider ? "Choose an item from the list to inspect its details." : "A supported provider must be detected first."}</p></div></aside>}
+          {selectedTask && visibleProvider ? <TaskDetail task={selectedTask} scope={activeScope} provider={visibleProvider} projectId={activeProjectId} onClose={() => setSelectedId(null)} onMutate={mutateSelectedTask} mutationBusy={mutationBusy} /> : <aside className="task-center-detail task-center-detail-empty" aria-label="Task details"><div className="task-center-detail-empty-content"><span aria-hidden="true">↖</span><h3>{visibleProvider ? "Select a task" : "Task details unavailable"}</h3><p>{visibleProvider ? "Choose an item from the list to inspect its details." : "A supported provider must be detected first."}</p></div></aside>}
         </div>
       </section>
+      {composerKind && visibleProvider ? (
+        <div className="task-center-composer-layer" role="presentation">
+          <form className="task-center-composer" onSubmit={submitComposer} role="dialog" aria-modal="true" aria-label={`New ${composerKind.replace("_", " ")}`}>
+            <header className="task-center-composer-head">
+              <div>
+                <span className="task-center-eyebrow">{providerName} / Create</span>
+                <h2>New {composerKind === "issue" ? "issue" : composerKind === "pull_request" ? "pull request" : "merge request"}</h2>
+              </div>
+              <button type="button" className="task-center-icon-button" onClick={() => setComposerKind(null)} aria-label="Close create form">×</button>
+            </header>
+            <div className="task-center-composer-body">
+              <label>Title<input value={composerTitle} onChange={(event) => setComposerTitle(event.target.value)} maxLength={256} required autoFocus /></label>
+              {(composerKind === "pull_request" || composerKind === "merge_request") ? <div className="task-center-composer-grid"><label>{composerKind === "pull_request" ? "Head branch" : "Source branch"}<input value={composerHead} onChange={(event) => setComposerHead(event.target.value)} required /></label><label>{composerKind === "pull_request" ? "Base branch" : "Target branch"}<input value={composerBase} onChange={(event) => setComposerBase(event.target.value)} required /></label></div> : null}
+              <label>Description<textarea value={composerBody} onChange={(event) => setComposerBody(event.target.value)} maxLength={20000} rows={7} /></label>
+            </div>
+            <footer className="task-center-composer-foot"><button type="button" className="task-center-composer-cancel" onClick={() => setComposerKind(null)} disabled={mutationBusy}>Cancel</button><button type="submit" className="task-center-composer-submit" disabled={mutationBusy || !composerTitle.trim() || ((composerKind === "pull_request" || composerKind === "merge_request") && (!composerHead.trim() || !composerBase.trim()))}>{mutationBusy ? "Creating…" : "Create"}</button></footer>
+          </form>
+        </div>
+      ) : null}
     </div>
   );
 }

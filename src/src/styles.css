@@ -2428,6 +2428,37 @@ body.is-project-dragging .tree-row.project {
 
 .task-center-list-pane { display: flex; flex-direction: column; overflow: hidden; background: color-mix(in srgb, var(--settings-surface) 96%, var(--bg)); }
 .task-center-list-head { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 25px 25px 18px; }
+.task-center-list-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+.task-center-create-button,
+.task-center-management-actions button,
+.task-center-management-form button,
+.task-center-composer-submit,
+.task-center-composer-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--overlay-border);
+  border-radius: 6px;
+  background: var(--overlay-input);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.task-center-create-button,
+.task-center-composer-submit { border-color: color-mix(in srgb, var(--accent) 50%, var(--overlay-border)); background: var(--accent-soft); color: var(--accent-text); }
+.task-center-create-button:hover:not(:disabled),
+.task-center-management-actions button:hover:not(:disabled),
+.task-center-management-form button:hover:not(:disabled),
+.task-center-composer-submit:hover:not(:disabled),
+.task-center-composer-cancel:hover:not(:disabled) { border-color: var(--overlay-border-strong); color: var(--text); }
+.task-center-create-button:disabled,
+.task-center-management-actions button:disabled,
+.task-center-management-form button:disabled,
+.task-center-composer-submit:disabled,
+.task-center-composer-cancel:disabled { cursor: wait; opacity: 0.55; }
 .task-center-list-heading { min-width: 0; }
 .task-center-list-heading .task-center-provider-mark { width: 18px; height: 18px; border: 0; background: transparent; font-size: 8px; }
 .task-center-list-heading h2 { margin: 7px 0 4px; font-size: 21px; letter-spacing: -0.02em; }
@@ -2452,6 +2483,10 @@ body.is-project-dragging .tree-row.project {
 .task-center-refresh-icon.is-spinning { animation: task-center-spin 0.9s linear infinite; }
 @keyframes task-center-spin { to { transform: rotate(360deg); } }
 .task-center-filterbar { display: flex; align-items: center; gap: 10px; flex: none; padding: 0 25px 16px; }
+.task-center-mutation-notice { margin: 0 25px 10px; padding: 8px 10px; border: 1px solid var(--overlay-divider); border-radius: 6px; background: var(--overlay-input); color: var(--text-faint); font-size: 10px; line-height: 1.4; }
+.task-center-mutation-notice.is-success { border-color: color-mix(in srgb, var(--green) 35%, var(--overlay-divider)); color: var(--green); }
+.task-center-mutation-notice.is-error { border-color: var(--red-soft); color: var(--red); }
+.task-center-mutation-notice.is-unknown { border-color: var(--amber-soft); color: var(--amber); }
 .task-center-search { min-width: 0; flex: 1; position: relative; display: flex; align-items: center; }
 .task-center-search > span { position: absolute; left: 11px; color: var(--text-faint); font-size: 18px; line-height: 1; pointer-events: none; transform: translateY(-1px); }
 .task-center-search input {
@@ -2541,6 +2576,27 @@ body.is-project-dragging .tree-row.project {
 .task-center-detail-number { color: var(--text-faint); font-family: var(--font-mono); }
 .task-center-detail-title { margin: 12px 0 14px; color: var(--text); font-size: 18px; line-height: 1.28; letter-spacing: -0.01em; overflow-wrap: anywhere; }
 .task-center-detail-actions { margin-bottom: 18px; }
+.task-center-management-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: -5px 0 12px; }
+.task-center-management-actions button { min-height: 26px; }
+.task-center-management-form { display: grid; gap: 6px; margin: 0 0 14px; }
+.task-center-management-form textarea,
+.task-center-composer input,
+.task-center-composer textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--overlay-border); border-radius: 6px; outline: none; background: var(--overlay-input); box-shadow: var(--overlay-input-inset); color: var(--text); font: inherit; font-size: 11px; }
+.task-center-management-form textarea { min-height: 52px; padding: 8px; resize: vertical; }
+.task-center-management-form textarea:focus,
+.task-center-composer input:focus,
+.task-center-composer textarea:focus { border-color: color-mix(in srgb, var(--accent) 70%, var(--overlay-border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); }
+.task-center-management-form button { justify-self: start; }
+.task-center-composer-layer { position: absolute; inset: 0; z-index: 10; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, #000 58%, transparent); }
+.task-center-composer { width: min(560px, 100%); max-height: min(720px, 92%); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--overlay-border-strong); border-radius: 12px; background: var(--settings-surface); box-shadow: 0 25px 80px rgba(0,0,0,.45); }
+.task-center-composer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 22px 15px; border-bottom: 1px solid var(--overlay-divider); }
+.task-center-composer-head h2 { margin: 7px 0 0; color: var(--text); font-size: 18px; }
+.task-center-composer-body { display: grid; gap: 13px; overflow: auto; padding: 18px 22px; }
+.task-center-composer-body label { display: grid; gap: 6px; color: var(--text-faint); font-size: 10px; font-weight: 650; }
+.task-center-composer input { height: 34px; padding: 0 9px; }
+.task-center-composer textarea { padding: 9px; resize: vertical; }
+.task-center-composer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.task-center-composer-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 22px 17px; border-top: 1px solid var(--overlay-divider); }
 .task-center-open-link { display: inline-flex; align-items: center; gap: 7px; color: var(--accent-text); font-size: 11px; text-decoration: none; }
 .task-center-open-link:hover { color: var(--text); text-decoration: underline; }
 .task-center-no-link { color: var(--text-faint); font-size: 11px; }

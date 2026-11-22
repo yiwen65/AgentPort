@@ -124,6 +124,9 @@ pub struct GitlabTaskMutationRequest {
     pub kind: String,
     pub number: u64,
     pub operation: String,
+    pub title: Option<String>,
+    pub source_branch: Option<String>,
+    pub target_branch: Option<String>,
     pub body: Option<String>,
     pub state: Option<String>,
     pub labels: Option<Vec<String>>,
@@ -454,19 +457,237 @@ fn load_gitlab_detail(
     })
 }
 
+fn create_gitlab_task(
+    root: &str,
+    identity: &RemoteIdentity,
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+    request: &mut GitlabTaskMutationRequest,
+) -> Result<GitlabTaskMutationOutcome, String> {
+    let title = required_gitlab_text(request.title.as_deref(), "title", 256)?;
+    let body = request.body.as_deref().unwrap_or("");
+    validate_gitlab_body(body)?;
+    let (expected_kind, segment, endpoint) = match request.operation.as_str() {
+        "create_issue" => (
+            "issue",
+            "issues",
+            format!("projects/{}/issues", encode_path(&identity.project_path)),
+        ),
+        "create_merge_request" => (
+            "merge_request",
+            "merge_requests",
+            format!(
+                "projects/{}/merge_requests",
+                encode_path(&identity.project_path)
+            ),
+        ),
+        _ => {
+            return Ok(GitlabTaskMutationOutcome::unknown(
+                "unsupported_operation",
+                "GitLab creation operation is unsupported".into(),
+            ))
+        }
+    };
+    if request.kind != expected_kind {
+        return Ok(GitlabTaskMutationOutcome::unknown(
+            "unsupported_operation",
+            format!("{segment} creation requires kind={expected_kind}"),
+        ));
+    }
+    let mut fields = vec![("title", title)];
+    if !body.trim().is_empty() {
+        fields.push(("description", body.to_owned()));
+    }
+    if let Some(labels) = request
+        .labels
+        .as_deref()
+        .filter(|labels| !labels.is_empty())
+    {
+        fields.push((
+            "labels",
+            labels
+                .iter()
+                .take(MAX_ITEMS)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(","),
+        ));
+    }
+    if expected_kind == "merge_request" {
+        fields.push((
+            "source_branch",
+            required_gitlab_text(request.source_branch.as_deref(), "source_branch", 512)?,
+        ));
+        fields.push((
+            "target_branch",
+            required_gitlab_text(request.target_branch.as_deref(), "target_branch", 512)?,
+        ));
+    }
+    let mut args = vec![
+        "api".to_owned(),
+        "--hostname".to_owned(),
+        identity.host.clone(),
+        "-X".to_owned(),
+        "POST".to_owned(),
+        endpoint,
+    ];
+    for (key, value) in fields {
+        args.extend(["--raw-field".to_owned(), format!("{key}={value}")]);
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = command_output("glab", &refs, Some(root)).map_err(|error| error.to_string())?;
+    if !output.success {
+        return Ok(GitlabTaskMutationOutcome::unknown(
+            "gitlab_create_unknown",
+            "GitLab creation failed or has an unknown outcome; read back required".into(),
+        ));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "GitLab returned an invalid creation response".to_string())?;
+    let number = value
+        .get("iid")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "GitLab creation response did not include an iid".to_string())?;
+    request.number = number;
+    match load_gitlab_detail(paths, project_id, &request.kind, number) {
+        Ok(detail) if detail.error.is_none() => Ok(GitlabTaskMutationOutcome {
+            status: "succeeded".into(),
+            data: detail.data,
+            error: None,
+            read_back_required: true,
+        }),
+        _ => Ok(GitlabTaskMutationOutcome::unknown(
+            "gitlab_read_back_failed",
+            "GitLab created the task but authoritative read-back failed".into(),
+        )),
+    }
+}
+
+fn mutate_gitlab_review(
+    root: &str,
+    identity: &RemoteIdentity,
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+    request: &GitlabTaskMutationRequest,
+) -> Result<GitlabTaskMutationOutcome, String> {
+    if request.kind != "merge_request" {
+        return Ok(GitlabTaskMutationOutcome::unknown(
+            "unsupported_operation",
+            "Reviews are available only for merge requests".into(),
+        ));
+    }
+    let event = request
+        .review_event
+        .as_deref()
+        .unwrap_or("APPROVE")
+        .to_ascii_uppercase();
+    let (endpoint, field) = match event.as_str() {
+        "APPROVE" => (
+            format!("projects/{}/merge_requests/{}/approve", encode_path(&identity.project_path), request.number),
+            None,
+        ),
+        "UNAPPROVE" => (
+            format!("projects/{}/merge_requests/{}/unapprove", encode_path(&identity.project_path), request.number),
+            None,
+        ),
+        "COMMENT" => (
+            format!("projects/{}/merge_requests/{}/notes", encode_path(&identity.project_path), request.number),
+            Some(("body", required_gitlab_text(request.body.as_deref(), "body", 20_000)?)),
+        ),
+        _ => {
+            return Ok(GitlabTaskMutationOutcome::unknown(
+                "unsupported_operation",
+                "GitLab supports approve, unapprove, and comment review events; request changes is unsupported".into(),
+            ))
+        }
+    };
+    let mut args = vec![
+        "api".to_owned(),
+        "--hostname".to_owned(),
+        identity.host.clone(),
+        "-X".to_owned(),
+        if event == "COMMENT" {
+            "POST".into()
+        } else {
+            "POST".into()
+        },
+        endpoint,
+    ];
+    if let Some((key, value)) = field {
+        args.extend(["--raw-field".to_owned(), format!("{key}={value}")]);
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = command_output("glab", &refs, Some(root)).map_err(|error| error.to_string())?;
+    if !output.success {
+        return Ok(GitlabTaskMutationOutcome::unknown(
+            "gitlab_review_unknown",
+            "GitLab review failed or has an unknown outcome; read back required".into(),
+        ));
+    }
+    match load_gitlab_detail(paths, project_id, &request.kind, request.number) {
+        Ok(detail) if detail.error.is_none() => Ok(GitlabTaskMutationOutcome {
+            status: "succeeded".into(),
+            data: detail.data,
+            error: None,
+            read_back_required: true,
+        }),
+        _ => Ok(GitlabTaskMutationOutcome::unknown(
+            "gitlab_read_back_failed",
+            "GitLab review completed but authoritative read-back failed".into(),
+        )),
+    }
+}
+
+fn required_gitlab_text(
+    value: Option<&str>,
+    name: &str,
+    max_chars: usize,
+) -> Result<String, String> {
+    let value = value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{name} is required"))?;
+    if value.chars().count() > max_chars || value.chars().any(char::is_control) {
+        return Err(format!("{name} is invalid or too long"));
+    }
+    Ok(value.to_owned())
+}
+
+fn validate_gitlab_body(body: &str) -> Result<(), String> {
+    if body.chars().count() > 20_000 {
+        return Err("body is limited to 20,000 characters".into());
+    }
+    Ok(())
+}
+
 fn mutate_gitlab_task_blocking(
     paths: &agentport_core::paths::AppPaths,
     project_id: &str,
-    request: GitlabTaskMutationRequest,
+    mut request: GitlabTaskMutationRequest,
 ) -> Result<GitlabTaskMutationOutcome, String> {
     let (root, _repository, identity) = resolve_gitlab_checkout(paths, project_id)?;
-    let number = request.number;
+    let is_create = matches!(
+        request.operation.as_str(),
+        "create_issue" | "create_merge_request"
+    );
+    if request.number == 0 && !is_create {
+        return Ok(GitlabTaskMutationOutcome::unknown(
+            "invalid_task",
+            "Task number must be greater than zero".into(),
+        ));
+    }
     let request_kind = request.kind.clone();
+    if is_create {
+        return create_gitlab_task(&root, &identity, paths, project_id, &mut request);
+    }
+    let number = request.number;
     let segment = if request_kind == "merge_request" {
         "merge_requests"
     } else {
         "issues"
     };
+    if request.operation == "review" {
+        return mutate_gitlab_review(&root, &identity, paths, project_id, &request);
+    }
     let (method, endpoint, field, field_name) = match request.operation.as_str() {
         "comment" => (
             "POST",
@@ -834,6 +1055,14 @@ mod tests {
             "gitlab.com"
         );
     }
+    #[test]
+    fn validates_create_fields_and_review_events() {
+        assert_eq!(required_gitlab_text(Some("Title"), "title", 256).unwrap(), "Title");
+        assert!(required_gitlab_text(Some(""), "title", 256).is_err());
+        assert!(required_gitlab_text(Some("x\n"), "title", 256).is_err());
+        assert!(validate_gitlab_body(&"x".repeat(20_001)).is_err());
+    }
+
     #[test]
     fn encodes_nested_project_paths() {
         assert_eq!(encode_path("group/sub/repo"), "group%2Fsub%2Frepo");

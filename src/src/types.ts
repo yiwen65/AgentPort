@@ -645,6 +645,10 @@ export interface GithubTaskMutationRequest {
   kind: string;
   number: number;
   operation: string;
+  title?: string;
+  head?: string;
+  base?: string;
+  draft?: boolean;
   body?: string;
   state?: string;
   labels?: string[];
@@ -690,11 +694,15 @@ export interface GitlabTaskMutationRequest {
   kind: string;
   number: number;
   operation: string;
+  title?: string;
+  sourceBranch?: string;
+  targetBranch?: string;
   body?: string;
   state?: string;
   labels?: string[];
   assignees?: string[];
   expectedRevision?: string;
+  reviewEvent?: string;
 }
 
 export interface GitlabTaskMutationOutcome {
