@@ -218,6 +218,7 @@ pub struct GithubTaskMutationRequest {
     pub state: Option<String>,
     pub labels: Option<Vec<String>>,
     pub assignees: Option<Vec<String>>,
+    pub reviewers: Option<Vec<String>>,
     pub review_event: Option<String>,
     pub merge_method: Option<String>,
     pub project_number: Option<u64>,
@@ -896,6 +897,18 @@ fn mutate_github_task_blocking(
     if let Some(number) = created_number {
         request.number = number;
     }
+    if request.operation == "create_pull_request" {
+        if let Some(reviewers) = request.reviewers.as_deref().filter(|reviewers| !reviewers.is_empty()) {
+            if let Err(failure) = request_github_reviewers(&root, &identity, request.number, reviewers) {
+                return match failure {
+                    GithubMutationFailure::Failed(code, message)
+                    | GithubMutationFailure::Unknown(code, message) => {
+                        GithubTaskMutationOutcome::unknown(code, message)
+                    }
+                };
+            }
+        }
+    }
     if normalized_kind == "project" {
         return match fetch_projects(&root, &identity) {
             Ok(_) => GithubTaskMutationOutcome::succeeded(None),
@@ -1153,6 +1166,32 @@ fn execute_github_mutation(
     }
 }
 
+fn request_github_reviewers(
+    root: &str,
+    identity: &RemoteIdentity,
+    number: u64,
+    reviewers: &[String],
+) -> Result<(), GithubMutationFailure> {
+    let mut args = vec![
+        "--method".into(),
+        "POST".into(),
+        format!(
+            "repos/{}/{}/pulls/{number}/requested_reviewers",
+            identity.owner, identity.name
+        ),
+    ];
+    for reviewer in reviewers.iter().take(MAX_ITEMS) {
+        if !valid_login(reviewer) {
+            return Err(GithubMutationFailure::Failed(
+                "invalid_mutation",
+                "reviewers must be valid GitHub logins".into(),
+            ));
+        }
+        args.extend(["--field".into(), format!("reviewers[]={reviewer}")]);
+    }
+    gh_write(root, args).map(|_| ())
+}
+
 fn execute_github_project_mutation(
     root: &str,
     request: &GithubTaskMutationRequest,
@@ -1358,19 +1397,44 @@ fn load_github_task_options(
     )?)
     .map_err(|error| (error.0, error.1))?
     .into_iter()
+    .filter_map(task_option_from_login)
+    .take(MAX_ITEMS)
+    .collect();
+    let branches = parse_json::<Vec<Value>>(&gh_api(
+        &root,
+        &[&format!("repos/{}/{}/branches?per_page=100", identity.owner, identity.name)],
+    )?)
+    .map_err(|error| (error.0, error.1))?
+    .into_iter()
     .filter_map(|value| {
-        let login = json_string(&value, "login")?;
-        Some(TaskOption {
-            id: login.clone(),
-            name: login,
-        })
+        let name = json_string(&value, "name")?;
+        Some(TaskOption { id: name.clone(), name })
     })
+    .take(MAX_ITEMS)
+    .collect();
+    let reviewers = parse_json::<Vec<Value>>(&gh_api(
+        &root,
+        &[&format!("repos/{}/{}/collaborators?per_page=100&affiliation=all", identity.owner, identity.name)],
+    )?)
+    .map_err(|error| (error.0, error.1))?
+    .into_iter()
+    .filter_map(task_option_from_login)
     .take(MAX_ITEMS)
     .collect();
     Ok(TaskOptionsEnvelope {
         labels,
         assignees,
+        branches,
+        reviewers,
         error: None,
+    })
+}
+
+fn task_option_from_login(value: Value) -> Option<TaskOption> {
+    let login = json_string(&value, "login")?;
+    Some(TaskOption {
+        id: login.clone(),
+        name: login,
     })
 }
 

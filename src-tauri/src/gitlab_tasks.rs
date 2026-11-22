@@ -132,6 +132,7 @@ pub struct GitlabTaskMutationRequest {
     pub state: Option<String>,
     pub labels: Option<Vec<String>>,
     pub assignees: Option<Vec<String>>,
+    pub reviewers: Option<Vec<String>>,
     pub review_event: Option<String>,
     pub expected_revision: Option<String>,
     pub board_id: Option<u64>,
@@ -566,6 +567,19 @@ fn create_gitlab_task(
     for (key, value) in fields {
         args.extend(["--raw-field".to_owned(), format!("{key}={value}")]);
     }
+    if expected_kind == "merge_request" {
+        if let Some(reviewers) = request.reviewers.as_deref() {
+            for reviewer in reviewers.iter().take(MAX_ITEMS) {
+                let reviewer_id = reviewer
+                    .parse::<u64>()
+                    .map_err(|_| "GitLab reviewers must be numeric user IDs".to_string())?;
+                args.extend([
+                    "--raw-field".to_owned(),
+                    format!("reviewer_ids[]={reviewer_id}"),
+                ]);
+            }
+        }
+    }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = command_output("glab", &refs, Some(root)).map_err(|error| error.to_string())?;
     if !output.success {
@@ -869,7 +883,7 @@ fn load_gitlab_task_options(
     .filter_map(|value| value.get("name").and_then(Value::as_str).map(str::to_owned))
     .take(MAX_ITEMS)
     .collect();
-    let assignees = glab_api(
+    let members = glab_api(
         &root,
         &identity.host,
         &format!(
@@ -878,15 +892,22 @@ fn load_gitlab_task_options(
         ),
     )?
     .into_iter()
+    .filter_map(gitlab_member_option)
+    .take(MAX_ITEMS)
+    .collect::<Vec<_>>();
+    let branches = glab_api(
+        &root,
+        &identity.host,
+        &format!(
+            "projects/{}/repository/branches?per_page=100",
+            encode_path(&identity.project_path)
+        ),
+    )?
+    .into_iter()
     .filter_map(|value| {
-        let id = value.get("id").and_then(Value::as_u64)?;
-        let name = value
-            .get("username")
-            .and_then(Value::as_str)
-            .or_else(|| value.get("name").and_then(Value::as_str))?
-            .trim();
+        let name = value.get("name").and_then(Value::as_str)?.trim();
         (!name.is_empty()).then(|| TaskOption {
-            id: id.to_string(),
+            id: name.to_owned(),
             name: name.to_owned(),
         })
     })
@@ -894,8 +915,23 @@ fn load_gitlab_task_options(
     .collect();
     Ok(TaskOptionsEnvelope {
         labels,
-        assignees,
+        assignees: members.clone(),
+        branches,
+        reviewers: members,
         error: None,
+    })
+}
+
+fn gitlab_member_option(value: Value) -> Option<TaskOption> {
+    let id = value.get("id").and_then(Value::as_u64)?;
+    let name = value
+        .get("username")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("name").and_then(Value::as_str))?
+        .trim();
+    (!name.is_empty()).then(|| TaskOption {
+        id: id.to_string(),
+        name: name.to_owned(),
     })
 }
 

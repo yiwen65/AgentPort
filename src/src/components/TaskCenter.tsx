@@ -25,6 +25,7 @@ type TaskMutationFields = {
   body?: string;
   labels?: string[];
   assignees?: string[];
+  reviewers?: string[];
   state?: string;
   head?: string;
   base?: string;
@@ -299,12 +300,14 @@ function useTasks(projectId: string | null, provider: Provider | null, open: boo
 type TaskOptionState = {
   labels: TaskOption[];
   assignees: TaskOption[];
+  branches: TaskOption[];
+  reviewers: TaskOption[];
   loading: boolean;
   error: string | null;
 };
 
 function emptyTaskOptions(): TaskOptionState {
-  return { labels: [], assignees: [], loading: false, error: null };
+  return { labels: [], assignees: [], branches: [], reviewers: [], loading: false, error: null };
 }
 
 function useTaskOptions(projectId: string | null, provider: Provider | null, open: boolean): TaskOptionState {
@@ -325,18 +328,21 @@ function useTaskOptions(projectId: string | null, provider: Provider | null, ope
       const labels = Array.isArray(record?.labels)
         ? [...new Set(record.labels.filter((label): label is string => typeof label === "string" && Boolean(label.trim())).map((label) => label.trim()))].map((label) => ({ id: label, name: label }))
         : [];
-      const assignees = Array.isArray(record?.assignees)
-        ? record.assignees.flatMap((item) => {
+      const parseOptions = (raw: unknown): TaskOption[] => Array.isArray(raw)
+        ? raw.flatMap((item) => {
           const option = asRecord(item);
           const id = option && (typeof option.id === "string" || typeof option.id === "number") ? String(option.id) : "";
           const name = option && typeof option.name === "string" ? option.name.trim() : "";
           return id && name ? [{ id, name }] : [];
         })
         : [];
-      setState({ labels, assignees, loading: false, error: responseError(value) });
+      const assignees = parseOptions(record?.assignees);
+      const branches = parseOptions(record?.branches);
+      const reviewers = parseOptions(record?.reviewers);
+      setState({ labels, assignees, branches, reviewers, loading: false, error: responseError(value) });
     }).catch((reason: unknown) => {
       if (cancelled) return;
-      setState({ labels: [], assignees: [], loading: false, error: errorText(reason) });
+      setState({ labels: [], assignees: [], branches: [], reviewers: [], loading: false, error: errorText(reason) });
     });
     return () => { cancelled = true; };
   }, [open, projectId, provider]);
@@ -566,6 +572,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const [composerBase, setComposerBase] = useState("main");
   const [composerLabels, setComposerLabels] = useState<string[]>([]);
   const [composerAssignees, setComposerAssignees] = useState<string[]>([]);
+  const [composerReviewers, setComposerReviewers] = useState<string[]>([]);
   const [composerImageOpen, setComposerImageOpen] = useState(false);
   const [composerImageUrl, setComposerImageUrl] = useState("");
   const [composerImageAlt, setComposerImageAlt] = useState("");
@@ -625,6 +632,13 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   }, [activeProjectId, open]);
   const visibleProvider = resolvedProvider;
   const taskOptions = useTaskOptions(activeProjectId, visibleProvider, open);
+  useEffect(() => {
+    if (!composerKind || (composerKind !== "pull_request" && composerKind !== "merge_request") || taskOptions.branches.length === 0) return;
+    setComposerBase((current) => taskOptions.branches.some((option) => option.id === current)
+      ? current
+      : taskOptions.branches.find((option) => option.id === "main")?.id ?? taskOptions.branches[0].id);
+    setComposerHead((current) => taskOptions.branches.some((option) => option.id === current) ? current : "");
+  }, [composerKind, taskOptions.branches]);
   const activeItems = visibleProvider ? items[activeScope] : [];
   const activeScopeMeta = scopeMeta(activeScope);
   const activeError = error ?? scopeErrors[activeScope];
@@ -672,6 +686,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           state: fields.state,
           labels: fields.labels,
           assignees: fields.assignees,
+          reviewers: fields.reviewers,
           reviewEvent: fields.reviewEvent,
         })
         : await api.mutateGitlabTask(activeProjectId, {
@@ -685,6 +700,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           state: fields.state,
           labels: fields.labels,
           assignees: fields.assignees,
+          reviewers: fields.reviewers,
           reviewEvent: fields.reviewEvent,
         });
       if (outcome.status === "succeeded") {
@@ -699,6 +715,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           setComposerBase("main");
           setComposerLabels([]);
           setComposerAssignees([]);
+          setComposerReviewers([]);
           setComposerImageOpen(false);
           setComposerImageUrl("");
           setComposerImageAlt("");
@@ -798,6 +815,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
       body: composerBody,
       labels: composerLabels,
       assignees: composerAssignees,
+      reviewers: composerReviewers,
     };
     if (composerKind === "pull_request") {
       fields.head = composerHead.trim();
@@ -864,6 +882,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     setComposerBase("main");
     setComposerLabels([]);
     setComposerAssignees([]);
+    setComposerReviewers([]);
     setComposerImageOpen(false);
     setComposerImageUrl("");
     setComposerImageAlt("");
@@ -1058,7 +1077,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
             </header>
             <div className="task-center-composer-body">
               <label>Title<input value={composerTitle} onChange={(event) => setComposerTitle(event.target.value)} placeholder="Short summary" maxLength={256} required autoFocus /></label>
-              {(composerKind === "pull_request" || composerKind === "merge_request") ? <div className="task-center-composer-grid"><label>{composerKind === "pull_request" ? "Head branch" : "Source branch"}<input value={composerHead} onChange={(event) => setComposerHead(event.target.value)} required /></label><label>{composerKind === "pull_request" ? "Base branch" : "Target branch"}<input value={composerBase} onChange={(event) => setComposerBase(event.target.value)} required /></label></div> : null}
+              {(composerKind === "pull_request" || composerKind === "merge_request") ? <div className="task-center-composer-grid"><TaskOptionPicker label={composerKind === "pull_request" ? "Head branch" : "Source branch"} options={taskOptions.branches} selected={composerHead ? [composerHead] : []} onChange={(values) => setComposerHead(values[0] ?? "")} loading={taskOptions.loading} placeholder="Choose origin branch" multiple={false} /><TaskOptionPicker label={composerKind === "pull_request" ? "Base branch" : "Target branch"} options={taskOptions.branches} selected={composerBase ? [composerBase] : []} onChange={(values) => setComposerBase(values[0] ?? "")} loading={taskOptions.loading} placeholder="Choose origin branch" multiple={false} /></div> : null}
               <div className="task-center-composer-field"><div>Description <span className="task-center-composer-hint">optional, rendered Markdown</span></div>
                 <div className="task-center-markdown-editor">
                   <div className="task-center-markdown-toolbar" role="toolbar" aria-label="Markdown formatting">
@@ -1081,8 +1100,9 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               {composerImageOpen ? <div className="task-center-image-insert"><input value={composerImageAlt} onChange={(event) => setComposerImageAlt(event.target.value)} placeholder="Image alt text" aria-label="Image alt text" /><input value={composerImageUrl} onChange={(event) => setComposerImageUrl(event.target.value)} placeholder="https://… image URL" aria-label="Image URL" /><button type="button" onClick={insertComposerImage}>Insert image</button></div> : null}
               {composerUploading ? <p className="task-center-composer-status" role="status">Uploading image… it will appear in the editor when ready.</p> : null}
               {composerError ? <p className="task-center-composer-error" role="alert">{composerError}</p> : null}
-              {taskOptions.error ? <p className="task-center-composer-status" role="status">Repository labels and assignees are unavailable: {taskOptions.error}</p> : null}
+              {taskOptions.error ? <p className="task-center-composer-status" role="status">Repository labels, branches, assignees, and reviewers are unavailable: {taskOptions.error}</p> : null}
               <div className="task-center-composer-grid"><TaskOptionPicker label="Labels" options={taskOptions.labels} selected={composerLabels} onChange={setComposerLabels} loading={taskOptions.loading} placeholder="Choose repository labels" /><TaskOptionPicker label="Assignees" options={taskOptions.assignees} selected={composerAssignees} onChange={setComposerAssignees} loading={taskOptions.loading} placeholder="Choose repository assignees" /></div>
+              {(composerKind === "pull_request" || composerKind === "merge_request") ? <div className="task-center-composer-grid"><TaskOptionPicker label="Reviewers" options={taskOptions.reviewers} selected={composerReviewers} onChange={setComposerReviewers} loading={taskOptions.loading} placeholder="Choose repository reviewers" /></div> : null}
             </div>
             <footer className="task-center-composer-foot"><button type="button" className="task-center-composer-cancel" onClick={() => setComposerKind(null)} disabled={mutationBusy || composerUploading}>Cancel</button><button type="submit" className="task-center-composer-submit" disabled={mutationBusy || composerUploading || composerBody.length > 20_000 || !composerTitle.trim() || ((composerKind === "pull_request" || composerKind === "merge_request") && (!composerHead.trim() || !composerBase.trim()))}>{mutationBusy ? "Creating…" : composerUploading ? "Uploading…" : "Create"}</button></footer>
           </form>

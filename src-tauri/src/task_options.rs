@@ -19,6 +19,8 @@ pub struct TaskOptionsError {
 pub struct TaskOptionsEnvelope {
     pub labels: Vec<String>,
     pub assignees: Vec<TaskOption>,
+    pub branches: Vec<TaskOption>,
+    pub reviewers: Vec<TaskOption>,
     pub error: Option<TaskOptionsError>,
 }
 
@@ -27,6 +29,8 @@ impl TaskOptionsEnvelope {
         Self {
             labels: Vec::new(),
             assignees: Vec::new(),
+            branches: Vec::new(),
+            reviewers: Vec::new(),
             error: Some(TaskOptionsError {
                 code: code.into(),
                 message: message.into(),

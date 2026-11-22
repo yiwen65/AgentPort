@@ -593,6 +593,8 @@ export interface TaskOptionsError {
 export interface TaskOptionsEnvelope {
   labels: string[];
   assignees: TaskOption[];
+  branches: TaskOption[];
+  reviewers: TaskOption[];
   error: TaskOptionsError | null;
 }
 
@@ -669,6 +671,7 @@ export interface GithubTaskMutationRequest {
   state?: string;
   labels?: string[];
   assignees?: string[];
+  reviewers?: string[];
   reviewEvent?: string;
   mergeMethod?: string;
   expectedRevision?: string;
@@ -717,6 +720,7 @@ export interface GitlabTaskMutationRequest {
   state?: string;
   labels?: string[];
   assignees?: string[];
+  reviewers?: string[];
   expectedRevision?: string;
   reviewEvent?: string;
 }
