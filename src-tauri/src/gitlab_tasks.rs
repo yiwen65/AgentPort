@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 use tauri::State;
 
 use crate::AppState;
+use agentport_core::task_remote::{
+    is_valid_project_path, parse_remote, provider_for_host, resolve_main_remote, TaskProvider,
+};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_ITEMS: usize = 50;
@@ -658,68 +661,39 @@ fn load_tasks(
 }
 
 fn gitlab_remote(root: &str) -> Result<(RemoteIdentity, String), (&'static str, String)> {
-    // Match GitHub resolution: use the remote configured for branch.main,
-    // falling back to origin; do not select an unrelated upstream remote.
-    let configured = command_text(
-        "git",
-        &["-C", root, "config", "--get", "branch.main.remote"],
-        None,
-    )
-    .ok()
-    .filter(|name| !name.is_empty())
-    .unwrap_or_else(|| "origin".into());
-    let url = command_text("git", &["-C", root, "remote", "get-url", &configured], None)
-        .map_err(|error| ("git_remote_failed", error))?;
-    if let Some(identity) = parse_gitlab_remote(&url) {
-        return Ok((identity, url));
+    let remote = resolve_main_remote(root).map_err(|message| {
+        (
+            "gitlab_remote_required",
+            format!("The origin/main upstream has no supported GitLab remote: {message}"),
+        )
+    })?;
+    if provider_for_host(&remote.host) != Some(TaskProvider::Gitlab) {
+        return Err((
+            "gitlab_remote_required",
+            "The origin/main upstream is not a recognized GitLab host".into(),
+        ));
     }
-    Err((
+    let identity = parse_gitlab_remote(&remote.canonical_url()).ok_or((
         "gitlab_remote_required",
-        format!("The main branch upstream ({configured}) has no supported GitLab remote"),
-    ))
+        "The origin/main upstream is not a supported GitLab repository".into(),
+    ))?;
+    Ok((identity, remote.canonical_url()))
 }
 
 fn parse_gitlab_remote(remote: &str) -> Option<RemoteIdentity> {
-    let remote = remote.trim();
-    let (host, path) = if let Some(rest) = remote
-        .strip_prefix("https://")
-        .or_else(|| remote.strip_prefix("http://"))
-    {
-        let (host, path) = rest.split_once('/')?;
-        (host.rsplit('@').next()?, path)
-    } else if let Some(rest) = remote.strip_prefix("ssh://") {
-        let (host, path) = rest.split_once('/')?;
-        (host.rsplit('@').next()?.split(':').next()?, path)
-    } else if let Some(rest) = remote.strip_prefix("git@") {
-        rest.split_once(':')?
-    } else {
-        return None;
-    };
-    let path = path
-        .split(['?', '#'])
-        .next()?
-        .trim_matches('/')
-        .strip_suffix(".git")
-        .unwrap_or(path.trim_matches('/'));
-    let mut pieces = path.rsplitn(2, '/');
-    let name = pieces.next()?.trim();
-    let namespace = pieces.next()?.trim();
-    if host.is_empty() || name.is_empty() || namespace.is_empty() || !valid_path(path) {
+    let remote = parse_remote(remote)?;
+    if !is_valid_project_path(&remote.path) {
         return None;
     }
+    let mut pieces = remote.path.rsplitn(2, '/');
+    let name = pieces.next()?.to_owned();
+    let namespace = pieces.next()?.to_owned();
     Some(RemoteIdentity {
-        host: host.to_lowercase(),
+        host: remote.host,
         project_path: format!("{namespace}/{name}"),
-        namespace: namespace.into(),
-        name: name.into(),
+        namespace,
+        name,
     })
-}
-
-fn valid_path(path: &str) -> bool {
-    path.len() <= 512
-        && !path
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
 }
 
 fn encode_path(value: &str) -> String {

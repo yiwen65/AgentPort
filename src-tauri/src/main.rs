@@ -5253,6 +5253,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             markdown_images::markdown_image_fetch,
             markdown_images::markdown_image_validate,
+            github_tasks::detect_task_provider,
             github_tasks::list_github_tasks,
             github_tasks::get_github_task,
             github_tasks::mutate_github_task,

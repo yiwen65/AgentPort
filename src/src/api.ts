@@ -57,6 +57,7 @@ import type {
   GitResolvedFile,
   GitStateInvalidated,
   GitWorkspaceCommandError,
+  TaskProviderDetection,
   GithubTaskEnvelope,
   GithubTaskScope,
   GithubTaskDetailEnvelope,
@@ -263,6 +264,8 @@ export type BackupVerifyResult = {
 
 export const localApi = {
   boot: () => invoke<BootInfo>("boot"),
+  detectTaskProvider: (projectId: string) =>
+    invoke<TaskProviderDetection>("detect_task_provider", { projectId }),
   listProjects: (activeSession: string | null) =>
     invoke<ProjectView[]>("list_projects", { activeSession }),
   listGithubTasks: (projectId: string, scope: GithubTaskScope) =>

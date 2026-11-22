@@ -33,6 +33,7 @@ pub mod search;
 pub mod secrets;
 pub mod state;
 pub mod screen_detection;
+pub mod task_remote;
 pub mod timeline;
 
 pub use error::{CoreError, Result};

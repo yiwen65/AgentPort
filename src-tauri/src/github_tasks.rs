@@ -13,9 +13,36 @@ use std::time::{Duration, Instant};
 use tauri::State;
 
 use crate::AppState;
+use agentport_core::task_remote::{
+    github_repository, parse_remote, provider_for_host, resolve_main_remote, TaskProvider,
+};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_ITEMS: usize = 50;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProviderDetection {
+    pub provider: Option<String>,
+    pub host: Option<String>,
+    pub remote_url: Option<String>,
+    pub repository: Option<String>,
+    pub error_code: Option<String>,
+    pub error: Option<String>,
+}
+
+impl TaskProviderDetection {
+    fn failed(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            provider: None,
+            host: None,
+            remote_url: None,
+            repository: None,
+            error_code: Some(code.into()),
+            error: Some(message.into()),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -315,6 +342,22 @@ struct CommandOutput {
     success: bool,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+#[tauri::command]
+pub async fn detect_task_provider(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> std::result::Result<TaskProviderDetection, String> {
+    let paths = state.paths.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        detect_task_provider_blocking(&paths, &project_id)
+    })
+    .await;
+    Ok(match result {
+        Ok(value) => value,
+        Err(error) => TaskProviderDetection::failed("backend_unavailable", error.to_string()),
+    })
 }
 
 #[tauri::command]
@@ -1171,30 +1214,83 @@ fn git_root(checkout: &str) -> Result<String, (&'static str, String)> {
 }
 
 fn github_remote(root: &str) -> Result<(RemoteIdentity, String), (&'static str, String)> {
-    // Task source follows the repository's main branch upstream: prefer the
-    // remote configured by branch.main.remote, then the conventional origin.
-    let configured = run_command(
-        "git",
-        ["-C", root, "config", "--get", "branch.main.remote"],
-        None,
-    )
-    .ok()
-    .filter(|output| output.success)
-    .map(|output| text_output(&output.stdout))
-    .filter(|name| !name.is_empty())
-    .unwrap_or_else(|| "origin".into());
-    let output = run_command("git", ["-C", root, "remote", "get-url", &configured], None)
-        .map_err(|message| ("git_remote_failed", message))?;
-    if output.success {
-        let remote_url = text_output(&output.stdout);
-        if let Some(identity) = parse_github_remote(&remote_url) {
-            return Ok((identity, remote_url));
-        }
-    }
-    Err((
+    let remote = resolve_main_remote(root).map_err(|message| {
+        (
+            "github_remote_required",
+            format!("The origin/main upstream has no supported github.com remote: {message}"),
+        )
+    })?;
+    let identity = parse_github_remote(&remote.canonical_url()).ok_or((
         "github_remote_required",
-        format!("The main branch upstream ({configured}) has no supported github.com remote"),
-    ))
+        "The origin/main upstream is not a supported github.com repository".into(),
+    ))?;
+    Ok((identity, remote.canonical_url()))
+}
+
+fn detect_task_provider_blocking(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+) -> TaskProviderDetection {
+    let db = match Db::open_read(paths) {
+        Ok(db) => db,
+        Err(error) => {
+            return TaskProviderDetection::failed("project_read_failed", error.to_string())
+        }
+    };
+    let project = match db.get_project(project_id) {
+        Ok(project) => project,
+        Err(error) => return TaskProviderDetection::failed("project_not_found", error.to_string()),
+    };
+    let checkout = project
+        .git_root_path
+        .as_deref()
+        .unwrap_or(&project.root_path);
+    let root = match git_root(checkout) {
+        Ok(root) => root,
+        Err(error) => return TaskProviderDetection::failed(error.0, error.1),
+    };
+    let remote = match resolve_main_remote(&root) {
+        Ok(remote) => remote,
+        Err(error) => return TaskProviderDetection::failed("remote_unavailable", error),
+    };
+    let provider = match provider_for_host(&remote.host) {
+        Some(provider) => provider,
+        None => {
+            let canonical_url = remote.canonical_url();
+            let host = remote.host.clone();
+            let path = remote.path.clone();
+            let mut detection = TaskProviderDetection::failed(
+                "unsupported_provider",
+                format!("No supported task provider is recognized for origin/main host {host}"),
+            );
+            detection.host = Some(host);
+            detection.remote_url = Some(canonical_url);
+            detection.repository = Some(path);
+            return detection;
+        }
+    };
+    if provider == TaskProvider::Github && github_repository(&remote.path).is_none() {
+        let canonical_url = remote.canonical_url();
+        let host = remote.host.clone();
+        let path = remote.path.clone();
+        let mut detection = TaskProviderDetection::failed(
+            "invalid_repository",
+            "The origin/main remote is not a valid GitHub owner/repository path",
+        );
+        detection.host = Some(host);
+        detection.remote_url = Some(canonical_url);
+        detection.repository = Some(path);
+        return detection;
+    }
+    let canonical_url = remote.canonical_url();
+    TaskProviderDetection {
+        provider: Some(provider.as_str().into()),
+        host: Some(remote.host),
+        remote_url: Some(canonical_url),
+        repository: Some(remote.path),
+        error_code: None,
+        error: None,
+    }
 }
 
 fn fetch_issues(
@@ -1403,56 +1499,15 @@ fn truncate_message(message: String) -> String {
 /// Parse only GitHub's public repository URL forms; credentials and arbitrary
 /// hosts never enter the returned identity.
 fn parse_github_remote(remote: &str) -> Option<RemoteIdentity> {
-    let remote = remote.trim();
-    let (host, path) = if let Some(rest) = remote.strip_prefix("https://") {
-        let (host, path) = rest.split_once('/')?;
-        (host.split('@').next_back()?, path)
-    } else if let Some(rest) = remote.strip_prefix("http://") {
-        let (host, path) = rest.split_once('/')?;
-        (host.split('@').next_back()?, path)
-    } else if let Some(rest) = remote.strip_prefix("ssh://") {
-        let (host, path) = rest.split_once('/')?;
-        (
-            host.split('@')
-                .next_back()?
-                .split(':')
-                .next()
-                .unwrap_or(host),
-            path,
-        )
-    } else if let Some(rest) = remote.strip_prefix("git@") {
-        let (host, path) = rest.split_once(':')?;
-        (host, path)
-    } else {
-        return None;
-    };
-    if !host.eq_ignore_ascii_case("github.com") {
+    let remote = parse_remote(remote)?;
+    if !remote.host.eq_ignore_ascii_case("github.com") {
         return None;
     }
-    let path = path
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(path)
-        .trim_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    let mut segments = path.split('/');
-    let owner = segments.next()?.trim();
-    let name = segments.next()?.trim();
-    if segments.next().is_some() || !valid_repo_part(owner) || !valid_repo_part(name) {
+    let (owner, name) = github_repository(&remote.path)?;
+    if owner.len() > 100 || name.len() > 100 {
         return None;
     }
-    Some(RemoteIdentity {
-        owner: owner.into(),
-        name: name.into(),
-    })
-}
-
-fn valid_repo_part(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 100
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    Some(RemoteIdentity { owner, name })
 }
 
 impl GithubTaskDetailEnvelope {

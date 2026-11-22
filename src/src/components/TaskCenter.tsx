@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { findSession, useStore } from "../store";
+import type { TaskProviderDetection } from "../types";
 
 type Provider = "github" | "gitlab";
 type TaskScope = "issues" | "pulls" | "projects" | "boards";
@@ -180,7 +181,7 @@ function errorLabel(message: string | null): string {
   }
 }
 
-function useTasks(projectId: string | null, provider: Provider, open: boolean) {
+function useTasks(projectId: string | null, provider: Provider | null, open: boolean) {
   const [items, setItems] = useState<TaskItems>(emptyItems);
   const [repository, setRepository] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -192,6 +193,14 @@ function useTasks(projectId: string | null, provider: Provider, open: boolean) {
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    if (!provider) {
+      setItems(emptyItems());
+      setRepository(null);
+      setScopeErrors(emptyErrors());
+      setError(null);
+      setLoading(false);
+      return () => { cancelled = true; };
+    }
     const supported = supportedScopes(provider);
     if (!projectId) {
       setItems(emptyItems());
@@ -408,8 +417,26 @@ function TaskLoadingState() {
   );
 }
 
+function TaskDetectionState({ loading, detection }: { loading: boolean; detection: TaskProviderDetection | null }) {
+  const title = loading ? "Finding provider" : detection?.errorCode === "unsupported_provider" ? "Unsupported provider" : "No repository detected";
+  const message = loading
+    ? "Reading the origin/main upstream for this project…"
+    : detection?.error ?? "Select a project with a supported GitHub or GitLab origin/main remote.";
+  return (
+    <div className="task-center-state" role={loading ? "status" : "alert"}>
+      <span className="task-center-state-icon task-center-state-icon-quiet" aria-hidden="true">{loading ? "⌁" : "!"}</span>
+      <h3>{title}</h3>
+      <p>{message}</p>
+    </div>
+  );
+}
+
 export default function TaskCenter({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [provider, setProvider] = useState<Provider>("github");
+  const [provider, setProvider] = useState<Provider | null>(null);
+  const [providerProjectId, setProviderProjectId] = useState<string | null>(null);
+  const [detectionReady, setDetectionReady] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [detection, setDetection] = useState<TaskProviderDetection | null>(null);
   const activeProjectId = useStore((state) => {
     const session = findSession(state.projects, state.activeSessionId);
     return session?.projectId ?? null;
@@ -419,19 +446,52 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const [query, setQuery] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
   const shellRef = useRef<HTMLElement>(null);
-  const { items, repository, loading, error, scopeErrors, refresh } = useTasks(activeProjectId, provider, open);
+  const resolvedProvider = detectionReady && providerProjectId === activeProjectId ? provider : null;
+  const { items, repository, loading, error, scopeErrors, refresh } = useTasks(activeProjectId, resolvedProvider, open);
   useEffect(() => {
-    if (!open || provider !== "github") return;
-    const errors = Object.values(scopeErrors).filter((value): value is string => Boolean(value)).join(" ").toLowerCase();
-    if (errors.includes("github_remote_required") || errors.includes("no supported github")) {
-      setProvider("gitlab");
+    if (!open) {
+      setDetectionReady(false);
+      return;
+    }
+    let cancelled = false;
+    setDetectionReady(false);
+    setProvider(null);
+    setProviderProjectId(null);
+    setDetection(null);
+    if (!activeProjectId) {
+      setDetecting(false);
+      return () => { cancelled = true; };
+    }
+    setDetecting(true);
+    void api.detectTaskProvider(activeProjectId).then((detected) => {
+      if (cancelled) return;
+      setDetection(detected);
+      setProvider(detected.provider);
+      setProviderProjectId(detected.provider ? activeProjectId : null);
+      setDetectionReady(Boolean(detected.provider));
       setActiveScope("issues");
       setSelectedId(null);
-    }
-  }, [open, provider, scopeErrors]);
-  const activeItems = items[activeScope];
+      setDetecting(false);
+    }).catch((reason: unknown) => {
+      if (cancelled) return;
+      setDetectionReady(false);
+      setDetection({
+        provider: null,
+        host: null,
+        remoteUrl: null,
+        repository: null,
+        errorCode: "detection_failed",
+        error: errorText(reason),
+      });
+      setDetecting(false);
+    });
+    return () => { cancelled = true; };
+  }, [activeProjectId, open]);
+  const visibleProvider = resolvedProvider;
+  const activeItems = visibleProvider ? items[activeScope] : [];
   const activeScopeMeta = scopeMeta(activeScope);
   const activeError = error ?? scopeErrors[activeScope];
+  const detectionError = detection?.error ?? null;
   const normalizedQuery = query.trim().toLowerCase();
   const filteredItems = useMemo(() => {
     if (!normalizedQuery) return activeItems;
@@ -485,20 +545,26 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   }, [selectedId, selectedTask]);
 
   if (!open) return null;
-  const supported = supportedScopes(provider);
+  const supported = visibleProvider ? supportedScopes(visibleProvider) : [];
+  const providerName = visibleProvider ? providerLabels[visibleProvider] : "Task provider";
   const chooseScope = (scope: TaskScope) => {
     setActiveScope(scope);
     setSelectedId(null);
     setQuery("");
   };
-  const titleRepository = repository ?? "No repository detected";
-  const statusText = error
-    ? errorLabel(error)
-    : activeError
-      ? errorLabel(activeError)
-      : loading
-        ? "Syncing"
-        : "Up to date";
+  const titleRepository = repository ?? detection?.repository ?? "No repository detected";
+  const statusText = detecting
+    ? "Detecting source"
+    : detectionError && !visibleProvider
+      ? errorLabel(detectionError)
+      : error
+        ? errorLabel(error)
+        : activeError
+          ? errorLabel(activeError)
+          : loading
+            ? "Syncing"
+            : "Up to date";
+  const statusMessage = detectionError ?? error ?? activeError;
 
   return (
     <div className="task-center-layer">
@@ -518,7 +584,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           </div>
           <div className="task-center-topbar-context">
             <span className="task-center-context-repository"><span className="task-center-context-dot" aria-hidden="true" />{titleRepository}</span>
-            <span className={`task-center-sync-status task-center-sync-status-${errorCategory(error ?? activeError)}`}><span aria-hidden="true" />{statusText}</span>
+            <span className={`task-center-sync-status task-center-sync-status-${errorCategory(statusMessage)}`}><span aria-hidden="true" />{statusText}</span>
           </div>
           <div className="task-center-topbar-actions">
             <button className="task-center-topbar-close" type="button" onClick={onClose}>Close <span aria-hidden="true">Esc</span></button>
@@ -526,7 +592,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
         </header>
 
         <div className="task-center-mobile-nav" aria-label="Task Hub navigation">
-          <span className="task-center-detected-provider"><ProviderMark provider={provider} /> {providerLabels[provider]}</span>
+          <span className="task-center-detected-provider">{visibleProvider ? <><ProviderMark provider={visibleProvider} /> {providerName}</> : detecting ? "Detecting source…" : "Unsupported source"}</span>
           <span className="task-center-mobile-nav-divider" aria-hidden="true" />
           {supported.map((scope) => (
             <button key={scope.id} type="button" aria-pressed={activeScope === scope.id} onClick={() => chooseScope(scope.id)}>
@@ -539,15 +605,15 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
           <aside className="task-center-source-rail" aria-label="Task sources">
             <div className="task-center-source-heading">Sources</div>
             <div className="task-center-source-list">
-              <div className="task-center-source-button is-active" aria-label={`Detected ${providerLabels[provider]} source`}>
-                <ProviderMark provider={provider} />
-                <span className="task-center-source-copy"><strong>{providerLabels[provider]}</strong><small>Detected from project remote</small></span>
-                <span className="task-center-source-chevron" aria-hidden="true">✓</span>
+              <div className="task-center-source-button is-active" aria-label={visibleProvider ? `Detected ${providerName} source` : "Task provider detection"}>
+                {visibleProvider ? <ProviderMark provider={visibleProvider} /> : <span className="task-center-provider-mark task-center-provider-mark-unknown" aria-hidden="true">?</span>}
+                <span className="task-center-source-copy"><strong>{visibleProvider ? providerName : detecting ? "Detecting…" : "Unsupported remote"}</strong><small>{visibleProvider ? "Detected from origin/main" : detection?.host ?? "GitHub or GitLab only"}</small></span>
+                {visibleProvider ? <span className="task-center-source-chevron" aria-hidden="true">✓</span> : null}
               </div>
             </div>
             <div className="task-center-source-divider" />
             <div className="task-center-source-heading">Views</div>
-            <nav className="task-center-scope-list" aria-label={`${providerLabels[provider]} task views`}>
+            <nav className="task-center-scope-list" aria-label={`${providerName} task views`}>
               {supported.map((scope) => {
                 const count = items[scope.id].length;
                 const scopeError = scopeErrors[scope.id];
@@ -572,10 +638,10 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
             </div>
           </aside>
 
-          <main className="task-center-list-pane" aria-label={`${providerLabels[provider]} ${activeScopeMeta.label}`}>
+          <main className="task-center-list-pane" aria-label={`${providerName} ${activeScopeMeta.label}`}>
             <header className="task-center-list-head">
               <div className="task-center-list-heading">
-                <span className="task-center-eyebrow"><ProviderMark provider={provider} /> {providerLabels[provider]} / {activeScopeMeta.shortLabel}</span>
+                <span className="task-center-eyebrow">{visibleProvider ? <><ProviderMark provider={visibleProvider} /> {providerName} / {activeScopeMeta.shortLabel}</> : detecting ? "Detecting source" : "Unsupported source"}</span>
                 <h2>{activeScopeMeta.label}</h2>
                 <p>{activeScopeMeta.description} <span aria-hidden="true">·</span> {filteredItems.length} of {activeItems.length}</p>
               </div>
@@ -599,6 +665,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
             </div>
             {loading && activeItems.length > 0 ? <div className="task-center-stale-banner" role="status"><span className="task-center-stale-dot" aria-hidden="true" />Showing cached results while this view refreshes.</div> : null}
             <div className="task-center-list-body">
+              {!visibleProvider ? <TaskDetectionState loading={detecting} detection={detection} /> : <>
               {loading && activeItems.length === 0 ? <TaskLoadingState /> : null}
               {!loading && activeError ? (
                 <div className="task-center-state task-center-state-error" role="alert">
@@ -638,10 +705,11 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
                   ))}
                 </div>
               ) : null}
+              </>}
             </div>
           </main>
 
-          {selectedTask ? <TaskDetail task={selectedTask} scope={activeScope} provider={provider} projectId={activeProjectId} onClose={() => setSelectedId(null)} /> : <aside className="task-center-detail task-center-detail-empty" aria-label="Task details"><div className="task-center-detail-empty-content"><span aria-hidden="true">↖</span><h3>Select a task</h3><p>Choose an item from the list to inspect its details.</p></div></aside>}
+          {selectedTask && visibleProvider ? <TaskDetail task={selectedTask} scope={activeScope} provider={visibleProvider} projectId={activeProjectId} onClose={() => setSelectedId(null)} /> : <aside className="task-center-detail task-center-detail-empty" aria-label="Task details"><div className="task-center-detail-empty-content"><span aria-hidden="true">↖</span><h3>{visibleProvider ? "Select a task" : "Task details unavailable"}</h3><p>{visibleProvider ? "Choose an item from the list to inspect its details." : "A supported provider must be detected first."}</p></div></aside>}
         </div>
       </section>
     </div>

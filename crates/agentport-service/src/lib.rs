@@ -1337,36 +1337,40 @@ pub struct CoreService {
     live_snapshots: LiveSnapshotCache,
 }
 
-fn task_remote(root: &str) -> std::result::Result<(String, String, String), String> {
-    let configured = std::process::Command::new("git")
-        .args(["-C", root, "config", "--get", "branch.main.remote"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|remote| !remote.is_empty())
-        .unwrap_or_else(|| "origin".into());
-    let output = std::process::Command::new("git")
-        .args(["-C", root, "remote", "get-url", &configured])
-        .output()
-        .map_err(|error| format!("git remote unavailable: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("main branch upstream {configured} is unavailable"));
+fn task_remote(
+    root: &str,
+    provider: &str,
+) -> std::result::Result<(String, String, String), String> {
+    let remote = agentport_core::task_remote::resolve_main_remote(root)?;
+    let expected = match provider {
+        "github" => Some(agentport_core::task_remote::TaskProvider::Github),
+        "gitlab" => Some(agentport_core::task_remote::TaskProvider::Gitlab),
+        _ => None,
+    };
+    if agentport_core::task_remote::provider_for_host(&remote.host) != expected {
+        return Err("origin/main remote does not match the requested task provider".into());
     }
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let (host, path) = if let Some(rest) = raw.strip_prefix("git@") {
-        rest.split_once(':').map(|(host, path)| (host.to_lowercase(), path.to_string()))
-    } else if let Some(rest) = raw.strip_prefix("https://").or_else(|| raw.strip_prefix("http://")) {
-        rest.split_once('/').map(|(host, path)| (host.to_lowercase(), path.to_string()))
-    } else {
-        None
-    }.ok_or_else(|| "unsupported remote URL".to_string())?;
-    let path = path.trim_matches('/').strip_suffix(".git").unwrap_or(path.trim_matches('/'));
-    let (namespace, name) = path.rsplit_once('/').ok_or_else(|| "remote has no repository path".to_string())?;
-    if namespace.is_empty() || name.is_empty() {
-        return Err("remote has no repository path".into());
-    }
-    Ok((host, namespace.to_string(), name.to_string()))
+    let (namespace, name) = match expected {
+        Some(agentport_core::task_remote::TaskProvider::Github) => {
+            let (owner, name) = agentport_core::task_remote::github_repository(&remote.path)
+                .ok_or_else(|| {
+                    "origin/main remote has no valid GitHub repository path".to_string()
+                })?;
+            (owner, name)
+        }
+        Some(agentport_core::task_remote::TaskProvider::Gitlab) => {
+            if !agentport_core::task_remote::is_valid_project_path(&remote.path) {
+                return Err("origin/main remote has no valid GitLab project path".into());
+            }
+            let (namespace, name) = remote
+                .path
+                .rsplit_once('/')
+                .ok_or_else(|| "origin/main remote has no repository path".to_string())?;
+            (namespace.to_string(), name.to_string())
+        }
+        None => return Err("unsupported task provider".into()),
+    };
+    Ok((remote.host, namespace, name))
 }
 
 fn task_path_encode(value: &str) -> String {
@@ -1443,7 +1447,8 @@ impl RemoteService for CoreService {
     fn list_tasks(&self, params: TaskListParams) -> Result<serde_json::Value> {
         let project = self.db.get_project(&params.project_id)?;
         let root = project.git_root_path.as_deref().unwrap_or(&project.root_path);
-        let remote = task_remote(root).map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
+        let remote = task_remote(root, &params.provider)
+            .map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
         let (host, namespace, name) = remote;
         let endpoint = match (params.provider.as_str(), params.scope.as_str()) {
             ("github", "issues") => format!("repos/{namespace}/{name}/issues?state=all&per_page=50&sort=updated&direction=desc"),
@@ -1469,7 +1474,8 @@ impl RemoteService for CoreService {
         }
         let project = self.db.get_project(&params.project_id)?;
         let root = project.git_root_path.as_deref().unwrap_or(&project.root_path);
-        let (host, namespace, name) = task_remote(root).map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
+        let (host, namespace, name) = task_remote(root, &params.provider)
+            .map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
         let number = params.payload.get("number").and_then(serde_json::Value::as_u64).unwrap_or(0);
         if number == 0 {
             return Err(ServiceError::InvalidRequest);
@@ -1501,7 +1507,8 @@ impl RemoteService for CoreService {
     fn task_detail(&self, params: TaskDetailParams) -> Result<serde_json::Value> {
         let project = self.db.get_project(&params.project_id)?;
         let root = project.git_root_path.as_deref().unwrap_or(&project.root_path);
-        let (host, namespace, name) = task_remote(root).map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
+        let (host, namespace, name) = task_remote(root, &params.provider)
+            .map_err(|error| ServiceError::Core(agentport_core::CoreError::Validation(error)))?;
         let scope = params.scope.as_deref().unwrap_or("issues");
         let endpoint = match (params.provider.as_str(), scope) {
             ("github", "pulls") => format!("repos/{namespace}/{name}/pulls/{}", params.item_id),

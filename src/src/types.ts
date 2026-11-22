@@ -569,6 +569,15 @@ export interface RestartResult {
 }
 
 /** Read-only GitHub task discovery scoped to one local AgentPort project. */
+export interface TaskProviderDetection {
+  provider: "github" | "gitlab" | null;
+  host: string | null;
+  remoteUrl: string | null;
+  repository: string | null;
+  errorCode: string | null;
+  error: string | null;
+}
+
 export type GithubTaskScope = "issues" | "pulls" | "projects";
 
 export interface GithubRepository {
