@@ -23,8 +23,17 @@ describe("markdown reader CSS", () => {
     expect(night).toContain("--term-text: #d8d3c8");
   });
 
-  it("lays out the outline rail and reading progress bar", () => {
+  it("lays out the outline rail and keeps item text in a stable full-width box", () => {
     expect(ruleBody(".doc-toc-rail")).toContain("width: 224px");
+    const list = ruleBody(".doc-toc-list");
+    expect(list).toContain("flex: 1 1 auto");
+    expect(list).toContain("min-height: 0");
+    const item = ruleBody(".doc-toc-item");
+    expect(item).toContain("flex: 0 0 auto");
+    expect(item).toContain("display: block");
+    expect(item).toContain("width: 100%");
+    expect(item).toContain("font-family: var(--font-ui)");
+    expect(item).toContain("font-size: 13px");
     expect(ruleBody(".doc-progress")).toContain("transform: scaleX(0)");
     expect(ruleBody(".doc-reading-layout")).toContain("display: flex");
   });

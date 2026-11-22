@@ -6369,6 +6369,8 @@ body.is-resizing-pane {
 
 .doc-toc-list {
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: column;
   gap: 1px;
   padding: 8px 6px 16px;
@@ -6376,10 +6378,17 @@ body.is-resizing-pane {
 }
 
 .doc-toc-item {
+  display: block;
+  flex: 0 0 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  width: 100%;
   border: none;
   background: transparent;
   color: var(--term-muted);
-  font-size: 12.5px;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
   line-height: 1.5;
   text-align: left;
   padding: 5px 10px;
