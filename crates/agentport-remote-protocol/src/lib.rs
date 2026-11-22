@@ -1374,6 +1374,21 @@ mod tests {
     }
 
     #[test]
+    fn task_mutation_rejects_credential_shaped_payloads() {
+        let params = TaskMutationParams {
+            provider: "github".into(),
+            project_id: "prj_1".into(),
+            operation: "comment".into(),
+            payload: serde_json::json!({ "body": "safe", "access_token": "must-not-cross-wire" }),
+            expected_revision: None,
+            idempotency_key: None,
+        };
+        assert!(params.contains_credential_fields());
+        let safe = TaskMutationParams { payload: serde_json::json!({ "body": "safe" }), ..params };
+        assert!(!safe.contains_credential_fields());
+    }
+
+    #[test]
     fn minor_negotiation_preserves_v1_0_and_caps_newer_clients() {
         assert_eq!(
             negotiate_version(ProtocolVersion { major: 1, minor: 0 }).unwrap(),
