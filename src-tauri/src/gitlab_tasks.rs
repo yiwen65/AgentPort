@@ -216,21 +216,198 @@ pub async fn mutate_gitlab_task(
     })
 }
 
+fn resolve_gitlab_checkout(
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+) -> Result<(String, GitlabTaskRepository, RemoteIdentity), String> {
+    let db = Db::open_read(paths).map_err(|error| error.to_string())?;
+    let project = db
+        .get_project(project_id)
+        .map_err(|error| error.to_string())?;
+    let checkout = project
+        .git_root_path
+        .as_deref()
+        .unwrap_or(&project.root_path);
+    let root = command_text(
+        "git",
+        &["-C", checkout, "rev-parse", "--show-toplevel"],
+        None,
+    )
+    .map_err(|error| format!("not_git_repository: {error}"))?;
+    let (identity, remote_url) = gitlab_remote(&root).map_err(|error| error.1)?;
+    let repository = GitlabTaskRepository {
+        host: identity.host.clone(),
+        namespace: identity.namespace.clone(),
+        name: identity.name.clone(),
+        remote_url,
+        project_path: identity.project_path.clone(),
+    };
+    Ok((root, repository, identity))
+}
+
 fn load_gitlab_detail(
-    _paths: &agentport_core::paths::AppPaths,
-    _project_id: &str,
-    _kind: &str,
-    _number: u64,
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+    kind: &str,
+    number: u64,
 ) -> Result<GitlabTaskDetailEnvelope, String> {
-    Err("GitLab detail endpoint is not available in this build".into())
+    let (root, repository, identity) = resolve_gitlab_checkout(paths, project_id)?;
+    let segment = if kind == "merge_request" {
+        "merge_requests"
+    } else {
+        "issues"
+    };
+    let endpoint = format!(
+        "projects/{}/{}/{}",
+        encode_path(&identity.project_path),
+        segment,
+        number
+    );
+    let value = glab_api(&root, &identity.host, &endpoint)
+        .map_err(|error| error.1)?
+        .into_iter()
+        .next()
+        .unwrap_or(Value::Null);
+    let detail = GitlabTaskDetail {
+        id: value
+            .get("id")
+            .and_then(Value::as_u64)
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| number.to_string()),
+        kind: kind.into(),
+        number,
+        title: value
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        state: value
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .into(),
+        url: value
+            .get("web_url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        author: value
+            .get("author")
+            .and_then(|v| v.get("username"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        updated_at: value
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        body: value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .into(),
+        draft: value.get("draft").and_then(Value::as_bool).unwrap_or(false),
+        merged: value.get("merged_at").is_some_and(|v| !v.is_null()),
+        labels: value
+            .get("labels")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        assignees: Vec::new(),
+        comments: Vec::new(),
+        reviews: Vec::new(),
+        checks: Vec::new(),
+        source_revision: value.get("sha").and_then(Value::as_str).map(str::to_owned),
+        repository,
+        partial: true,
+        warnings: vec![
+            "Comments, reviews, and checks are loaded on demand by the provider detail view."
+                .into(),
+        ],
+    };
+    Ok(GitlabTaskDetailEnvelope {
+        repository: Some(detail.repository.clone()),
+        capabilities: gitlab_capabilities(),
+        data: Some(detail),
+        error: None,
+    })
 }
 
 fn mutate_gitlab_task_blocking(
-    _paths: &agentport_core::paths::AppPaths,
-    _project_id: &str,
-    _request: GitlabTaskMutationRequest,
+    paths: &agentport_core::paths::AppPaths,
+    project_id: &str,
+    request: GitlabTaskMutationRequest,
 ) -> Result<GitlabTaskMutationOutcome, String> {
-    Err("GitLab mutation endpoint is not available in this build".into())
+    let (root, _repository, identity) = resolve_gitlab_checkout(paths, project_id)?;
+    let number = request.number;
+    let segment = if request.kind == "merge_request" {
+        "merge_requests"
+    } else {
+        "issues"
+    };
+    let (method, endpoint, field) = match request.operation.as_str() {
+        "comment" => (
+            "POST",
+            format!(
+                "projects/{}/{segment}/{number}/notes",
+                encode_path(&identity.project_path)
+            ),
+            request.body.unwrap_or_default(),
+        ),
+        "state" => (
+            "PUT",
+            format!(
+                "projects/{}/{segment}/{number}",
+                encode_path(&identity.project_path)
+            ),
+            request.state.unwrap_or_else(|| "opened".into()),
+        ),
+        "merge" => (
+            "PUT",
+            format!(
+                "projects/{}/merge_requests/{number}/merge",
+                encode_path(&identity.project_path)
+            ),
+            "".into(),
+        ),
+        _ => {
+            return Ok(GitlabTaskMutationOutcome::unknown(
+                "unsupported_operation",
+                "GitLab operation is unsupported".into(),
+            ))
+        }
+    };
+    let output = command_output(
+        "glab",
+        &[
+            "api",
+            "--hostname",
+            &identity.host,
+            "-X",
+            method,
+            &endpoint,
+            "--raw-field",
+            &format!("body={field}"),
+        ],
+        Some(&root),
+    )
+    .map_err(|error| error.to_string())?;
+    if !output.success {
+        return Ok(GitlabTaskMutationOutcome::unknown(
+            "gitlab_request_failed",
+            "GitLab mutation failed; read back required".into(),
+        ));
+    }
+    Ok(GitlabTaskMutationOutcome {
+        status: "succeeded".into(),
+        data: None,
+        error: None,
+        read_back_required: true,
+    })
 }
 
 impl GitlabTaskDetailEnvelope {
