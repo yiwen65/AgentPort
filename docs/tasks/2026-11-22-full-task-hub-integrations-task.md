@@ -188,14 +188,14 @@ Replace the initial compact GitHub Task Center with a full-screen AgentPort Task
 - 2026-11-22: User confirmed one-shot full scope: three-column high-end Task Hub, GitHub/GitLab desktop and remote writes, mobile read-only, local gh/glab credentials.
 - 2026-11-22: Batch 1 started with UI/provider operation owners.
 - 2026-11-22: Full-screen three-column Task Hub completed; frontend build passed.
-- 2026-11-22: GitHub/GitLab provider modules extended with detail/mutation DTOs; GitLab detail/mutation currently returns explicit unavailable until provider hooks are complete.
+- 2026-11-22: GitHub/GitLab provider modules extended with detail/mutation DTOs; GitLab detail now loads notes/approvals/pipelines and mutations cover labels/assignees/board moves with read-back attempts.
 - 2026-11-22: Remote registry/service/bridge capability and credential rejection paths added; CoreService now executes target-local provider list/detail/basic mutation operations.
 - 2026-11-22: Mobile read-only Task Hub completed and committed as `1dc2d51`.
-- 2026-11-22: Full integration remains partial; T-002 and T-005 are blocked.
+- 2026-11-22: Added remote credential payload hardening test; full cache/stale/partial adversarial suite remains outstanding.
 
 <!-- task-doc-section:final-validation -->
 ## Final validation result
 
 - Result: partial
-- Evidence: Full-screen UI build, Rust provider/protocol checks, mobile task tests/build, task-document validation, and debug App rebuild/screenshot passed. Scoped commit `0fa5d07`; mobile read-only commit `1dc2d51`.
-- Limitations: GitLab advanced review/checks/board operations and complete mutation read-back/security hardening remain incomplete; basic remote list/detail/comment/state/merge execution is now wired to target-local gh/glab.
+- Evidence: Full-screen UI build, Rust provider/protocol checks, mobile task tests/build, task-document validation, debug App rebuild/screenshot, GitLab advanced backend compilation, target-local remote execution, and credential payload tests passed. Commits include `0fa5d07`, `9687e27`, `959cdfb`, `59de2a9`, `d7a9afd`, and mobile `1dc2d51`.
+- Limitations: Full provider parity is not live-tested; GitLab advanced responses depend on glab/API availability; cache/stale/partial adversarial coverage remains incomplete.
