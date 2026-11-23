@@ -71,8 +71,6 @@ pub struct GithubTaskCapabilities {
     pub assignees: bool,
     pub reviews: bool,
     pub checks: bool,
-    pub projects: bool,
-    pub project_writes: bool,
     pub merge: bool,
 }
 
@@ -84,8 +82,6 @@ fn github_capabilities() -> GithubTaskCapabilities {
         assignees: true,
         reviews: true,
         checks: true,
-        projects: true,
-        project_writes: true,
         merge: true,
     }
 }
@@ -104,7 +100,6 @@ pub struct GithubRepository {
 pub enum GithubTaskData {
     Issues(Vec<GithubIssue>),
     Pulls(Vec<GithubPullRequest>),
-    Projects(Vec<GithubProject>),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,17 +135,6 @@ pub struct GithubPullRequest {
     pub review_statuses: Vec<String>,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GithubProject {
-    pub number: u64,
-    pub title: String,
-    pub url: Option<String>,
-    pub short_description: Option<String>,
-    pub updated_at: Option<String>,
-    pub closed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -223,11 +207,6 @@ pub struct GithubTaskMutationRequest {
     pub reviewers: Option<Vec<String>>,
     pub review_event: Option<String>,
     pub merge_method: Option<String>,
-    pub project_number: Option<u64>,
-    pub project_id: Option<String>,
-    pub item_id: Option<String>,
-    pub field_id: Option<String>,
-    pub field_value: Option<String>,
     pub expected_revision: Option<String>,
 }
 
@@ -308,45 +287,6 @@ struct LabelApi {
 #[derive(Debug, Deserialize)]
 struct HeadApi {
     sha: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlResponse {
-    data: Option<GraphQlData>,
-    errors: Option<Vec<GraphQlError>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlError {
-    message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlData {
-    repository: Option<GraphQlRepository>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlRepository {
-    #[serde(rename = "projectsV2")]
-    projects: GraphQlProjects,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlProjects {
-    nodes: Vec<Option<GraphQlProject>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphQlProject {
-    number: u64,
-    title: String,
-    url: Option<String>,
-    #[serde(rename = "shortDescription")]
-    short_description: Option<String>,
-    #[serde(rename = "updatedAt")]
-    updated_at: Option<String>,
-    closed: bool,
 }
 
 #[derive(Debug)]
@@ -487,13 +427,8 @@ fn load_tasks(
         Err(error) => return envelope.with_error("project_not_found", error.to_string()),
     };
     let requested_scope = match scope {
-        "issues" | "pulls" | "projects" => scope,
-        _ => {
-            return envelope.with_error(
-                "invalid_scope",
-                "scope must be issues, pulls, or projects".into(),
-            )
-        }
+        "issues" | "pulls" => scope,
+        _ => return envelope.with_error("invalid_scope", "scope must be issues or pulls".into()),
     };
 
     let checkout = project
@@ -518,7 +453,6 @@ fn load_tasks(
     let result = match requested_scope {
         "issues" => fetch_issues(&root, &identity),
         "pulls" => fetch_pulls(&root, &identity),
-        "projects" => fetch_projects(&root, &identity),
         _ => unreachable!(),
     };
     match result {
@@ -850,7 +784,6 @@ fn mutate_github_task_blocking(
     }
     let normalized_kind = match normalize_github_kind(&request.kind) {
         Some(kind) => kind,
-        None if request.operation.starts_with("project") => "project",
         None => {
             return GithubTaskMutationOutcome::failed(
                 "invalid_kind",
@@ -859,12 +792,6 @@ fn mutate_github_task_blocking(
         }
     };
     if let Some(expected) = request.expected_revision.as_deref() {
-        if normalized_kind == "project" {
-            return GithubTaskMutationOutcome::failed(
-                "invalid_revision",
-                "Project mutations do not accept task revisions".into(),
-            );
-        }
         match fetch_github_detail(
             &root,
             &identity,
@@ -911,12 +838,6 @@ fn mutate_github_task_blocking(
             }
         }
     }
-    if normalized_kind == "project" {
-        return match fetch_projects(&root, &identity) {
-            Ok(_) => GithubTaskMutationOutcome::succeeded(None),
-            Err(error) => GithubTaskMutationOutcome::unknown("github_readback_failed", error.1),
-        };
-    }
     match fetch_github_detail(
         &root,
         &identity,
@@ -948,11 +869,6 @@ fn execute_github_mutation(
     request: &GithubTaskMutationRequest,
     kind: &str,
 ) -> Result<Option<u64>, GithubMutationFailure> {
-    let is_project = kind == "project" || request.operation.starts_with("project");
-    if is_project {
-        execute_github_project_mutation(root, request)?;
-        return Ok(None);
-    }
     let segment = if kind == "pull_request" {
         "pulls"
     } else {
@@ -1199,74 +1115,6 @@ fn request_github_reviewers(
         args.extend(["--field".into(), format!("reviewers[]={reviewer}")]);
     }
     gh_write(root, args).map(|_| ())
-}
-
-fn execute_github_project_mutation(
-    root: &str,
-    request: &GithubTaskMutationRequest,
-) -> Result<(), GithubMutationFailure> {
-    let project_id = request
-        .project_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            GithubMutationFailure::Failed(
-                "invalid_mutation",
-                "project_id is required for Project writes".into(),
-            )
-        })?;
-    let (query, mut args) = if request.operation == "project_update" {
-        let title = request
-            .body
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                GithubMutationFailure::Failed(
-                    "invalid_mutation",
-                    "body contains the Project title and is required".into(),
-                )
-            })?;
-        ("mutation($projectId:ID!,$title:String!){updateProjectV2(input:{projectId:$projectId,title:$title}){projectV2{id}}}".to_owned(), vec![("projectId", project_id.to_owned()), ("title", title.to_owned())])
-    } else if request.operation == "project_item_update" {
-        let item_id = request
-            .item_id
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                GithubMutationFailure::Failed(
-                    "invalid_mutation",
-                    "item_id is required for Project item writes".into(),
-                )
-            })?;
-        let field_id = request
-            .field_id
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                GithubMutationFailure::Failed(
-                    "invalid_mutation",
-                    "field_id is required for Project item writes".into(),
-                )
-            })?;
-        let value = request.field_value.as_deref().ok_or_else(|| {
-            GithubMutationFailure::Failed(
-                "invalid_mutation",
-                "field_value is required for Project item writes".into(),
-            )
-        })?;
-        ("mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$value:String!){updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:{text:$value}}){projectV2Item{id}}}".to_owned(), vec![("projectId", project_id.to_owned()), ("itemId", item_id.to_owned()), ("fieldId", field_id.to_owned()), ("value", value.to_owned())])
-    } else {
-        return Err(GithubMutationFailure::Failed(
-            "unsupported_operation",
-            "Unsupported GitHub Project mutation".into(),
-        ));
-    };
-    args.insert(0, ("query", query));
-    let mut command = vec!["graphql".to_owned()];
-    for (key, value) in args {
-        command.extend(["--field".to_owned(), format!("{key}={value}")]);
-    }
-    gh_write(root, command).map(|_| ())
 }
 
 fn required_body(request: &GithubTaskMutationRequest) -> Result<String, GithubMutationFailure> {
@@ -1958,56 +1806,6 @@ fn fetch_pulls(
             })
             .collect(),
     ))
-}
-
-fn fetch_projects(
-    root: &str,
-    identity: &RemoteIdentity,
-) -> Result<GithubTaskData, (&'static str, String)> {
-    // Projects V2 is GraphQL-only. Keep both the query and result bounded so a
-    // repository with many projects cannot turn refresh into an unbounded read.
-    let query = "query($owner:String!, $repo:String!) { repository(owner:$owner, name:$repo) { projectsV2(first:20, orderBy:{field:UPDATED_AT, direction:DESC}) { nodes { number title url shortDescription updatedAt closed } } } }";
-    let output = gh_api(
-        root,
-        &[
-            "graphql",
-            "-f",
-            &format!("query={query}"),
-            "-f",
-            &format!("owner={}", identity.owner),
-            "-f",
-            &format!("repo={}", identity.name),
-        ],
-    )?;
-    let response: GraphQlResponse = parse_json(&output)?;
-    if let Some(errors) = response.errors.filter(|errors| !errors.is_empty()) {
-        let message = errors
-            .into_iter()
-            .find_map(|error| error.message)
-            .unwrap_or_else(|| "GitHub Projects could not be read".into());
-        return Err(("github_projects_failed", truncate_message(message)));
-    }
-    let projects = response
-        .data
-        .and_then(|data| data.repository)
-        .ok_or((
-            "github_projects_failed",
-            "GitHub returned no Projects data".into(),
-        ))?
-        .projects
-        .nodes
-        .into_iter()
-        .flatten()
-        .map(|project| GithubProject {
-            number: project.number,
-            title: project.title,
-            url: project.url,
-            short_description: project.short_description,
-            updated_at: project.updated_at,
-            closed: project.closed,
-        })
-        .collect();
-    Ok(GithubTaskData::Projects(projects))
 }
 
 fn gh_api(root: &str, args: &[&str]) -> Result<Vec<u8>, (&'static str, String)> {

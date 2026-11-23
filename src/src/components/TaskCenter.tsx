@@ -10,7 +10,7 @@ import { safeTaskImageUrl, TaskRichEditor, type TaskRichEditorHandle } from "./T
 import type { TaskOption, TaskProviderDetection } from "../types";
 
 type Provider = "github" | "gitlab";
-type TaskScope = "issues" | "pulls" | "projects" | "boards";
+type TaskScope = "issues" | "pulls";
 type TaskRecord = Record<string, unknown>;
 type TaskItems = Record<TaskScope, TaskRecord[]>;
 type ScopeErrors = Record<TaskScope, string | null>;
@@ -61,18 +61,16 @@ type ScopeMeta = {
 const scopes: ScopeMeta[] = [
   { id: "issues", label: "Issues", shortLabel: "Issues", description: "Open work and discussions", icon: "◉" },
   { id: "pulls", label: "Pull requests", shortLabel: "Pulls", description: "Changes waiting for review", icon: "↗" },
-  { id: "projects", label: "Projects", shortLabel: "Projects", description: "Planning views and milestones", icon: "▦" },
-  { id: "boards", label: "Boards", shortLabel: "Boards", description: "Team board lanes", icon: "▤" },
 ];
 
 const providerLabels: Record<Provider, string> = { github: "GitHub", gitlab: "GitLab" };
 
 function emptyItems(): TaskItems {
-  return { issues: [], pulls: [], projects: [], boards: [] };
+  return { issues: [], pulls: [] };
 }
 
 function emptyErrors(): ScopeErrors {
-  return { issues: null, pulls: null, projects: null, boards: null };
+  return { issues: null, pulls: null };
 }
 
 function asRecord(value: unknown): TaskRecord | null {
@@ -234,8 +232,8 @@ function repositoryName(value: unknown): string | null {
   return owner && name ? `${owner}/${name}` : name || null;
 }
 
-function supportedScopes(provider: Provider): ScopeMeta[] {
-  return scopes.filter(({ id }) => provider === "github" ? id !== "boards" : id !== "projects");
+function supportedScopes(_provider: Provider): ScopeMeta[] {
+  return scopes;
 }
 
 function scopeMeta(scope: TaskScope): ScopeMeta {
@@ -295,8 +293,8 @@ function useTasks(projectId: string | null, provider: Provider | null, open: boo
     void Promise.all(supported.map(async ({ id }) => {
       try {
         const value = provider === "github"
-          ? await api.listGithubTasks(projectId, id as "issues" | "pulls" | "projects")
-          : await api.listGitlabTasks(projectId, id as "issues" | "pulls" | "boards");
+          ? await api.listGithubTasks(projectId, id as "issues" | "pulls")
+          : await api.listGitlabTasks(projectId, id as "issues" | "pulls");
         return {
           scope: id,
           items: asItems(value),

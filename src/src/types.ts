@@ -578,7 +578,7 @@ export interface TaskProviderDetection {
   error: string | null;
 }
 
-export type GithubTaskScope = "issues" | "pulls" | "projects";
+export type GithubTaskScope = "issues" | "pulls";
 
 export interface TaskOption {
   id: string;
@@ -626,19 +626,9 @@ export interface GithubPullRequest {
   reviewStatuses?: string[];
 }
 
-export interface GithubProject {
-  number: number;
-  title: string;
-  url: string | null;
-  shortDescription: string | null;
-  updatedAt: string | null;
-  closed: boolean;
-}
-
 export type GithubTaskData =
   | { kind: "issues"; items: GithubIssue[] }
-  | { kind: "pulls"; items: GithubPullRequest[] }
-  | { kind: "projects"; items: GithubProject[] };
+  | { kind: "pulls"; items: GithubPullRequest[] };
 
 export interface GithubTaskError {
   code: string;
@@ -685,7 +675,7 @@ export interface GithubTaskMutationOutcome {
   readBackRequired: boolean;
 }
 
-export type GitlabTaskScope = "issues" | "pulls" | "boards";
+export type GitlabTaskScope = "issues" | "pulls";
 
 export interface GitlabTaskRepository {
   host: string;

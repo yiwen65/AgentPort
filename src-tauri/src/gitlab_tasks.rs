@@ -47,8 +47,6 @@ pub struct GitlabTaskCapabilities {
     pub assignees: bool,
     pub reviews: bool,
     pub checks: bool,
-    pub projects: bool,
-    pub project_writes: bool,
     pub merge: bool,
 }
 
@@ -60,8 +58,6 @@ fn gitlab_capabilities() -> GitlabTaskCapabilities {
         assignees: true,
         reviews: true,
         checks: true,
-        projects: false,
-        project_writes: true,
         merge: true,
     }
 }
@@ -135,10 +131,6 @@ pub struct GitlabTaskMutationRequest {
     pub reviewers: Option<Vec<String>>,
     pub review_event: Option<String>,
     pub expected_revision: Option<String>,
-    pub board_id: Option<u64>,
-    pub list_id: Option<u64>,
-    pub position: Option<u64>,
-    pub label_id: Option<u64>,
     pub assignee_ids: Option<Vec<u64>>,
 }
 
@@ -803,18 +795,6 @@ fn mutate_gitlab_task_blocking(
             String::new(),
             "merge_when_pipeline_succeeds",
         ),
-        "board_move" => (
-            "PUT",
-            format!(
-                "projects/{}/boards/{}/lists/{}/issues/{}",
-                encode_path(&identity.project_path),
-                request.board_id.unwrap_or_default(),
-                request.list_id.unwrap_or_default(),
-                number
-            ),
-            request.position.unwrap_or_default().to_string(),
-            "position",
-        ),
         _ => {
             return Ok(GitlabTaskMutationOutcome::unknown(
                 "unsupported_operation",
@@ -954,11 +934,8 @@ fn load_tasks(
     project_id: &str,
     scope: &str,
 ) -> Result<GitlabTaskEnvelope, (&'static str, String)> {
-    if !matches!(scope, "issues" | "pulls" | "boards") {
-        return Err((
-            "invalid_scope",
-            "scope must be issues, pulls, or boards".into(),
-        ));
+    if !matches!(scope, "issues" | "pulls") {
+        return Err(("invalid_scope", "scope must be issues or pulls".into()));
     }
     let db = Db::open_read(paths).map_err(|error| ("project_read_failed", error.to_string()))?;
     let project = db
@@ -996,7 +973,6 @@ fn load_tasks(
             "projects/{}/merge_requests?per_page={MAX_ITEMS}&order_by=updated_at&sort=desc",
             encode_path(&identity.project_path)
         ),
-        "boards" => format!("projects/{}/boards", encode_path(&identity.project_path)),
         _ => unreachable!(),
     };
     let mut items = glab_api(&root, &identity.host, &endpoint)?;
