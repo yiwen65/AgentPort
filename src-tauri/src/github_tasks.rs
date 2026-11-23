@@ -1023,6 +1023,13 @@ fn execute_github_mutation(
                 args.extend(["--field".into(), format!("draft={draft}")]);
             }
         }
+        "edit" => {
+            let title = request.title.clone().filter(|value| !value.trim().is_empty()).ok_or_else(|| GithubMutationFailure::Failed("invalid_mutation", "title is required".into()))?;
+            if title.chars().count() > 256 { return Err(GithubMutationFailure::Failed("invalid_mutation", "title is limited to 256 characters".into())); }
+            args = vec!["--method".into(), "PATCH".into(), endpoint.clone(), "--field".into(), format!("title={title}")];
+            if let Some(body) = request.body.as_deref() { validate_body(body)?; args.extend(["--field".into(), format!("body={body}")]); }
+            if let Some(draft) = request.draft { args.extend(["--field".into(), format!("draft={draft}")]); }
+        }
         "comment" => {
             let body = required_body(request)?;
             args = vec![

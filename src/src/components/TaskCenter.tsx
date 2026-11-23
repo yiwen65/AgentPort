@@ -201,12 +201,22 @@ function taskLabels(task: TaskRecord): string[] {
   });
 }
 
-function taskUpdatedAt(task: TaskRecord): string | null {
-  const value = firstText(task, ["updatedAt", "updated_at", "lastUpdated", "createdAt"]);
-  if (!value) return null;
+function taskActivityTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date).replace(/\//g, "-");
+}
+
+function taskUpdatedAt(task: TaskRecord): string | null {
+  const value = firstText(task, ["updatedAt", "updated_at", "lastUpdated", "createdAt"]);
+  return value ? taskActivityTime(value) : null;
 }
 
 function taskIdentity(task: TaskRecord): string {
@@ -454,6 +464,10 @@ function TaskDetail({
   const [detailLoading, setDetailLoading] = useState(false);
   const [commentBody, setCommentBody] = useState("");
   const [reviewBody, setReviewBody] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const editBodyRef = useRef<TaskRichEditorHandle>(null);
   const detailImageSession = useMemo(() => {
     const device = activeDeviceContext();
     return new MarkdownImageSession(
@@ -499,6 +513,8 @@ function TaskDetail({
   const canChangeState = !/merged/i.test(state);
   const reviewDisabled = /merged/i.test(state);
   const stateValue = provider === "gitlab" ? (isClosed ? "reopen" : "close") : (isClosed ? "open" : "closed");
+  const startEditing = () => { setEditTitle(taskTitle(shownTask)); setEditBody(firstText(shownTask, ["body", "description"])); setEditing(true); };
+  const saveEditing = () => { onMutate("edit", { title: editTitle.trim(), body: editBody }); setEditing(false); };
   return (
     <aside className="task-center-detail is-open" aria-label="Task details">
       <header className="task-center-detail-head">
@@ -517,6 +533,7 @@ function TaskDetail({
         <h4 className="task-center-detail-title">{taskTitle(shownTask)}</h4>
         <div className="task-center-detail-actions">
           {url ? <a className="task-center-open-link" href={url} target="_blank" rel="noreferrer">Open in {providerLabels[provider]} <span aria-hidden="true">↗</span></a> : <span className="task-center-no-link">No provider link</span>}
+          {!editing && !isClosed ? <button className="task-center-inline-action" type="button" disabled={mutationBusy} onClick={startEditing}>Edit</button> : null}
         </div>
         <section className="task-center-management-actions" aria-label="Task management">
           {canChangeState ? (
@@ -545,17 +562,21 @@ function TaskDetail({
         ) : null}
         {detailLoading ? <p className="task-center-detail-muted">Loading provider detail…</p> : null}
         {detailError ? <p className="task-center-detail-error">{detailError}</p> : null}
-        <section className="task-center-detail-section task-center-detail-content-section" aria-labelledby="task-center-description-heading">
+        {editing ? <section className="task-center-detail-section task-center-detail-edit-section" aria-label="Edit task">
+          <label>Title<input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} maxLength={256} /></label>
+          <TaskRichEditor ref={editBodyRef} initialValue={editBody} onChange={setEditBody} onImageFile={() => undefined} onError={() => undefined} />
+          <div className="task-center-management-actions"><button type="button" disabled={mutationBusy || !editTitle.trim()} onClick={saveEditing}>Save</button><button type="button" disabled={mutationBusy} onClick={() => setEditing(false)}>Cancel</button></div>
+        </section> : <section className="task-center-detail-section task-center-detail-content-section" aria-labelledby="task-center-description-heading">
           <h5 id="task-center-description-heading">Description</h5>
           {summary ? <div className="task-center-detail-markdown"><MarkdownView source={summary} imageSession={detailImageSession} /></div> : <p className="task-center-detail-muted">No description was provided for this task.</p>}
-        </section>
+        </section>}
         {comments.length > 0 ? <section className="task-center-detail-section" aria-labelledby="task-center-comments-heading">
           <h5 id="task-center-comments-heading">Comments ({comments.length})</h5>
           <div className="task-center-discussion-list">{comments.map((comment, index) => {
             const body = firstText(comment, ["body", "text", "note"], "");
             const commentAuthor = firstText(comment, ["author", "username", "login"], "Unknown author");
             const createdAt = firstText(comment, ["createdAt", "created_at", "submittedAt", "submitted_at"]);
-            return <article className="task-center-discussion-item" key={String(comment.id ?? index)}><header><strong>{commentAuthor}</strong>{createdAt ? <time>{taskUpdatedAt({ createdAt })}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
+            return <article className="task-center-discussion-item" key={String(comment.id ?? index)}><header><strong>{commentAuthor}</strong>{createdAt ? <time>{taskActivityTime(createdAt)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
           })}</div>
         </section> : null}
         {reviews.length > 0 ? <section className="task-center-detail-section" aria-labelledby="task-center-reviews-heading">
@@ -564,7 +585,8 @@ function TaskDetail({
             const body = firstText(reviewItem, ["body", "text", "note"], "");
             const reviewAuthor = firstText(reviewItem, ["author", "username", "login"], "Unknown reviewer");
             const reviewState = firstText(reviewItem, ["state", "status"]);
-            return <article className="task-center-discussion-item" key={String(reviewItem.id ?? index)}><header><strong>{reviewAuthor}</strong>{reviewState ? <span className="task-center-discussion-state">{reviewState}</span> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
+            const reviewTime = firstText(reviewItem, ["submittedAt", "submitted_at", "createdAt", "created_at"]);
+            return <article className="task-center-discussion-item" key={String(reviewItem.id ?? index)}><header><strong>{reviewAuthor}</strong>{reviewState ? <span className="task-center-discussion-state">{reviewState}</span> : null}{reviewTime ? <time>{taskActivityTime(reviewTime)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
           })}</div>
         </section> : null}
         <section className="task-center-detail-section" aria-labelledby="task-center-facts-heading">

@@ -734,6 +734,23 @@ fn mutate_gitlab_task_blocking(
     if request.operation == "review" {
         return mutate_gitlab_review(&root, &identity, paths, project_id, &request);
     }
+    if request.operation == "edit" {
+        let title = required_gitlab_text(request.title.as_deref(), "title", 256)?;
+        let body = request.body.as_deref().unwrap_or("");
+        validate_gitlab_body(body)?;
+        let endpoint = format!("projects/{}/{segment}/{number}", encode_path(&identity.project_path));
+        let title_field = format!("title={title}");
+        let body_field = format!("description={body}");
+        let args = vec!["api", "--hostname", identity.host.as_str(), "-X", "PUT", endpoint.as_str(), "--raw-field", title_field.as_str(), "--raw-field", body_field.as_str()];
+        let output = command_output("glab", &args, Some(&root)).map_err(|error| error.to_string())?;
+        if !output.success {
+            return Ok(GitlabTaskMutationOutcome::unknown("gitlab_edit_unknown", "GitLab edit failed; read back required".into()));
+        }
+        return match load_gitlab_detail(paths, project_id, &request_kind, number) {
+            Ok(detail) if detail.error.is_none() => Ok(GitlabTaskMutationOutcome { status: "succeeded".into(), data: detail.data, error: None, read_back_required: true }),
+            _ => Ok(GitlabTaskMutationOutcome::unknown("gitlab_read_back_failed", "GitLab edit completed but authoritative read-back failed".into())),
+        };
+    }
     let (method, endpoint, field, field_name) = match request.operation.as_str() {
         "comment" => (
             "POST",
