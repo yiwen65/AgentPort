@@ -60,13 +60,20 @@ export function TaskOptionPicker({
         aria-haspopup="listbox"
         aria-label={label}
         tabIndex={0}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen((value) => {
+          if (value) setQuery("");
+          return !value;
+        })}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            setOpen((value) => !value);
+            setOpen((value) => {
+              if (value) setQuery("");
+              return !value;
+            });
           } else if (event.key === "Escape") {
             setOpen(false);
+            setQuery("");
           }
         }}
       >
@@ -91,7 +98,7 @@ export function TaskOptionPicker({
             onChange={(event) => setQuery(event.target.value)}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => {
-              if (event.key === "Escape") setOpen(false);
+              if (event.key === "Escape") { setOpen(false); setQuery(""); }
               if (event.key === "Enter") event.preventDefault();
             }}
             placeholder={`Search ${label.toLowerCase()}`}

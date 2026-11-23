@@ -159,8 +159,8 @@ function taskAuthor(task: TaskRecord): string | null {
 function taskAssignees(task: TaskRecord): string[] {
   const raw = task.assignees ?? task.assignee ?? [];
   if (typeof raw === "string") return raw.trim() ? [raw.trim()] : [];
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((value) => {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values.flatMap((value) => {
     if (typeof value === "string" && value.trim()) return [value.trim()];
     const record = asRecord(value);
     const name = record ? firstText(record, ["login", "username", "name", "handle"]) : "";
