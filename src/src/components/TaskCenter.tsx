@@ -535,7 +535,7 @@ function TaskDetail({
         </div>
         <h4 className="task-center-detail-title">{taskTitle(shownTask)}</h4>
         <div className="task-center-detail-actions">
-          {url ? <a className="task-center-open-link" href={url} target="_blank" rel="noreferrer">Open in {providerLabels[provider]} <span aria-hidden="true">↗</span></a> : <span className="task-center-no-link">No provider link</span>}
+          {url ? <a className="task-center-open-link" href={url} onClick={(event) => { event.preventDefault(); void api.openExternalUrl(url).catch((reason: unknown) => setDetailError(errorText(reason))); }}>Open in {providerLabels[provider]} <span aria-hidden="true">↗</span></a> : <span className="task-center-no-link">No provider link</span>}
           {!editing && !isClosed ? <button className="task-center-inline-action" type="button" disabled={mutationBusy} onClick={startEditing}>Edit</button> : null}
         </div>
         <section className="task-center-management-actions" aria-label="Task management">
