@@ -72,7 +72,7 @@ it("resets a dead credential configuration only after explicit confirmation", as
     return previous(command, args);
   });
   render(<PairingSection />);
-  await screen.findByText("Registration or Keychain access failed · check credentials");
+  await screen.findByText("Registration or credential access failed · check credentials");
   fireEvent.click(screen.getByRole("button", { name: "Reset pairing configuration" }));
   expect(mocks.invoke.mock.calls.some(([, args]) => args?.request?.kind === "reset")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Confirm reset" }));

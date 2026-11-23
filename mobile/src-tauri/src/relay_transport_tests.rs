@@ -162,7 +162,7 @@ async fn image_upload_native_sender_preserves_raw_bytes_and_generation() {
     let pending = Arc::new(Mutex::new(HashMap::new()));
     let lease = tokio::spawn(std::future::pending::<()>());
     let snapshot = ConnectionSnapshot { profile_id: "image-fixture".into(), protocol_major: 1, protocol_minor: 1, agentport_version: "fixture".into(), platform: "test".into(), capabilities: vec![] };
-    state.inner.connections.lock().await.insert("image-fixture".into(), Connection { generation:"image-generation".into(), snapshot, writer:writer.clone(), pending:pending.clone(), transport:Transport::Relay(RelayLease(lease.abort_handle())) });
+    state.inner.connections.lock().await.insert("image-fixture".into(), Connection { generation:"image-generation".into(), snapshot, writer:writer.clone(), pending:pending.clone(), last_frame: Arc::new(Mutex::new(Instant::now())), transport:Transport::Relay(RelayLease(lease.abort_handle())) });
     assert!(state.image_upload_connection("image-fixture").await.err().unwrap().contains("Update"));
     state.inner.connections.lock().await.get_mut("image-fixture").unwrap().snapshot.capabilities.push(json!({"name":"image.upload_v1","enabled":true}));
     let (_, ImageUploadConnection::Relay(relay)) = state.image_upload_connection("image-fixture").await.unwrap() else { panic!("expected Relay"); };

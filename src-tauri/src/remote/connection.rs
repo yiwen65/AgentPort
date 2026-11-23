@@ -817,6 +817,22 @@ mod tests {
                 agentport_remote_protocol::MAX_FRAME_BYTES,
             )?;
             write_envelope(&mut server, &ServerEnvelope::Hello(hello_result()))?;
+            // Wait for the client to register its subscriber before emitting
+            // the event. Sending it immediately after Hello races the local
+            // subscribe() call and makes the test depend on thread scheduling.
+            let request = read_request(&mut server)?;
+            assert_eq!(request.method, "session.list");
+            write_envelope(
+                &mut server,
+                &ServerEnvelope::Result {
+                    request_id: request.request_id,
+                    operation_id: None,
+                    status: ResultStatus::Succeeded,
+                    retry_class: agentport_remote_protocol::RetryClass::Read,
+                    value: Some(serde_json::json!([])),
+                    error: None,
+                },
+            )?;
             let cursor = agentport_remote_protocol::RunCursor {
                 run_id: "run-1".to_string(),
                 run_ordinal: 1,
@@ -848,6 +864,13 @@ mod tests {
             ))
             .is_ok()
         }));
+        // Release the fake bridge only after the subscriber is installed.
+        assert_eq!(
+            connection
+                .request("session.list", serde_json::json!({}), Duration::from_secs(5))
+                .unwrap(),
+            serde_json::json!([])
+        );
         let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(first.0, "sub-1");
         assert_eq!(first.1, "output");

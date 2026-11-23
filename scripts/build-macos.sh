@@ -79,8 +79,8 @@ if [ "$UNIVERSAL" = 1 ]; then
     exit 2
   fi
   rustup target add aarch64-apple-darwin x86_64-apple-darwin
-  cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target aarch64-apple-darwin
-  cargo build --release -p agentport-host -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target x86_64-apple-darwin
+  cargo build --release -p agentport-host -p agentport-mcp -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target aarch64-apple-darwin
+  cargo build --release -p agentport-host -p agentport-mcp -p agentport-remote-bridge -p agentport-mosh-attach -p agentport-relay --features agentport-relay/connector --target x86_64-apple-darwin
   for binary in agentport-host agentport-mcp agentport-remote-bridge agentport-mosh-attach agentport-connector; do
     # Per-arch copies: tauri-build resolves externalBin for each cargo target
     # of the universal build, not only for the lipo'd file.

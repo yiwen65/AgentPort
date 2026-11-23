@@ -1656,7 +1656,10 @@ mod tests {
                 &review.message,
             )
             .unwrap();
-        assert!(started.elapsed() < Duration::from_secs(2));
+        // Keep enough margin for the full parallel workspace suite to be
+        // scheduler-noisy, while remaining below the signer's 5 s natural
+        // completion time. A timeout must not wait for the hook to finish.
+        assert!(started.elapsed() < Duration::from_secs(4));
         assert_eq!(result.outcome, GitCommitOutcome::NotExecuted);
         assert!(result
             .error
