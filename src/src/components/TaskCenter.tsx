@@ -515,6 +515,9 @@ function TaskDetail({
   const stateValue = provider === "gitlab" ? (isClosed ? "reopen" : "close") : (isClosed ? "open" : "closed");
   const startEditing = () => { setEditTitle(taskTitle(shownTask)); setEditBody(firstText(shownTask, ["body", "description"])); setEditing(true); };
   const saveEditing = () => { onMutate("edit", { title: editTitle.trim(), body: editBody }); setEditing(false); };
+  const openDetailLink = (href: string) => {
+    void api.openExternalUrl(href).catch((reason: unknown) => setDetailError(errorText(reason)));
+  };
   return (
     <aside className="task-center-detail is-open" aria-label="Task details">
       <header className="task-center-detail-head">
@@ -568,7 +571,7 @@ function TaskDetail({
           <div className="task-center-management-actions"><button type="button" disabled={mutationBusy || !editTitle.trim()} onClick={saveEditing}>Save</button><button type="button" disabled={mutationBusy} onClick={() => setEditing(false)}>Cancel</button></div>
         </section> : <section className="task-center-detail-section task-center-detail-content-section" aria-labelledby="task-center-description-heading">
           <h5 id="task-center-description-heading">Description</h5>
-          {summary ? <div className="task-center-detail-markdown"><MarkdownView source={summary} imageSession={detailImageSession} /></div> : <p className="task-center-detail-muted">No description was provided for this task.</p>}
+          {summary ? <div className="task-center-detail-markdown"><MarkdownView source={summary} imageSession={detailImageSession} onLinkClick={openDetailLink} /></div> : <p className="task-center-detail-muted">No description was provided for this task.</p>}
         </section>}
         {comments.length > 0 ? <section className="task-center-detail-section" aria-labelledby="task-center-comments-heading">
           <h5 id="task-center-comments-heading">Comments ({comments.length})</h5>
@@ -576,7 +579,7 @@ function TaskDetail({
             const body = firstText(comment, ["body", "text", "note"], "");
             const commentAuthor = firstText(comment, ["author", "username", "login"], "Unknown author");
             const createdAt = firstText(comment, ["createdAt", "created_at", "submittedAt", "submitted_at"]);
-            return <article className="task-center-discussion-item" key={String(comment.id ?? index)}><header><strong>{commentAuthor}</strong>{createdAt ? <time>{taskActivityTime(createdAt)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
+            return <article className="task-center-discussion-item" key={String(comment.id ?? index)}><header><strong>{commentAuthor}</strong>{createdAt ? <time>{taskActivityTime(createdAt)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} onLinkClick={openDetailLink} /></div> : null}</article>;
           })}</div>
         </section> : null}
         {reviews.length > 0 ? <section className="task-center-detail-section" aria-labelledby="task-center-reviews-heading">
@@ -586,7 +589,7 @@ function TaskDetail({
             const reviewAuthor = firstText(reviewItem, ["author", "username", "login"], "Unknown reviewer");
             const reviewState = firstText(reviewItem, ["state", "status"]);
             const reviewTime = firstText(reviewItem, ["submittedAt", "submitted_at", "createdAt", "created_at"]);
-            return <article className="task-center-discussion-item" key={String(reviewItem.id ?? index)}><header><strong>{reviewAuthor}</strong>{reviewState ? <span className="task-center-discussion-state">{reviewState}</span> : null}{reviewTime ? <time>{taskActivityTime(reviewTime)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
+            return <article className="task-center-discussion-item" key={String(reviewItem.id ?? index)}><header><strong>{reviewAuthor}</strong>{reviewState ? <span className="task-center-discussion-state">{reviewState}</span> : null}{reviewTime ? <time>{taskActivityTime(reviewTime)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} onLinkClick={openDetailLink} /></div> : null}</article>;
           })}</div>
         </section> : null}
         <section className="task-center-detail-section" aria-labelledby="task-center-facts-heading">
