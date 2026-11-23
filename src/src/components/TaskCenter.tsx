@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, errorText, readClipboardImageFile } from "../api";
+import { activeDeviceContext } from "../deviceContext";
+import { MarkdownImageSession, imageTransport } from "../markdownImages";
+import { MarkdownView } from "../markdown";
 import { findSession, useStore } from "../store";
 import { TaskOptionPicker } from "./TaskOptionPicker";
 import { safeTaskImageUrl, TaskRichEditor, type TaskRichEditorHandle } from "./TaskRichEditor";
@@ -130,13 +133,9 @@ function taskState(task: TaskRecord): string {
   return "Open";
 }
 
-function taskTone(task: TaskRecord, scope: TaskScope): "open" | "review" | "done" | "muted" {
+function taskTone(task: TaskRecord, _scope: TaskScope): "open" | "review" | "done" | "muted" {
   const state = taskState(task).toLowerCase();
   if (state.includes("closed") || state.includes("merged") || state.includes("done") || state.includes("complete")) return "done";
-  if (scope === "pulls") {
-    if (task.draft === true || state.includes("draft")) return "open";
-    if (state.includes("review") || state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")) return "review";
-  }
   if (state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")) return "open";
   return "muted";
 }
@@ -181,6 +180,14 @@ function taskReviewStatuses(task: TaskRecord): string[] {
   return state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")
     ? task.draft === true ? ["no_reviews"] : ["review_required"]
     : ["no_reviews"];
+}
+
+function taskDiscussionItems(task: TaskRecord, key: "comments" | "reviews"): TaskRecord[] {
+  const raw = task[key];
+  return Array.isArray(raw) ? raw.flatMap((item) => {
+    const record = asRecord(item);
+    return record ? [record] : [];
+  }) : [];
 }
 
 function taskLabels(task: TaskRecord): string[] {
@@ -447,6 +454,14 @@ function TaskDetail({
   const [detailLoading, setDetailLoading] = useState(false);
   const [commentBody, setCommentBody] = useState("");
   const [reviewBody, setReviewBody] = useState("");
+  const detailImageSession = useMemo(() => {
+    const device = activeDeviceContext();
+    return new MarkdownImageSession(
+      { path: "task-detail.md", rootPath: "/", device },
+      imageTransport(device),
+    );
+  }, []);
+  useEffect(() => () => detailImageSession.dispose(), [detailImageSession]);
   const numberValue = task.number ?? task.iid;
   const number = typeof numberValue === "number" ? numberValue : Number(numberValue);
   useEffect(() => {
@@ -472,6 +487,8 @@ function TaskDetail({
   const url = taskUrl(shownTask);
   const labels = taskLabels(shownTask);
   const summary = taskSummary(shownTask);
+  const comments = taskDiscussionItems(shownTask, "comments");
+  const reviews = taskDiscussionItems(shownTask, "reviews");
   const author = taskAuthor(shownTask);
   const updatedAt = taskUpdatedAt(shownTask);
   const state = taskState(shownTask);
@@ -528,7 +545,28 @@ function TaskDetail({
         ) : null}
         {detailLoading ? <p className="task-center-detail-muted">Loading provider detail…</p> : null}
         {detailError ? <p className="task-center-detail-error">{detailError}</p> : null}
-        {summary ? <p className="task-center-detail-summary">{summary}</p> : <p className="task-center-detail-muted">No description was provided for this task.</p>}
+        <section className="task-center-detail-section task-center-detail-content-section" aria-labelledby="task-center-description-heading">
+          <h5 id="task-center-description-heading">Description</h5>
+          {summary ? <div className="task-center-detail-markdown"><MarkdownView source={summary} imageSession={detailImageSession} /></div> : <p className="task-center-detail-muted">No description was provided for this task.</p>}
+        </section>
+        {comments.length > 0 ? <section className="task-center-detail-section" aria-labelledby="task-center-comments-heading">
+          <h5 id="task-center-comments-heading">Comments ({comments.length})</h5>
+          <div className="task-center-discussion-list">{comments.map((comment, index) => {
+            const body = firstText(comment, ["body", "text", "note"], "");
+            const commentAuthor = firstText(comment, ["author", "username", "login"], "Unknown author");
+            const createdAt = firstText(comment, ["createdAt", "created_at", "submittedAt", "submitted_at"]);
+            return <article className="task-center-discussion-item" key={String(comment.id ?? index)}><header><strong>{commentAuthor}</strong>{createdAt ? <time>{taskUpdatedAt({ createdAt })}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
+          })}</div>
+        </section> : null}
+        {reviews.length > 0 ? <section className="task-center-detail-section" aria-labelledby="task-center-reviews-heading">
+          <h5 id="task-center-reviews-heading">Reviews ({reviews.length})</h5>
+          <div className="task-center-discussion-list">{reviews.map((reviewItem, index) => {
+            const body = firstText(reviewItem, ["body", "text", "note"], "");
+            const reviewAuthor = firstText(reviewItem, ["author", "username", "login"], "Unknown reviewer");
+            const reviewState = firstText(reviewItem, ["state", "status"]);
+            return <article className="task-center-discussion-item" key={String(reviewItem.id ?? index)}><header><strong>{reviewAuthor}</strong>{reviewState ? <span className="task-center-discussion-state">{reviewState}</span> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} /></div> : null}</article>;
+          })}</div>
+        </section> : null}
         <section className="task-center-detail-section" aria-labelledby="task-center-facts-heading">
           <h5 id="task-center-facts-heading">Task facts</h5>
           <dl className="task-center-detail-facts">
@@ -872,16 +910,10 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     void performMutation(composerKind, 0, operation, fields);
   };
   const boardColumns = useMemo(() => {
-    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = activeScope === "issues"
-      ? [
-        { id: "open", label: "Open", items: [] },
-        { id: "done", label: "Done", items: [] },
-      ]
-      : [
-        { id: "open", label: "Open", items: [] },
-        { id: "review", label: "In review", items: [] },
-        { id: "done", label: "Done", items: [] },
-      ];
+    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = [
+      { id: "open", label: "Open", items: [] },
+      { id: "done", label: "Closed", items: [] },
+    ];
     for (const task of filteredItems) {
       const tone = taskTone(task, activeScope);
       const column = columns.find((candidate) => candidate.id === (tone === "done" ? "done" : tone === "review" ? "review" : "open"));
