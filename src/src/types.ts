@@ -216,6 +216,77 @@ export interface AgentRoleDraft {
   outputContract: string | null;
 }
 
+export type BotStatus = "running" | "paused" | "needs_attention" | string;
+export type BotTaskStatus =
+  | "planned"
+  | "dispatching"
+  | "running"
+  | "waiting_user"
+  | "blocked"
+  | "needs_review"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | string;
+
+export interface BotRecord {
+  botId: string;
+  managerSessionId: string;
+  projectId: string | null;
+  projectPath: string;
+  title: string;
+  agent: string;
+  status: BotStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BotTask {
+  taskId: string;
+  botId: string;
+  title: string;
+  prompt: string;
+  dependencies: string[];
+  acceptanceCriteria: string | null;
+  write: boolean;
+  agent: string | null;
+  roleId: string | null;
+  projectPath: string | null;
+  worktreeId: string | null;
+  idempotencyKey: string | null;
+  dispatchKey: string | null;
+  sessionId: string | null;
+  sessionIds: string[];
+  attempt: number;
+  status: BotTaskStatus;
+  result: string | null;
+  evidence: string | null;
+  error: string | null;
+  controlOwner: "bot" | "user" | string;
+  controlLeaseId: string | null;
+  controlUpdatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BotMemory {
+  memoryId: string;
+  botId: string;
+  kind: string;
+  content: string;
+  source: string;
+  confidence: ConfidenceStr | string;
+  status: "candidate" | "confirmed" | string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BotSnapshot {
+  bot: BotRecord;
+  tasks: BotTask[];
+  memories: BotMemory[];
+}
+
 export interface PlatformInfo {
   /** "macos" | "linux" */
   os: string;

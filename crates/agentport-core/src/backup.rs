@@ -498,6 +498,21 @@ fn collect_session_files(paths: &AppPaths, out: &mut Vec<PathBuf>) -> Result<()>
     Ok(())
 }
 
+/// Bot/task/memory state lives beside the MCP ownership registry rather than in
+/// SQLite. Include both files in full backups so restoring Sessions does not
+/// silently lose the control plane that owns them.
+fn collect_mcp_files(paths: &AppPaths, out: &mut Vec<PathBuf>) -> Result<()> {
+    let dir = paths.root().join("mcp");
+    for name in ["bots.json", "agent-sessions.json"] {
+        let path = dir.join(name);
+        if path.is_file() {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(())
+}
+
 /// Create a backup archive at `dest` (must not exist). Atomic: staged under
 /// the exports dir and renamed into place; any failure leaves no partial file.
 pub fn create(paths: &AppPaths, db: &Db, dest: &Path) -> Result<BackupReport> {
@@ -615,6 +630,22 @@ fn create_scoped(
             ..digest_entry(&abs)?
         });
         payload_sources.push(abs);
+    }
+    if agent.is_none() {
+        let mut mcp_files = Vec::new();
+        collect_mcp_files(paths, &mut mcp_files)?;
+        for abs in mcp_files {
+            let rel = abs
+                .strip_prefix(paths.root())
+                .map_err(|_| CoreError::Internal("MCP state outside data root".into()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            files.push(BackupFileEntry {
+                path: rel,
+                ..digest_entry(&abs)?
+            });
+            payload_sources.push(abs);
+        }
     }
 
     let manifest = BackupManifest {
@@ -1526,6 +1557,9 @@ mod tests {
         let fx = fx();
         let metadata = fx.paths.session_dir("ses_1").join("status.json");
         std::fs::write(&metadata, br#"{"state":"stopped"}"#).unwrap();
+        let mcp_dir = fx.paths.root().join("mcp");
+        std::fs::create_dir_all(&mcp_dir).unwrap();
+        std::fs::write(mcp_dir.join("bots.json"), br#"{"version":1,"bots":[],"tasks":[],"memories":[]}"#).unwrap();
         let archive = fx.dir.path().join("backup.zip");
         let report = create(&fx.paths, &fx.db, &archive).unwrap();
         assert!(report.files >= 2); // db + AgentPort-owned session metadata
@@ -1542,6 +1576,7 @@ mod tests {
             .files
             .iter()
             .any(|f| f.path == "sessions/ses_1/status.json"));
+        assert!(manifest.files.iter().any(|f| f.path == "mcp/bots.json"));
         assert!(!manifest
             .files
             .iter()
@@ -1555,6 +1590,10 @@ mod tests {
             br#"{"state":"stopped"}"#
         );
         assert!(!target.join("sessions/ses_1/output.log").exists());
+        assert_eq!(
+            std::fs::read(target.join("mcp/bots.json")).unwrap(),
+            br#"{"version":1,"bots":[],"tasks":[],"memories":[]}"#
+        );
         // Restored DB opens and contains the session.
         let restored_paths = AppPaths::new(target.clone());
         let restored_db = Db::open(&restored_paths).unwrap();

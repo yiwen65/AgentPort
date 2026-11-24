@@ -67,6 +67,16 @@ pub struct OwnedSession {
     /// Immutable role content selected when this Session was created.
     #[serde(default)]
     pub role: Option<RoleSnapshot>,
+    /// Optional durable Bot task binding. These fields let a restarted MCP
+    /// reconcile a child created just before its task row was updated.
+    #[serde(default)]
+    pub bot_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub task_attempt: u32,
+    #[serde(default)]
+    pub dispatch_key: Option<String>,
     /// A role is sent once, with the first task prompt. Persisting this flag
     /// lets a restarted MCP avoid repeating the preamble on a follow-up.
     #[serde(default)]
@@ -107,6 +117,10 @@ impl Registry {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = &OwnedSession> {
+        self.entries.values()
     }
 
     pub fn insert(&mut self, entry: OwnedSession) -> io::Result<()> {
@@ -274,6 +288,10 @@ mod tests {
             title: None,
             permission: Some("bypass".into()),
             role: None,
+            bot_id: None,
+            task_id: None,
+            task_attempt: 0,
+            dispatch_key: None,
             role_preamble_delivered: false,
         }
     }

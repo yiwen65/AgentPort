@@ -85,6 +85,7 @@ name = "agentport"
 version = "0.1.10"
 dependencies = [
  "agentport-core",
+ "agentport-mcp",
  "agentport-relay",
  "agentport-remote-bridge",
  "agentport-remote-protocol",
@@ -178,6 +179,7 @@ dependencies = [
  "agentport-remote-protocol",
  "agentport-service",
  "base64 0.22.1",
+ "chrono",
  "serde",
  "serde_json",
  "strip-ansi-escapes",

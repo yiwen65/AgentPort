@@ -105,6 +105,7 @@ const BranchPickerDialog = lazy(() => import("./components/BranchPickerDialog"))
 const PairDeviceDialog = lazy(() => import("./components/PairDevice"));
 const Onboarding = lazy(() => import("./components/Onboarding"));
 const GitCenter = lazy(() => import("./components/GitCenter"));
+const BotDashboard = lazy(() => import("./components/BotDashboard"));
 
 // wry reports native drop positions in logical (CSS) pixels on macOS and
 // Linux (see nativeDrag.ts), so no devicePixelRatio scaling is applied.
@@ -621,6 +622,7 @@ export default function App() {
   const activeDevice = useStore((state) => state.activeDevice);
   const gitCenterOpen = useStore((state) => state.gitCenter.open);
   const [taskCenterOpen, setTaskCenterOpen] = useState(false);
+  const [botDashboardOpen, setBotDashboardOpen] = useState(false);
   useBoot();
   useHotkeys();
   useWindowDragClass();
@@ -693,7 +695,12 @@ export default function App() {
         } as CSSProperties
       }
     >
-      <TopBar taskCenterOpen={taskCenterOpen} onTaskCenterToggle={() => setTaskCenterOpen((open) => !open)} />
+      <TopBar
+        taskCenterOpen={taskCenterOpen}
+        onTaskCenterToggle={() => setTaskCenterOpen((open) => !open)}
+        botDashboardOpen={botDashboardOpen}
+        onBotDashboardToggle={() => setBotDashboardOpen((open) => !open)}
+      />
       <div className="main">
         <Sidebar collapsed={sidebarCollapsed} width={sidebarWidth} anim={sidebarAnim} />
         <SplitHandle collapsed={sidebarCollapsed} width={sidebarWidth} />
@@ -716,6 +723,9 @@ export default function App() {
         </div>
       </div>
       <TaskCenter open={taskCenterOpen} onClose={() => setTaskCenterOpen(false)} />
+      <Suspense fallback={null}>
+        <BotDashboard open={botDashboardOpen} onClose={() => setBotDashboardOpen(false)} />
+      </Suspense>
       <Suspense fallback={null}>
         <DialogRouter />
       </Suspense>

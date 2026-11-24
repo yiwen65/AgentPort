@@ -9,6 +9,8 @@ use agentport_core::adapters;
 use agentport_core::adapters::capability;
 use agentport_core::agent_roles::{AgentRole, AgentRoleDraft};
 use agentport_core::db::{Db, SessionProjection};
+use agentport_mcp::bot::{self as bot_state, BotStore};
+use agentport_mcp::registry::{OwnedSession, Registry, RoleSnapshot};
 use agentport_core::diag::Diagnostics;
 use agentport_core::error::{CoreError, Result};
 use agentport_core::export::Exporter;
@@ -31,7 +33,9 @@ use agentport_core::protocol::{normalize_host_frame, HostFrame};
 use agentport_core::search::SearchIndex;
 use agentport_core::secrets::CredentialBroker;
 use agentport_core::timeline::{RecoveryAckSnapshot, Timeline};
-use agentport_remote_protocol::{RemoteAgentType, SessionCreateParams, SessionRestartParams};
+use agentport_remote_protocol::{
+    RemoteAgentType, SessionCreateParams, SessionRestartParams, SessionStopParams,
+};
 use agentport_service::{CoreService, RemoteService, ServiceError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -1482,6 +1486,304 @@ async fn delete_agent_role(
     expected_revision: u64,
 ) -> std::result::Result<(), String> {
     map_err!(state.db.delete_agent_role(&id, expected_revision))
+}
+
+// ---------------------------------------------------------------------------
+// Project Manager Bot
+// ---------------------------------------------------------------------------
+
+fn reconcile_desktop_bot_bindings(
+    store: &mut BotStore,
+    registry: &Registry,
+    bot_id: &str,
+) -> std::result::Result<(), String> {
+    let bindings: Vec<(String, String, u32, String)> = registry
+        .entries()
+        .filter_map(|entry| {
+            (entry.bot_id.as_deref() == Some(bot_id)
+                && entry.task_id.is_some()
+                && entry.dispatch_key.is_some())
+                .then(|| {
+                    (
+                        entry.task_id.clone().unwrap_or_default(),
+                        entry.session_id.clone(),
+                        entry.task_attempt,
+                        entry.dispatch_key.clone().unwrap_or_default(),
+                    )
+                })
+        })
+        .collect();
+    for (task_id, session_id, attempt, dispatch_key) in bindings {
+        if store
+            .task(bot_id, &task_id)
+            .is_some_and(|task| task.session_id.is_none())
+        {
+            store
+                .update_task(bot_id, &task_id, |task| {
+                    task.status = "running".into();
+                    task.session_id = Some(session_id.clone());
+                    task.attempt = attempt;
+                    task.dispatch_key = Some(dispatch_key.clone());
+                    if !task.session_ids.iter().any(|id| id == &session_id) {
+                        task.session_ids.push(session_id.clone());
+                    }
+                    task.error = None;
+                })
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_bots(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> std::result::Result<Value, String> {
+    let mut store = BotStore::load(state.paths.root());
+    let registry = Registry::load(state.paths.root());
+    let bot_ids: Vec<String> = store
+        .bots()
+        .iter()
+        .filter(|bot| project_id.as_deref().is_none_or(|id| bot.project_id.as_deref() == Some(id)))
+        .map(|bot| bot.bot_id.clone())
+        .collect();
+    for bot_id in &bot_ids {
+        reconcile_desktop_bot_bindings(&mut store, &registry, bot_id)?;
+    }
+    let bots = bot_ids
+        .iter()
+        .filter_map(|bot_id| store.bot(bot_id).cloned())
+        .map(|bot| {
+            json!({
+                "bot": bot,
+                "tasks": store.tasks_for_bot(&bot.bot_id),
+                "memories": store.memories_for_bot(&bot.bot_id),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "bots": bots }))
+}
+
+#[tauri::command]
+fn mark_bot_bootstrap_delivered(
+    state: State<'_, AppState>,
+    bot_id: String,
+) -> std::result::Result<Value, String> {
+    let store = BotStore::load(state.paths.root());
+    let bot = store.bot(&bot_id).cloned().ok_or_else(|| "Bot not found".to_string())?;
+    let mut registry = Registry::load(state.paths.root());
+    registry
+        .mark_role_preamble_delivered(&bot.manager_session_id)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "botId": bot_id, "rolePreambleDelivered": true }))
+}
+
+#[tauri::command]
+fn set_bot_status(
+    state: State<'_, AppState>,
+    bot_id: String,
+    status: String,
+) -> std::result::Result<Value, String> {
+    if !matches!(status.as_str(), "running" | "paused" | "needs_attention") {
+        return Err("status must be running, paused or needs_attention".into());
+    }
+    let mut store = BotStore::load(state.paths.root());
+    if !store
+        .update_bot(&bot_id, |bot| bot.status = status.clone())
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Bot not found".into());
+    }
+    Ok(json!({ "botId": bot_id, "status": status }))
+}
+
+#[tauri::command]
+fn set_bot_task_control(
+    state: State<'_, AppState>,
+    bot_id: String,
+    task_id: String,
+    owner: String,
+) -> std::result::Result<Value, String> {
+    if !matches!(owner.as_str(), "bot" | "user") {
+        return Err("owner must be bot or user".into());
+    }
+    let mut store = BotStore::load(state.paths.root());
+    if store.bot(&bot_id).is_none() {
+        return Err("Bot not found".into());
+    }
+    if store.task(&bot_id, &task_id).is_none() {
+        return Err("task not found".into());
+    }
+    let lease_id = (owner == "user").then(bot_state::new_lease_id);
+    let updated = store
+        .update_task(&bot_id, &task_id, |task| {
+            task.control_owner = owner.clone();
+            task.control_lease_id = lease_id.clone();
+            task.control_updated_at = Some(bot_state::now());
+            if owner == "user" && task.status == "running" {
+                task.status = "waiting_user".into();
+            } else if owner == "bot" && task.status == "waiting_user" {
+                task.status = "running".into();
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    if !updated {
+        return Err("task not found".into());
+    }
+    let task = store.task(&bot_id, &task_id).cloned().ok_or_else(|| "task not found".to_string())?;
+    Ok(json!({ "botId": bot_id, "task": task }))
+}
+
+#[tauri::command]
+fn confirm_bot_memory(
+    state: State<'_, AppState>,
+    bot_id: String,
+    memory_id: String,
+    action: String,
+) -> std::result::Result<Value, String> {
+    let mut store = BotStore::load(state.paths.root());
+    if store.bot(&bot_id).is_none() {
+        return Err("Bot not found".into());
+    }
+    match action.as_str() {
+        "confirm" => {
+            if !store
+                .update_memory(&bot_id, &memory_id, |memory| memory.status = "confirmed".into())
+                .map_err(|error| error.to_string())?
+            {
+                return Err("memory not found".into());
+            }
+            Ok(json!({ "botId": bot_id, "memoryId": memory_id, "status": "confirmed" }))
+        }
+        "forget" => {
+            if !store
+                .remove_memory(&bot_id, &memory_id)
+                .map_err(|error| error.to_string())?
+            {
+                return Err("memory not found".into());
+            }
+            Ok(json!({ "botId": bot_id, "memoryId": memory_id, "status": "forgotten" }))
+        }
+        _ => Err("action must be confirm or forget".into()),
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn create_bot(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    project_id: String,
+    agent: String,
+    title: Option<String>,
+    permission: Option<String>,
+    risk_ack: bool,
+) -> std::result::Result<Value, String> {
+    let remote_agent: RemoteAgentType =
+        serde_json::from_value(Value::String(agent.clone())).map_err(|error| error.to_string())?;
+    let display_agent = agent.parse::<AgentType>().map_err(|error| error.to_string())?;
+    let title = title.unwrap_or_else(|| "Project Manager Bot".into());
+    bot_state::validate_text("Bot title", &title, bot_state::MAX_BOT_TITLE_BYTES, false)
+        .map_err(|error| error.to_string())?;
+    let permission = permission.unwrap_or_else(|| "auto".into());
+    if !matches!(permission.as_str(), "bypass" | "auto" | "native") {
+        return Err("permission must be bypass, auto or native".into());
+    }
+    let paths = state.paths.clone();
+    let launch = run_backend_blocking(move || {
+        let service = CoreService::open(paths.clone()).map_err(|error| error.to_string())?;
+        let role = service
+            .get_agent_role("role_project_manager")
+            .map_err(desktop_service_error)?;
+        let project = service
+            .list_projects()
+            .map_err(desktop_service_error)?
+            .into_iter()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| "project not found".to_string())?;
+        let outcome = service
+            .create_session(SessionCreateParams {
+                project_id: project.id.clone(),
+                agent: remote_agent,
+                title: Some(title.clone()),
+                preset_id: None,
+                worktree_id: None,
+                permission: permission.clone(),
+                transport: None,
+                risk_ack,
+                cols: None,
+                rows: None,
+                extra_args: None,
+            })
+            .map_err(desktop_service_error)?;
+        let session_id = outcome.session_id.clone();
+        let mut registry = Registry::load(paths.root());
+        if let Err(error) = registry.insert(OwnedSession {
+            session_id: session_id.clone(),
+            created_at: bot_state::now(),
+            depth: 0,
+            parent_session_id: None,
+            agent: Some(agent.clone()),
+            title: Some(title.clone()),
+            permission: Some(permission.clone()),
+            role: Some(RoleSnapshot::from(&role)),
+            bot_id: None,
+            task_id: None,
+            task_attempt: 0,
+            dispatch_key: None,
+            role_preamble_delivered: false,
+        }) {
+            let _ = service.stop_session(SessionStopParams { session_id, grace_ms: 1_500 });
+            return Err(format!("could not record Bot ownership: {error}"));
+        }
+        let bot_id = bot_state::new_bot_id();
+        let role_preamble = format!(
+            "Role: {}. Description: {}. Instructions: {}.{} [End role. Task:]",
+            role.name.split_whitespace().collect::<Vec<_>>().join(" "),
+            role.description.split_whitespace().collect::<Vec<_>>().join(" "),
+            role.instructions.split_whitespace().collect::<Vec<_>>().join(" "),
+            role.output_contract
+                .as_deref()
+                .map(|contract| format!(" Output contract: {}.", contract.split_whitespace().collect::<Vec<_>>().join(" ")))
+                .unwrap_or_default(),
+        );
+        let bootstrap = format!(
+            "{role_preamble} You are now active as the Project Manager Bot for this project. Acknowledge the Bot identity, inspect the project context through the bot_* tools, and wait for the user's first issue or task. Do not create child Agents until you have a concrete request and an explicit task graph."
+        );
+        let mut store = BotStore::load(paths.root());
+        if let Err(error) = store.create_bot(bot_state::BotRecord {
+            bot_id: bot_id.clone(),
+            manager_session_id: outcome.session_id.clone(),
+            project_id: Some(project.id.clone()),
+            project_path: project.root_path.clone(),
+            title: title.clone(),
+            agent: agent.clone(),
+            status: "needs_attention".into(),
+            created_at: bot_state::now(),
+            updated_at: bot_state::now(),
+        }) {
+            let _ = registry.remove(&outcome.session_id);
+            let _ = service.stop_session(SessionStopParams { session_id: outcome.session_id.clone(), grace_ms: 1_500 });
+            return Err(format!("could not persist Bot: {error}"));
+        }
+        Ok(json!({
+            "botId": bot_id,
+            "sessionId": outcome.session_id,
+            "projectId": project.id,
+            "projectPath": project.root_path,
+            "agent": display_agent.as_str(),
+            "title": title,
+            "botStatus": "needs_attention",
+            "bootstrap": bootstrap,
+        }))
+    })
+    .await?;
+    let session_id = launch["sessionId"].as_str().ok_or_else(|| "Bot launch returned no Session id".to_string())?;
+    let session = map_err!(state.db.get_session(session_id))?;
+    ensure_session_monitor(&app, &state, &session);
+    emit_sessions_changed(&app, &state, Some(session_id));
+    Ok(launch)
 }
 
 // ---------------------------------------------------------------------------
@@ -5295,6 +5597,12 @@ fn main() {
             list_supported_agents,
             mcp_registrations,
             set_mcp_registration,
+            list_bots,
+            create_bot,
+            mark_bot_bootstrap_delivered,
+            set_bot_status,
+            set_bot_task_control,
+            confirm_bot_memory,
             add_project,
             rename_project,
             set_project_layout,

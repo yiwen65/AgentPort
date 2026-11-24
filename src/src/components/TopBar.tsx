@@ -166,9 +166,13 @@ function IconClose() {
 export default function TopBar({
   taskCenterOpen = false,
   onTaskCenterToggle,
+  botDashboardOpen = false,
+  onBotDashboardToggle,
 }: {
   taskCenterOpen?: boolean;
   onTaskCenterToggle?: () => void;
+  botDashboardOpen?: boolean;
+  onBotDashboardToggle?: () => void;
 }) {
   const { t } = useTranslation(["shell", "git"]);
   const activeSession = useStore((state) =>
@@ -354,6 +358,16 @@ export default function TopBar({
         {sidebarCollapsed ? <DevicePicker /> : null}
         <DocumentPanelUnfoldButton />
         <ExplorerToggleButton />
+        <button
+          className="window-control sidebar-toggle"
+          onClick={onBotDashboardToggle}
+          aria-label={botDashboardOpen ? "Close Project Manager Bot" : "Open Project Manager Bot"}
+          aria-pressed={botDashboardOpen}
+          data-tip={botDashboardOpen ? "Close Project Manager Bot" : "Open Project Manager Bot"}
+          data-tauri-drag-region="false"
+        >
+          <span aria-hidden="true">✦</span>
+        </button>
         <button
           className="window-control sidebar-toggle"
           onClick={onTaskCenterToggle}

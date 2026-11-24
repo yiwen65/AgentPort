@@ -8,9 +8,13 @@
 
 use agentport_core::agent_roles::{AgentRole, AgentRoleMetadata};
 use agentport_core::models::AgentType;
+use crate::bot::{
+    self, BotMemory, BotRecord, BotStore, BotTask, MAX_BOT_RUNNING_TASKS, MAX_BOT_TASKS,
+    MAX_BOT_TITLE_BYTES, MAX_MEMORY_BYTES, MAX_TASK_PROMPT_BYTES, MAX_TASK_TITLE_BYTES,
+};
 use agentport_remote_protocol::{
     AgentProbeAllParams, ProjectAddParams, RemoteAgentType, SessionCreateParams, SessionIdParams,
-    SessionRestartParams,
+    SessionRestartParams, WorktreeCreateParams,
 };
 use agentport_service::{RemoteService, SessionSummary};
 use serde_json::{json, Map, Value};
@@ -67,6 +71,66 @@ pub const TOOLS: &[ToolDef] = &[
                       unnecessary: create_session resolves its project itself (and defaults to \
                       your working directory). Use it only to inspect where a path would land.",
         schema: resolve_project_schema,
+    },
+    ToolDef {
+        name: "create_bot",
+        description: "Create a durable Project Manager Bot Session for this project. The Bot becomes the user's single coordination surface and receives bot_* MCP tools; it can delegate child Sessions and keep project memory. The returned Bot Session is automatically queued into a pane.",
+        schema: create_bot_schema,
+    },
+    ToolDef {
+        name: "bot_status",
+        description: "Read the current Bot, its durable task graph, child Session bindings, and project memory summary. Only the Bot manager Session may call bot_* tools.",
+        schema: bot_status_schema,
+    },
+    ToolDef {
+        name: "bot_submit_task",
+        description: "Record one task in the Bot's durable task graph. This does not start an Agent; plan dependencies and acceptance criteria first, then call bot_dispatch_tasks.",
+        schema: bot_submit_task_schema,
+    },
+    ToolDef {
+        name: "bot_dispatch_tasks",
+        description: "Dispatch planned Bot tasks to child AgentPort Sessions. Independent tasks may be sent in one call; dispatchKey makes retries idempotent. Each child gets a pane and a structured task prompt.",
+        schema: bot_dispatch_tasks_schema,
+    },
+    ToolDef {
+        name: "bot_wait",
+        description: "Wait for Bot child tasks and persist their replies/evidence into the task graph. Use taskIds or allRunning; this is the Bot-level completion path, not raw output polling.",
+        schema: bot_wait_schema,
+    },
+    ToolDef {
+        name: "bot_send_followup",
+        description: "Send a bounded follow-up to an existing Bot task after needs_input or unproven prompt delivery. The Bot cannot use raw Session input tools, and user-held tasks are rejected.",
+        schema: bot_send_followup_schema,
+    },
+    ToolDef {
+        name: "bot_pause",
+        description: "Pause Bot automatic dispatch. Existing child Sessions remain available for observation or user takeover.",
+        schema: bot_pause_schema,
+    },
+    ToolDef {
+        name: "bot_resume",
+        description: "Resume Bot automatic dispatch after a pause.",
+        schema: bot_resume_schema,
+    },
+    ToolDef {
+        name: "bot_cancel_task",
+        description: "Cancel one Bot task and, when it has a live child Session, stop that child through the existing ownership-safe path.",
+        schema: bot_cancel_task_schema,
+    },
+    ToolDef {
+        name: "bot_memory_search",
+        description: "Search this project's durable Bot memory. Memory is scoped to the Bot and never reads another project's records.",
+        schema: bot_memory_search_schema,
+    },
+    ToolDef {
+        name: "bot_memory_propose",
+        description: "Propose a project memory record with provenance and confidence. New records remain candidate until explicitly confirmed.",
+        schema: bot_memory_propose_schema,
+    },
+    ToolDef {
+        name: "bot_memory_confirm",
+        description: "Confirm or forget a Bot memory record after reviewing its provenance.",
+        schema: bot_memory_confirm_schema,
     },
     ToolDef {
         name: "list_sessions",
@@ -234,6 +298,113 @@ fn list_agents_schema() -> Value {
 
 fn list_roles_schema() -> Value {
     obj(json!({}), json!([]))
+}
+
+fn create_bot_schema() -> Value {
+    obj(
+        json!({
+            "agent": { "type": "string", "description": "Manager Agent id such as claude, codex, kimi, pi, or easy-pi" },
+            "projectPath": { "type": "string", "description": "Absolute project directory; defaults to the caller's project" },
+            "projectId": { "type": "string", "description": "Existing project id; prefer projectPath or omission" },
+            "title": { "type": "string", "description": "Visible Bot title" },
+            "permission": { "type": "string", "enum": ["bypass", "auto", "native"], "default": "bypass" },
+            "worktreeId": { "type": "string" }
+        }),
+        json!(["agent"]),
+    )
+}
+
+fn bot_id_schema() -> Value {
+    obj(json!({ "botId": { "type": "string" } }), json!(["botId"]))
+}
+
+fn bot_status_schema() -> Value {
+    bot_id_schema()
+}
+
+fn bot_submit_task_schema() -> Value {
+    obj(
+        json!({
+            "botId": { "type": "string" },
+            "taskId": { "type": "string", "description": "Optional stable caller id; generated when omitted" },
+            "title": { "type": "string" },
+            "prompt": { "type": "string" },
+            "acceptanceCriteria": { "type": "string" },
+            "write": { "type": "boolean", "default": true, "description": "Whether the task may edit files; true provisions an isolated worktree unless one is supplied, false is read-only" },
+            "dependencies": { "type": "array", "items": { "type": "string" } },
+            "agent": { "type": "string" },
+            "permission": { "type": "string", "enum": ["auto", "native", "bypass"], "default": "auto", "description": "Child approval policy; bypass requires an explicit task policy" },
+            "roleId": { "type": "string" },
+            "projectPath": { "type": "string" },
+            "worktreeId": { "type": "string" },
+            "dispatchKey": { "type": "string" }
+        }),
+        json!(["botId", "title", "prompt"]),
+    )
+}
+
+fn bot_dispatch_tasks_schema() -> Value {
+    obj(
+        json!({
+            "botId": { "type": "string" },
+            "taskIds": { "type": "array", "minItems": 1, "maxItems": MAX_BATCH_ITEMS, "items": { "type": "string" } },
+            "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 25000 }
+        }),
+        json!(["botId", "taskIds"]),
+    )
+}
+
+fn bot_send_followup_schema() -> Value {
+    obj(
+        json!({ "botId": { "type": "string" }, "taskId": { "type": "string" }, "text": { "type": "string" } }),
+        json!(["botId", "taskId", "text"]),
+    )
+}
+
+fn bot_wait_schema() -> Value {
+    obj(
+        json!({
+            "botId": { "type": "string" },
+            "taskIds": { "type": "array", "items": { "type": "string" } },
+            "allRunning": { "type": "boolean", "default": false },
+            "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": MAX_WAIT_GROUP_TIMEOUT_MS, "default": DEFAULT_WAIT_GROUP_TIMEOUT_MS }
+        }),
+        json!(["botId"]),
+    )
+}
+
+fn bot_pause_schema() -> Value { bot_id_schema() }
+fn bot_resume_schema() -> Value { bot_id_schema() }
+
+fn bot_cancel_task_schema() -> Value {
+    obj(
+        json!({ "botId": { "type": "string" }, "taskId": { "type": "string" } }),
+        json!(["botId", "taskId"]),
+    )
+}
+
+fn bot_memory_search_schema() -> Value {
+    obj(
+        json!({ "botId": { "type": "string" }, "query": { "type": "string" }, "limit": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10 }, "includeCandidates": { "type": "boolean", "default": false, "description": "Include unconfirmed memories as explicitly untrusted candidates" } }),
+        json!(["botId", "query"]),
+    )
+}
+
+fn bot_memory_propose_schema() -> Value {
+    obj(
+        json!({
+            "botId": { "type": "string" }, "kind": { "type": "string" }, "content": { "type": "string" },
+            "source": { "type": "string" }, "confidence": { "type": "string", "enum": ["low", "medium", "high"] }
+        }),
+        json!(["botId", "kind", "content", "source", "confidence"]),
+    )
+}
+
+fn bot_memory_confirm_schema() -> Value {
+    obj(
+        json!({ "botId": { "type": "string" }, "memoryId": { "type": "string" }, "action": { "type": "string", "enum": ["confirm", "forget"] } }),
+        json!(["botId", "memoryId", "action"]),
+    )
 }
 
 fn resolve_project_schema() -> Value {
@@ -698,6 +869,43 @@ struct ResolvedProject {
     created: bool,
 }
 
+/// Internal metadata written alongside an owned child Session before the Bot
+/// task row is updated. It closes the MCP restart window between process
+/// creation and task binding.
+#[derive(Debug, Clone)]
+struct BotBinding {
+    bot_id: String,
+    task_id: String,
+    attempt: u32,
+    dispatch_key: String,
+}
+
+fn is_bot_restricted_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "create_session"
+            | "create_sessions"
+            | "handoff"
+            | "send_prompt"
+            | "wait_for_task"
+            | "wait_for_tasks"
+            | "start_wait_group"
+            | "get_wait_group"
+            | "cancel_wait_group"
+            | "read_output"
+            | "cancel_turn"
+            | "clear_input"
+            | "restart_session"
+            | "terminate_session"
+            | "archive_session"
+            | "delete_session"
+            | "open_pane"
+            | "split_pane"
+            | "focus_pane"
+            | "close_pane"
+    )
+}
+
 fn public_role_metadata(role: AgentRoleMetadata) -> Value {
     json!({
         "roleId": role.id,
@@ -826,6 +1034,7 @@ fn role_prompt(role: &RoleSnapshot, task: &str) -> TResult<String> {
 pub struct Toolbox {
     ops: SessionOps,
     registry: Registry,
+    bot_store: BotStore,
     /// Status mark captured just before this server sent a prompt, per Session.
     /// `wait_for_task` needs it to tell "finished my turn" apart from "was
     /// already idle before I asked".
@@ -869,6 +1078,7 @@ impl Toolbox {
         Toolbox {
             ops: SessionOps::new(service),
             registry,
+            bot_store: BotStore::load(&config.root),
             created_here: std::collections::HashSet::new(),
             baselines: std::collections::HashMap::new(),
             settled: std::collections::HashMap::new(),
@@ -918,8 +1128,31 @@ impl Toolbox {
                 )
             })
             .unwrap_or_default();
+        let bot_manager = self
+            .parent_session_id
+            .as_deref()
+            .and_then(|session_id| self.bot_store.bot_for_manager(session_id));
+        // A user-owned Agent Session has an AGENTPORT_SESSION_ID too, but it
+        // is absent from this MCP's ownership registry. A nested delegated
+        // Agent is present in the registry and must not create another Bot.
+        let can_create_bot = self
+            .parent_session_id
+            .as_deref()
+            .map(|session_id| !self.registry.contains(session_id))
+            .unwrap_or(true);
         TOOLS
             .iter()
+            .filter(|tool| {
+                if tool.name.starts_with("bot_") {
+                    bot_manager.is_some()
+                } else if tool.name == "create_bot" {
+                    can_create_bot
+                } else if bot_manager.is_some() {
+                    !is_bot_restricted_tool(tool.name)
+                } else {
+                    true
+                }
+            })
             .map(|tool| {
                     let description = if matches!(tool.name, "create_session" | "create_sessions") {
                     format!("{}{}", tool.description, role_hint)
@@ -936,6 +1169,17 @@ impl Toolbox {
     }
 
     pub fn call(&mut self, name: &str, args: &Value) -> TResult<Value> {
+        if self
+            .parent_session_id
+            .as_deref()
+            .is_some_and(|session_id| self.bot_store.bot_for_manager(session_id).is_some())
+            && is_bot_restricted_tool(name)
+        {
+            return Err(ToolFailure::new(
+                "bot_tool_required",
+                "a Project Manager Bot must use bot_* task tools instead of raw Session control",
+            ));
+        }
         let args = args
             .as_object()
             .cloned()
@@ -943,6 +1187,18 @@ impl Toolbox {
         match name {
             "list_agents" => self.list_agents(&args),
             "list_roles" => self.list_roles(&args),
+            "create_bot" => self.create_bot(&args),
+            "bot_status" => self.bot_status(&args),
+            "bot_submit_task" => self.bot_submit_task(&args),
+            "bot_dispatch_tasks" => self.bot_dispatch_tasks(&args),
+            "bot_wait" => self.bot_wait(&args),
+            "bot_send_followup" => self.bot_send_followup(&args),
+            "bot_pause" => self.bot_pause(&args),
+            "bot_resume" => self.bot_resume(&args),
+            "bot_cancel_task" => self.bot_cancel_task(&args),
+            "bot_memory_search" => self.bot_memory_search(&args),
+            "bot_memory_propose" => self.bot_memory_propose(&args),
+            "bot_memory_confirm" => self.bot_memory_confirm(&args),
             "resolve_project" => self.resolve_project(&args),
             "list_sessions" => self.list_sessions(&args),
             "session_status" => self.session_status(&args),
@@ -970,6 +1226,662 @@ impl Toolbox {
                 "unknown_tool",
                 format!("unknown tool {other}"),
             )),
+        }
+    }
+
+    fn require_bot(&self, bot_id: &str) -> TResult<BotRecord> {
+        let parent = self.parent_session_id.as_deref().ok_or_else(|| {
+            ToolFailure::new("bot_manager_required", "bot_* tools can only be called from a Bot manager Session")
+        })?;
+        let bot = self.bot_store.bot_for_manager(parent).cloned().ok_or_else(|| {
+            ToolFailure::new("bot_manager_required", "this Session is not registered as a Project Manager Bot")
+        })?;
+        if bot.bot_id != bot_id {
+            return Err(ToolFailure::new("bot_scope_denied", "the requested Bot is not owned by this manager Session"));
+        }
+        Ok(bot)
+    }
+
+    fn reconcile_bot_bindings(&mut self, bot_id: &str) -> TResult<()> {
+        let bindings: Vec<(String, String, u32, String)> = self
+            .registry
+            .entries()
+            .filter_map(|entry| {
+                (entry.bot_id.as_deref() == Some(bot_id)
+                    && entry.task_id.is_some()
+                    && entry.dispatch_key.is_some())
+                    .then(|| {
+                        (
+                            entry.task_id.clone().unwrap_or_default(),
+                            entry.session_id.clone(),
+                            entry.task_attempt,
+                            entry.dispatch_key.clone().unwrap_or_default(),
+                        )
+                    })
+            })
+            .collect();
+        for (task_id, session_id, attempt, dispatch_key) in bindings {
+            if self
+                .bot_store
+                .task(bot_id, &task_id)
+                .is_some_and(|task| task.session_id.is_none())
+            {
+                self.bot_store
+                    .update_task(bot_id, &task_id, |task| {
+                        task.status = "running".into();
+                        task.session_id = Some(session_id.clone());
+                        task.attempt = attempt;
+                        task.dispatch_key = Some(dispatch_key.clone());
+                        task.error = None;
+                    })
+                    .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn create_bot(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        if self
+            .parent_session_id
+            .as_deref()
+            .is_some_and(|session_id| self.registry.contains(session_id))
+        {
+            return Err(ToolFailure::new(
+                "bot_root_required",
+                "only a user-owned Agent may create a Project Manager Bot",
+            ));
+        }
+        let agent = require_str(args, "agent")?;
+        let project = self.resolve_target_project(args)?;
+        let title = optional_str(args, "title").unwrap_or_else(|| "Project Manager Bot".into());
+        bot::validate_text("Bot title", &title, MAX_BOT_TITLE_BYTES, false)
+            .map_err(|error| ToolFailure::new("invalid_bot", error.to_string()))?;
+        let mut delegated = args.clone();
+        delegated.insert("agent".into(), Value::String(agent.clone()));
+        delegated.insert("projectPath".into(), Value::String(project.root_path.clone()));
+        delegated.insert("title".into(), Value::String(title.clone()));
+        delegated.insert("roleId".into(), Value::String("role_project_manager".into()));
+        delegated.remove("prompt");
+        let mut result = self.create_session_with_pane(&delegated, true)?;
+        let session_id = result
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolFailure::new("bot_failed", "Bot Session creation returned no Session id"))?
+            .to_string();
+        let bot_id = bot::new_bot_id();
+        let record = BotRecord {
+            bot_id: bot_id.clone(),
+            manager_session_id: session_id.clone(),
+            project_id: result.get("projectId").and_then(Value::as_str).map(str::to_owned),
+            project_path: project.root_path.clone(),
+            title: title.clone(),
+            agent: agent.clone(),
+            status: "running".into(),
+            created_at: bot::now(),
+            updated_at: bot::now(),
+        };
+        self.bot_store.create_bot(record).map_err(|error| {
+            let _ = self.ops.stop(&session_id, 1_500);
+            ToolFailure::new("bot_registry_failed", format!("could not persist Bot: {error}"))
+        })?;
+        let bootstrap = "You are now active as the Project Manager Bot for this project. Acknowledge the Bot identity, inspect the project context through the bot_* tools, and wait for the user's first issue or task. Do not create child Agents until you have a concrete request and an explicit task graph.";
+        let mut prompt_args = Map::new();
+        prompt_args.insert("sessionId".into(), Value::String(session_id.clone()));
+        prompt_args.insert("text".into(), Value::String(bootstrap.into()));
+        match self.send_prompt_with_mode(&prompt_args, false) {
+            Ok(sent) => {
+                let submitted = sent.get("submitted").and_then(Value::as_bool).unwrap_or(false);
+                let status = if submitted { "running" } else { "needs_attention" };
+                if !submitted {
+                    let _ = self.bot_store.update_bot(&bot_id, |bot| bot.status = status.into());
+                }
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("botId".into(), Value::String(bot_id.clone()));
+                    object.insert("botStatus".into(), Value::String(status.into()));
+                    object.insert("bootstrap".into(), sent);
+                }
+            }
+            Err(error) => {
+                let _ = self.bot_store.update_bot(&bot_id, |bot| bot.status = "needs_attention".into());
+                if let Some(object) = result.as_object_mut() {
+                    object.insert("botId".into(), Value::String(bot_id.clone()));
+                    object.insert("botStatus".into(), Value::String("needs_attention".into()));
+                    object.insert("bootstrapError".into(), json!({"code": error.code, "message": error.message}));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn bot_status(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        let bot = self.require_bot(&bot_id)?;
+        self.reconcile_bot_bindings(&bot_id)?;
+        Ok(json!({"bot": bot, "tasks": self.bot_store.tasks_for_bot(&bot_id), "memories": self.bot_store.memories_for_bot(&bot_id)}))
+    }
+
+    fn bot_submit_task(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        let bot = self.require_bot(&bot_id)?;
+        if bot.status == "paused" {
+            return Err(ToolFailure::new("bot_paused", "resume the Bot before adding work"));
+        }
+        let title = require_str(args, "title")?;
+        let prompt = require_str(args, "prompt")?;
+        bot::validate_text("task title", &title, MAX_TASK_TITLE_BYTES, false)
+            .map_err(|error| ToolFailure::new("invalid_task", error.to_string()))?;
+        bot::validate_text("task prompt", &prompt, MAX_TASK_PROMPT_BYTES, true)
+            .map_err(|error| ToolFailure::new("invalid_task", error.to_string()))?;
+        if self.bot_store.tasks_for_bot(&bot_id).len() >= MAX_BOT_TASKS {
+            return Err(ToolFailure::new(
+                "bot_quota_exceeded",
+                format!("a Bot may retain at most {MAX_BOT_TASKS} tasks"),
+            ));
+        }
+        let task_id = optional_str(args, "taskId").unwrap_or_else(bot::new_task_id);
+        if self.bot_store.task(&bot_id, &task_id).is_some() {
+            return Err(ToolFailure::new("task_exists", format!("task {task_id} already exists")));
+        }
+        let dependencies = args.get("dependencies").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|value| value.as_str().map(str::to_owned)).collect::<Vec<_>>();
+        for dependency in &dependencies {
+            if dependency == &task_id || self.bot_store.task(&bot_id, dependency).is_none() {
+                return Err(ToolFailure::new("invalid_dependency", format!("task dependency {dependency} is not an existing task")));
+            }
+        }
+        let permission = optional_str(args, "permission").unwrap_or_else(|| "auto".into());
+        if !matches!(permission.as_str(), "auto" | "native" | "bypass") {
+            return Err(ToolFailure::new("invalid_permission", "permission must be auto, native or bypass"));
+        }
+        let acceptance_criteria = optional_str(args, "acceptanceCriteria");
+        if let Some(criteria) = acceptance_criteria.as_deref() {
+            bot::validate_text("acceptance criteria", criteria, MAX_TASK_PROMPT_BYTES, true)
+                .map_err(|error| ToolFailure::new("invalid_task", error.to_string()))?;
+        }
+        let idempotency_key = optional_str(args, "dispatchKey");
+        if let Some(key) = idempotency_key.as_deref() {
+            bot::validate_text("dispatch key", key, 512, false)
+                .map_err(|error| ToolFailure::new("invalid_task", error.to_string()))?;
+            if self.bot_store.task_by_dispatch_key(&bot_id, key).is_some() {
+                return Err(ToolFailure::new(
+                    "dispatch_key_exists",
+                    format!("dispatch key {key} is already assigned in this Bot"),
+                ));
+            }
+        }
+        let project_path = match optional_str(args, "projectPath") {
+            Some(path) => {
+                let normalized = agentport_core::paths::normalize_abs(&path)
+                    .map_err(|error| ToolFailure::new("invalid_path", error.to_string()))?;
+                if !is_path_within(&bot.project_path, &normalized) {
+                    return Err(ToolFailure::new(
+                        "bot_scope_denied",
+                        "task projectPath must stay inside the Bot project",
+                    ));
+                }
+                Some(normalized)
+            }
+            None => Some(bot.project_path.clone()),
+        };
+        let task = BotTask {
+            task_id: task_id.clone(), bot_id: bot_id.clone(), title: title.clone(), prompt: prompt.clone(),
+            dependencies, acceptance_criteria, write: args.get("write").and_then(Value::as_bool).unwrap_or(true), agent: optional_str(args, "agent"), permission, role_id: optional_str(args, "roleId"),
+            project_path,
+            worktree_id: optional_str(args, "worktreeId"), idempotency_key, dispatch_key: None,
+            session_id: None, session_ids: vec![], attempt: 0, status: "planned".into(), result: None, evidence: None, error: None,
+            control_owner: "bot".into(), control_lease_id: None, control_updated_at: None,
+            created_at: bot::now(), updated_at: bot::now(),
+        };
+        match self
+            .bot_store
+            .insert_task(task.clone())
+            .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?
+        {
+            Ok(()) => Ok(json!({"botId": bot_id, "task": task})),
+            Err(reason) => Err(ToolFailure::new(reason, "task id was concurrently created in this Bot")),
+        }
+    }
+
+    fn bot_dispatch_tasks(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        let bot = self.require_bot(&bot_id)?;
+        self.reconcile_bot_bindings(&bot_id)?;
+        if bot.status == "paused" {
+            return Err(ToolFailure::new(
+                "bot_paused",
+                "resume the Bot before dispatching tasks",
+            ));
+        }
+        let ids = args
+            .get("taskIds")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ToolFailure::new("invalid_arguments", "taskIds must be an array"))?;
+        if ids.is_empty() || ids.len() > MAX_BATCH_ITEMS {
+            return Err(ToolFailure::new(
+                "invalid_arguments",
+                format!("taskIds must contain 1..{MAX_BATCH_ITEMS} items"),
+            ));
+        }
+        let running = self
+            .bot_store
+            .tasks_for_bot(&bot_id)
+            .into_iter()
+            .filter(|task| task.status == "running" || task.status == "dispatching")
+            .count();
+        let mut available_slots = MAX_BOT_RUNNING_TASKS.saturating_sub(running);
+        let mut results = Vec::with_capacity(ids.len());
+        for value in ids {
+            let Some(task_id) = value.as_str() else {
+                results.push(json!({"status":"failed","error":"taskId must be a string"}));
+                continue;
+            };
+            let Some(task) = self.bot_store.task(&bot_id, task_id).cloned() else {
+                results.push(json!({"taskId":task_id,"status":"failed","error":"task_not_found"}));
+                continue;
+            };
+            if task.status == "completed" {
+                results.push(json!({"taskId":task_id,"status":"already_completed","attempt":task.attempt,"sessionIds":task.session_ids}));
+                continue;
+            }
+            if task.control_owner == "user" {
+                results.push(json!({"taskId":task_id,"status":"waiting_user","controlOwner":"user","controlLeaseId":task.control_lease_id}));
+                continue;
+            }
+            if task.session_id.is_some() {
+                results.push(json!({"taskId":task_id,"status":"already_dispatched","sessionId":task.session_id,"attempt":task.attempt,"sessionIds":task.session_ids}));
+                continue;
+            }
+            // A reservation without a bound Session means the previous MCP
+            // process died in the create/bind window. Do not guess and create a
+            // duplicate; surface it for explicit review instead.
+            if task.status == "dispatching" {
+                self.bot_store
+                    .update_task(&bot_id, task_id, |item| item.status = "needs_review".into())
+                    .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+                results.push(json!({"taskId":task_id,"status":"needs_review","error":"dispatch_reservation_without_session"}));
+                continue;
+            }
+            let blocked = task.dependencies.iter().any(|dependency| {
+                self.bot_store
+                    .task(&bot_id, dependency)
+                    .is_none_or(|item| item.status != "completed")
+            });
+            if blocked {
+                results.push(json!({"taskId":task_id,"status":"blocked","dependencies":task.dependencies}));
+                continue;
+            }
+            if available_slots == 0 {
+                results.push(json!({"taskId":task_id,"status":"blocked","error":"bot_concurrency_limit"}));
+                continue;
+            }
+            available_slots -= 1;
+            let attempt = task.attempt.saturating_add(1);
+            let dispatch_key = task
+                .idempotency_key
+                .clone()
+                .unwrap_or_else(|| format!("{bot_id}/{task_id}/{attempt}"));
+            if let Some(previous) = self.bot_store.task_by_dispatch_key(&bot_id, &dispatch_key) {
+                if previous.task_id != task_id || previous.session_id.is_some() {
+                    results.push(json!({"taskId":task_id,"status":"already_dispatched","sessionId":previous.session_id,"attempt":previous.attempt,"dispatchKey":dispatch_key}));
+                    continue;
+                }
+            }
+            match self
+                .bot_store
+                .reserve_task(&bot_id, task_id, attempt, &dispatch_key)
+                .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?
+            {
+                Ok(()) => {}
+                Err(reason) => {
+                    available_slots += 1;
+                    results.push(json!({"taskId":task_id,"status":reason,"dispatchKey":dispatch_key}));
+                    continue;
+                }
+            }
+
+            let mut worktree_id = task.worktree_id.clone();
+            if task.write && worktree_id.is_none() {
+                let Some(project_id) = bot.project_id.clone() else {
+                    let message = "write task cannot be isolated because the Bot has no project id";
+                    self.bot_store
+                        .update_task(&bot_id, task_id, |item| {
+                            item.status = "needs_review".into();
+                            item.error = Some(message.into());
+                        })
+                        .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+                    available_slots += 1;
+                    results.push(json!({"taskId":task_id,"status":"needs_review","error":message}));
+                    continue;
+                };
+                match self.ops.service().create_worktree(WorktreeCreateParams {
+                    project_id,
+                    task: format!("bot-{task_id}-{}", task.title),
+                    base_ref: None,
+                    branch: None,
+                    branch_mode: None,
+                    expected_branch_oid: None,
+                }) {
+                    Ok(worktree) => {
+                        worktree_id = Some(worktree.id.clone());
+                        self.bot_store
+                            .update_task(&bot_id, task_id, |item| item.worktree_id = worktree_id.clone())
+                            .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+                    }
+                    Err(error) => {
+                        let failure = ToolFailure::from(error);
+                        self.bot_store
+                            .update_task(&bot_id, task_id, |item| {
+                                item.status = "needs_review".into();
+                                item.error = Some(failure.message.clone());
+                            })
+                            .map_err(|store_error| ToolFailure::new("bot_store_failed", store_error.to_string()))?;
+                        available_slots += 1;
+                        results.push(json!({"taskId":task_id,"status":"needs_review","error":{"code":failure.code,"message":failure.message}}));
+                        continue;
+                    }
+                }
+            }
+            let mut child = Map::new();
+            child.insert(
+                "agent".into(),
+                Value::String(task.agent.clone().unwrap_or_else(|| bot.agent.clone())),
+            );
+            child.insert("permission".into(), Value::String(task.permission.clone()));
+            child.insert("title".into(), Value::String(task.title.clone()));
+            let criteria = task
+                .acceptance_criteria
+                .as_deref()
+                .unwrap_or("Report concrete files changed, commands run, actual results, and unresolved risks.");
+            let criteria = criteria.split_whitespace().collect::<Vec<_>>().join(" ");
+            let task_description = task.prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+            let child_prompt = format!(
+                "Bot task {task_id}. Acceptance criteria: {criteria}. Task description: {task_description}. Do not claim completion without evidence."
+            );
+            if child_prompt.len() > text::MAX_PROMPT_BYTES {
+                let message = format!("task prompt plus acceptance criteria exceeds the PTY prompt limit of {} bytes", text::MAX_PROMPT_BYTES);
+                self.bot_store
+                    .update_task(&bot_id, task_id, |item| {
+                        item.status = "needs_review".into();
+                        item.error = Some(message.clone());
+                    })
+                    .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+                available_slots += 1;
+                results.push(json!({"taskId":task_id,"status":"needs_review","error":message}));
+                continue;
+            }
+            child.insert("prompt".into(), Value::String(child_prompt));
+            if let Some(role_id) = task.role_id.clone() {
+                child.insert("roleId".into(), Value::String(role_id));
+            }
+            if let Some(project_path) = task.project_path.clone() {
+                child.insert("projectPath".into(), Value::String(project_path));
+            }
+            if let Some(worktree_id) = worktree_id {
+                child.insert("worktreeId".into(), Value::String(worktree_id));
+            }
+            let binding = BotBinding {
+                bot_id: bot_id.clone(),
+                task_id: task_id.to_string(),
+                attempt,
+                dispatch_key: dispatch_key.clone(),
+            };
+            match self.create_session_with_binding(&child, true, Some(&binding)) {
+                Ok(value) => {
+                    let session_id = value
+                        .get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let prompt_sent = value
+                        .get("promptSent")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let running = session_id.is_some() && prompt_sent;
+                    let status = if running { "running" } else { "needs_review" };
+                    self.bot_store
+                        .update_task(&bot_id, task_id, |item| {
+                            item.status = status.into();
+                            item.session_id = session_id.clone();
+                            if let Some(session_id) = session_id.as_deref() {
+                                if !item.session_ids.iter().any(|id| id == session_id) {
+                                    item.session_ids.push(session_id.to_string());
+                                }
+                            }
+                            item.error = (!running).then(|| {
+                                if session_id.is_none() {
+                                    "child Session id missing".into()
+                                } else {
+                                    "child Session was created but its prompt was not proven delivered".into()
+                                }
+                            });
+                        })
+                        .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+                    results.push(json!({"taskId":task_id,"status":status,"attempt":attempt,"dispatchKey":dispatch_key,"sessionId":session_id,"promptSent":prompt_sent,"session":value}));
+                }
+                Err(error) => {
+                    available_slots += 1;
+                    self.bot_store
+                        .update_task(&bot_id, task_id, |item| {
+                            item.status = "failed".into();
+                            item.error = Some(error.message.clone());
+                        })
+                        .map_err(|store_error| ToolFailure::new("bot_store_failed", store_error.to_string()))?;
+                    results.push(json!({"taskId":task_id,"status":"failed","error":{"code":error.code,"message":error.message}}));
+                }
+            }
+        }
+        Ok(json!({"botId":bot_id,"results":results}))
+    }
+
+    fn bot_wait(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        self.require_bot(&bot_id)?;
+        self.reconcile_bot_bindings(&bot_id)?;
+        let task_ids = if args.get("allRunning").and_then(Value::as_bool).unwrap_or(false) {
+            self.bot_store.tasks_for_bot(&bot_id).into_iter().filter(|task| task.status == "running" && task.session_id.is_some()).map(|task| task.task_id).collect::<Vec<_>>()
+        } else { args.get("taskIds").and_then(Value::as_array).ok_or_else(|| ToolFailure::new("invalid_arguments", "taskIds must be provided unless allRunning=true"))?.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>() };
+        if task_ids.is_empty() { return Ok(json!({"botId":bot_id,"results":[]})); }
+        let timeout = optional_u64(args, "timeoutMs").unwrap_or(DEFAULT_WAIT_GROUP_TIMEOUT_MS).clamp(1_000, MAX_WAIT_GROUP_TIMEOUT_MS);
+        let started = Instant::now();
+        let mut results = Vec::new();
+        for task_id in task_ids {
+            let Some(task) = self.bot_store.task(&bot_id, &task_id).cloned() else { results.push(json!({"taskId":task_id,"status":"failed","error":"task_not_found"})); continue; };
+            let Some(session_id) = task.session_id.clone() else { results.push(json!({"taskId":task_id,"status":task.status,"error":"task_not_dispatched"})); continue; };
+            let remaining = timeout.saturating_sub(started.elapsed().as_millis() as u64);
+            if remaining < 1_000 {
+                results.push(json!({
+                    "taskId": task_id,
+                    "status": "running",
+                    "sessionId": session_id,
+                    "outcome": {
+                        "state": "timeout",
+                        "continuation": true,
+                        "stillRunning": true,
+                        "nextAction": "bot_wait"
+                    }
+                }));
+                continue;
+            }
+            let mut wait_args = Map::new();
+            wait_args.insert("sessionId".into(), Value::String(session_id.clone()));
+            wait_args.insert("timeoutMs".into(), Value::Number(remaining.into()));
+            let outcome = self.wait_for_task(&wait_args);
+            match outcome {
+                Ok(value) => {
+                    let state = value.get("state").and_then(Value::as_str).unwrap_or("unknown").to_string();
+                    let reply = value.get("reply").and_then(Value::as_str).map(str::to_owned);
+                    let evidence = value.get("evidence").and_then(Value::as_str).map(str::to_owned);
+                    let confidence = value.get("confidence").and_then(Value::as_str).unwrap_or("low");
+                    let source = value.get("source").and_then(Value::as_str).unwrap_or("");
+                    let has_evidence = confidence != "low"
+                        && source != "quiet_window"
+                        && (reply.as_deref().is_some_and(|text| !text.trim().is_empty())
+                            || evidence.as_deref().is_some_and(|text| !text.trim().is_empty()));
+                    let next_status = if state == "idle" && has_evidence {
+                        "completed"
+                    } else if state == "idle" {
+                        "needs_review"
+                    } else if state == "needs_input" {
+                        "waiting_user"
+                    } else if state == "timeout" {
+                        "running"
+                    } else if state == "exited" {
+                        "failed"
+                    } else {
+                        "needs_review"
+                    };
+                    self.bot_store.update_task(&bot_id, &task_id, |item| {
+                        item.status = next_status.into();
+                        item.result = reply.clone();
+                        item.evidence = evidence.clone();
+                        if matches!(next_status, "completed" | "failed" | "needs_review") {
+                            item.session_id = None;
+                        }
+                        item.error = (state == "exited" || (state == "idle" && !has_evidence))
+                            .then(|| if state == "exited" { "child Session exited before verified completion".into() } else { "child reported idle without a reply or evidence".into() });
+                    }).map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+                    results.push(json!({"taskId":task_id,"status":next_status,"sessionId":session_id,"outcome":value}));
+                }
+                Err(error) => {
+                    self.bot_store.update_task(&bot_id, &task_id, |item| { item.status = "needs_review".into(); item.error = Some(error.message.clone()); }).map_err(|store_error| ToolFailure::new("bot_store_failed", store_error.to_string()))?;
+                    results.push(json!({"taskId":task_id,"status":"needs_review","sessionId":session_id,"error":{"code":error.code,"message":error.message}}));
+                }
+            }
+        }
+        Ok(json!({"botId":bot_id,"results":results}))
+    }
+
+    fn bot_send_followup(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        self.require_bot(&bot_id)?;
+        self.reconcile_bot_bindings(&bot_id)?;
+        let task_id = require_str(args, "taskId")?;
+        let text = require_str(args, "text")?;
+        let task = self
+            .bot_store
+            .task(&bot_id, &task_id)
+            .cloned()
+            .ok_or_else(|| ToolFailure::new("task_not_found", "task not found"))?;
+        if task.control_owner == "user" {
+            return Err(ToolFailure::new(
+                "intervention_lease_held",
+                "the user currently controls this task; the Bot cannot send a follow-up",
+            ));
+        }
+        let session_id = task
+            .session_id
+            .clone()
+            .ok_or_else(|| ToolFailure::new("task_not_running", "task has no current child Session; dispatch a new attempt"))?;
+        let mut send_args = Map::new();
+        send_args.insert("sessionId".into(), Value::String(session_id.clone()));
+        send_args.insert("text".into(), Value::String(text));
+        let sent = self.send_prompt_with_mode(&send_args, false)?;
+        let submitted = sent.get("submitted").and_then(Value::as_bool).unwrap_or(false);
+        self.bot_store
+            .update_task(&bot_id, &task_id, |item| {
+                item.status = if submitted { "running" } else { "needs_review" }.into();
+                if !submitted {
+                    item.error = Some("follow-up prompt was not proven delivered".into());
+                } else {
+                    item.error = None;
+                }
+            })
+            .map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+        Ok(json!({"botId":bot_id,"taskId":task_id,"sessionId":session_id,"submitted":submitted,"send":sent}))
+    }
+
+    fn bot_pause(&mut self, args: &Map<String, Value>) -> TResult<Value> { self.set_bot_status(args, "paused") }
+    fn bot_resume(&mut self, args: &Map<String, Value>) -> TResult<Value> { self.set_bot_status(args, "running") }
+
+    fn set_bot_status(&mut self, args: &Map<String, Value>, status: &str) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        self.require_bot(&bot_id)?;
+        self.reconcile_bot_bindings(&bot_id)?;
+        if !self.bot_store.update_bot(&bot_id, |bot| bot.status = status.into()).map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))? { return Err(ToolFailure::new("bot_not_found", "Bot not found")); }
+        Ok(json!({"botId":bot_id,"status":status}))
+    }
+
+    fn bot_cancel_task(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        self.require_bot(&bot_id)?;
+        self.reconcile_bot_bindings(&bot_id)?;
+        let task_id = require_str(args, "taskId")?;
+        let task = self.bot_store.task(&bot_id, &task_id).cloned().ok_or_else(|| ToolFailure::new("task_not_found", "task not found"))?;
+        if task.control_owner == "user" {
+            return Err(ToolFailure::new(
+                "intervention_lease_held",
+                "the user currently controls this task; the Bot cannot cancel or send input",
+            ));
+        }
+        let mut cancelled_child = false;
+        let mut child_error = None;
+        if let Some(session_id) = task.session_id.clone() {
+            // A task cancellation owns the child lifecycle. `cancel_turn` is
+            // intentionally not used here because Ctrl-C at an idle TUI quits
+            // the whole Agent, while terminate_session is safe in every state.
+            let mut stop_args = Map::new();
+            stop_args.insert("sessionId".into(), Value::String(session_id));
+            match self.terminate_session(&stop_args) {
+                Ok(_) => cancelled_child = true,
+                Err(error) => child_error = Some(error.message),
+            }
+        }
+        let next_status = if child_error.is_some() { "needs_review" } else { "cancelled" };
+        self.bot_store.update_task(&bot_id, &task_id, |item| {
+            item.status = next_status.into();
+            item.session_id = None;
+            item.error = child_error.clone();
+        }).map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+        Ok(json!({"botId":bot_id,"taskId":task_id,"status":next_status,"childCancelAccepted":cancelled_child,"error":child_error}))
+    }
+
+    fn bot_memory_search(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        self.require_bot(&bot_id)?;
+        let query = require_str(args, "query")?.to_lowercase();
+        let limit = optional_u64(args, "limit").unwrap_or(10).clamp(1, 50) as usize;
+        let include_candidates = args.get("includeCandidates").and_then(Value::as_bool).unwrap_or(false);
+        let memories = self.bot_store.memories_for_bot(&bot_id).into_iter().filter(|memory| {
+            (include_candidates || memory.status == "confirmed")
+                && (memory.content.to_lowercase().contains(&query)
+                    || memory.kind.to_lowercase().contains(&query)
+                    || memory.source.to_lowercase().contains(&query))
+        }).take(limit).collect::<Vec<_>>();
+        Ok(json!({"botId":bot_id,"memories":memories}))
+    }
+
+    fn bot_memory_propose(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        self.require_bot(&bot_id)?;
+        let kind = require_str(args, "kind")?;
+        let content = require_str(args, "content")?;
+        let source = require_str(args, "source")?;
+        let confidence = require_str(args, "confidence")?;
+        if !matches!(confidence.as_str(), "low" | "medium" | "high") { return Err(ToolFailure::new("invalid_memory", "confidence must be low, medium or high")); }
+        bot::validate_text("memory kind", &kind, MAX_MEMORY_BYTES, false)
+            .map_err(|error| ToolFailure::new("invalid_memory", error.to_string()))?;
+        bot::validate_memory_text("memory content", &content)
+            .map_err(|error| ToolFailure::new("invalid_memory", error.to_string()))?;
+        bot::validate_memory_text("memory source", &source)
+            .map_err(|error| ToolFailure::new("invalid_memory", error.to_string()))?;
+        let memory = BotMemory { memory_id: bot::new_memory_id(), bot_id: bot_id.clone(), kind, content, source, confidence, status: "candidate".into(), created_at: bot::now(), updated_at: bot::now() };
+        self.bot_store.propose_memory(memory.clone()).map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))?;
+        Ok(json!({"botId":bot_id,"memory":memory,"note":"candidate memory requires explicit confirmation"}))
+    }
+
+    fn bot_memory_confirm(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let bot_id = require_str(args, "botId")?;
+        self.require_bot(&bot_id)?;
+        let memory_id = require_str(args, "memoryId")?;
+        let action = require_str(args, "action")?;
+        match action.as_str() {
+            "confirm" => Err(ToolFailure::new(
+                "memory_confirmation_required",
+                "candidate memories require an explicit user confirmation in AgentPort; the Bot cannot promote its own candidate",
+            )),
+            "forget" => {
+                if !self.bot_store.remove_memory(&bot_id, &memory_id).map_err(|error| ToolFailure::new("bot_store_failed", error.to_string()))? { return Err(ToolFailure::new("memory_not_found", "memory not found")); }
+                Ok(json!({"botId":bot_id,"memoryId":memory_id,"status":"forgotten"}))
+            }
+            _ => Err(ToolFailure::new("invalid_memory", "action must be confirm or forget")),
         }
     }
 
@@ -1550,6 +2462,15 @@ impl Toolbox {
         args: &Map<String, Value>,
         queue_pane: bool,
     ) -> TResult<Value> {
+        self.create_session_with_binding(args, queue_pane, None)
+    }
+
+    fn create_session_with_binding(
+        &mut self,
+        args: &Map<String, Value>,
+        queue_pane: bool,
+        bot_binding: Option<&BotBinding>,
+    ) -> TResult<Value> {
         // Resolve before project registration or Session creation so an
         // unavailable role fails closed without leaving any side effect.
         let role = self.resolve_role(args)?;
@@ -1694,6 +2615,10 @@ impl Toolbox {
             title: title.clone(),
             permission: Some(permission.clone()),
             role: role_snapshot.clone(),
+            bot_id: bot_binding.map(|binding| binding.bot_id.clone()),
+            task_id: bot_binding.map(|binding| binding.task_id.clone()),
+            task_attempt: bot_binding.map(|binding| binding.attempt).unwrap_or(0),
+            dispatch_key: bot_binding.map(|binding| binding.dispatch_key.clone()),
             role_preamble_delivered: false,
         }) {
             // The Session exists and is running: never leave an un-addressable
@@ -2003,6 +2928,12 @@ impl Toolbox {
     ) -> TResult<Value> {
         let session_id = require_str(args, "sessionId")?;
         self.require_owned(&session_id)?;
+        if let Some(task) = self.controlled_task_for_session(&session_id) {
+            return Err(ToolFailure::new(
+                "intervention_lease_held",
+                format!("task {} is under user control; wait for the user to return it before sending input", task.task_id),
+            ));
+        }
         if self.waits.is_active(&session_id) {
             return Err(ToolFailure::new(
                 "wait_already_active",
@@ -3040,6 +3971,14 @@ impl Toolbox {
 
     // -- helpers -----------------------------------------------------------
 
+    fn controlled_task_for_session(&self, session_id: &str) -> Option<&BotTask> {
+        self.bot_store.tasks().iter().find(|task| {
+            task.control_owner == "user"
+                && (task.session_id.as_deref() == Some(session_id)
+                    || task.session_ids.iter().any(|id| id == session_id))
+        })
+    }
+
     fn require_owned(&self, session_id: &str) -> TResult<()> {
         if self.registry.contains(session_id) {
             return Ok(());
@@ -3271,6 +4210,11 @@ fn optional_u64(args: &Map<String, Value>, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
+fn is_path_within(root: &str, candidate: &str) -> bool {
+    candidate == root
+        || candidate.starts_with(&format!("{}/", root.trim_end_matches('/')))
+}
+
 fn wait_timeout_ms(requested: Option<u64>) -> u64 {
     requested
         .unwrap_or(DEFAULT_WAIT_MS)
@@ -3377,6 +4321,43 @@ mod tests {
             assert!(schema["properties"].is_object(), "{}", tool.name);
             assert!(schema["required"].is_array(), "{}", tool.name);
         }
+    }
+
+    #[test]
+    fn bot_manager_gets_only_control_plane_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = BotStore::load(dir.path());
+        store
+            .create_bot(BotRecord {
+                bot_id: "bot_test".into(),
+                manager_session_id: "manager_session".into(),
+                project_id: None,
+                project_path: "/repo".into(),
+                title: "PM".into(),
+                agent: "claude".into(),
+                status: "running".into(),
+                created_at: bot::now(),
+                updated_at: bot::now(),
+            })
+            .unwrap();
+        let mut toolbox = Toolbox::new(
+            Arc::new(test_support::StubService),
+            ToolboxConfig {
+                root: dir.path().to_path_buf(),
+                parent_session_id: Some("manager_session".into()),
+                max_depth: 2,
+                max_sessions: 2,
+            },
+        );
+        let names: std::collections::HashSet<String> = toolbox
+            .tool_definitions()
+            .into_iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        assert!(names.contains("bot_status"));
+        assert!(!names.contains("create_session"));
+        assert!(!names.contains("send_prompt"));
+        assert_eq!(toolbox.call("send_prompt", &json!({})).unwrap_err().code, "bot_tool_required");
     }
 
     #[test]

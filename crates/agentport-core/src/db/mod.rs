@@ -8144,10 +8144,10 @@ mod tests {
         db.seed_builtin_roles().unwrap();
         db.seed_builtin_roles().unwrap();
         let builtins = db.list_agent_roles().unwrap();
-        assert_eq!(builtins.len(), 5);
+        assert_eq!(builtins.len(), 6);
         assert!(builtins.iter().all(|role| role.built_in && role.enabled));
         let metadata = db.list_agent_role_metadata().unwrap();
-        assert_eq!(metadata.len(), 5);
+        assert_eq!(metadata.len(), 6);
         assert!(metadata.iter().all(|role| role.description.len() > 0));
 
         let original = db.get_agent_role("role_reviewer").unwrap();

@@ -12,6 +12,7 @@ import {
 import type {
   AddProjectResult,
   ArchivedSessionView,
+  BotSnapshot,
   AttachInfo,
   BootInfo,
   ChannelMsg,
@@ -200,6 +201,25 @@ export function commitAiErrorText(value: unknown): string {
 // commands
 // ---------------------------------------------------------------------------
 
+export type CreateBotArgs = {
+  projectId: string;
+  agent: string;
+  title?: string | null;
+  permission?: PermissionStr;
+  riskAck: boolean;
+};
+
+export type CreateBotResult = {
+  botId: string;
+  sessionId: string;
+  projectId: string;
+  projectPath: string;
+  agent: string;
+  title: string;
+  botStatus: string;
+  bootstrap: string;
+};
+
 export type CreateSessionArgs = {
   projectId: string;
   agent: string;
@@ -279,6 +299,18 @@ export const localApi = {
   ) => invoke<string>("upload_github_task_image", { projectId, fileName, contentType, contentBase64 }),
   listProjects: (activeSession: string | null) =>
     invoke<ProjectView[]>("list_projects", { activeSession }),
+  listBots: (projectId?: string | null) =>
+    invoke<{ bots: BotSnapshot[] }>("list_bots", { projectId: projectId ?? null }),
+  createBot: (args: CreateBotArgs) =>
+    invoke<CreateBotResult>("create_bot", args),
+  markBotBootstrapDelivered: (botId: string) =>
+    invoke<{ botId: string; rolePreambleDelivered: boolean }>("mark_bot_bootstrap_delivered", { botId }),
+  setBotStatus: (botId: string, status: "running" | "paused" | "needs_attention") =>
+    invoke<{ botId: string; status: string }>("set_bot_status", { botId, status }),
+  setBotTaskControl: (botId: string, taskId: string, owner: "bot" | "user") =>
+    invoke<{ botId: string; task: BotSnapshot["tasks"][number] }>("set_bot_task_control", { botId, taskId, owner }),
+  confirmBotMemory: (botId: string, memoryId: string, action: "confirm" | "forget") =>
+    invoke<{ botId: string; memoryId: string; status: string }>("confirm_bot_memory", { botId, memoryId, action }),
   listGithubTasks: (projectId: string, scope: GithubTaskScope) =>
     invoke<GithubTaskEnvelope>("list_github_tasks", { projectId, scope }),
   getGithubTask: (projectId: string, kind: string, number: number) =>

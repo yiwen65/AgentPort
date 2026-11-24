@@ -61,6 +61,11 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 | `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent。默认返回的是 AgentPort 的**探测缓存**：`cached: true`、`capturedAt` 和每个 Agent 的 `probedAt` 会一起给出，版本号可能落后于实际 CLI，不能当成本机当前版本引用；要事实就用 `probe: true` |
 | `list_roles` | 查询设置中**已启用**的角色 metadata（roleId、名称、说明、输出契约和 revision）；不会返回完整角色指令。委派工具的 tools/list 描述也会直接携带这些 metadata |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等）。**通常用不到**：`create_session` 自己解析项目（显式 id/path → 否则当前工作目录；cwd 在已注册项目内时归到那个项目） |
+| `create_bot` | 从用户拥有的 Agent MCP 创建持久化 Project Manager Bot；Bot Session 自动分屏，身份/任务/记忆写入项目数据目录的 `mcp/bots.json` |
+| `bot_status` | 只对 Bot manager Session 暴露；返回 Bot 身份、任务图、子 Session 绑定和记忆 |
+| `bot_submit_task` / `bot_dispatch_tasks` | 先写入带依赖、验收标准、权限、读写策略的任务，再按幂等 dispatch key 创建子 Session；写任务默认隔离 worktree |
+| `bot_wait` / `bot_send_followup` / `bot_pause` / `bot_resume` / `bot_cancel_task` | Bot 级等待、追问、暂停、恢复和安全停止；完成必须有高置信回合证据，否则进入 `needs_review` |
+| `bot_memory_search` / `bot_memory_propose` / `bot_memory_confirm` | 项目级记忆候选与检索；默认只检索已确认事实，候选必须由 AgentPort 用户界面确认，Bot 不能自我晋升 |
 | `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence；完成后 `session_status.completion` 也会给本轮最终答复 |
 | `create_session` | 建单个 Session；模型可根据 tools/list 中的已启用 Role name/description 自行传 `roleId`，也可以省略；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
 | `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId` 或省略；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |

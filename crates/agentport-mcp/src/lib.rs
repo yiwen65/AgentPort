@@ -5,6 +5,7 @@
 //! group, status evidence and native resume behaviour are identical to the
 //! desktop app's own Sessions.
 
+pub mod bot;
 pub mod ops;
 pub mod protocol;
 pub mod registry;

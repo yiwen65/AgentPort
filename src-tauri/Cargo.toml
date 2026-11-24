@@ -31,6 +31,7 @@ libc = { workspace = true }
 agentport-core = { path = "../crates/agentport-core" }
 agentport-service = { path = "../crates/agentport-service" }
 agentport-remote-protocol = { path = "../crates/agentport-remote-protocol" }
+agentport-mcp = { path = "../crates/agentport-mcp" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
