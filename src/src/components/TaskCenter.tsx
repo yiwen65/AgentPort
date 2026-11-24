@@ -75,6 +75,30 @@ function emptyErrors(): ScopeErrors {
   return { issues: null, pulls: null };
 }
 
+type TaskCacheEntry = {
+  items: TaskItems;
+  repository: string | null;
+  scopeErrors: ScopeErrors;
+  cachedAt: number;
+};
+
+const TASK_CACHE_TTL_MS = 30_000;
+const taskDataCache = new Map<string, TaskCacheEntry>();
+const taskProviderCache = new Map<string, { detection: TaskProviderDetection; cachedAt: number }>();
+
+function taskDeviceKey(projectId: string): string {
+  const device = activeDeviceContext();
+  return `${device.kind === "remote" ? device.deviceId : "local"}:${projectId}`;
+}
+
+function taskCacheKey(provider: Provider, projectId: string): string {
+  return `${taskDeviceKey(projectId)}:${provider}`;
+}
+
+function cloneTaskItems(items: TaskItems): TaskItems {
+  return { issues: [...items.issues], pulls: [...items.pulls] };
+}
+
 function asRecord(value: unknown): TaskRecord | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as TaskRecord
@@ -146,6 +170,7 @@ function taskState(task: TaskRecord): string {
 function taskTone(task: TaskRecord, _scope: TaskScope): "open" | "review" | "done" | "muted" {
   const state = taskState(task).toLowerCase();
   if (state.includes("closed") || state.includes("merged") || state.includes("done") || state.includes("complete")) return "done";
+  if (_scope === "pulls" && task.draft !== true && taskReviewStatuses(task).some((status) => status !== "no_reviews")) return "review";
   if (state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")) return "open";
   return "muted";
 }
@@ -297,20 +322,19 @@ function useTasks(projectId: string | null, provider: Provider | null, open: boo
   const [error, setError] = useState<string | null>(null);
   const [scopeErrors, setScopeErrors] = useState<ScopeErrors>(emptyErrors);
   const [revision, setRevision] = useState(0);
-  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const forceRefreshRef = useRef(false);
+  const refresh = useCallback(() => {
+    forceRefreshRef.current = true;
+    setRevision((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     if (!provider) {
-      setItems(emptyItems());
-      setRepository(null);
-      setScopeErrors(emptyErrors());
-      setError(null);
       setLoading(false);
       return () => { cancelled = true; };
     }
-    const supported = supportedScopes(provider);
     if (!projectId) {
       setItems(emptyItems());
       setRepository(null);
@@ -320,53 +344,78 @@ function useTasks(projectId: string | null, provider: Provider | null, open: boo
       return () => { cancelled = true; };
     }
 
-    setLoading(true);
-    setError(null);
+    const supported = supportedScopes(provider);
+    const cacheKey = taskCacheKey(provider, projectId);
+    const cached = taskDataCache.get(cacheKey);
+    const forceRefresh = forceRefreshRef.current;
+    forceRefreshRef.current = false;
+    const cacheFresh = Boolean(cached && !forceRefresh && Date.now() - cached.cachedAt < TASK_CACHE_TTL_MS);
+    let currentItems = cached ? cloneTaskItems(cached.items) : emptyItems();
+    let currentRepository = cached?.repository ?? null;
+    let currentErrors = cached ? { ...cached.scopeErrors } : emptyErrors();
+    let pending = supported.length;
 
-    void Promise.all(supported.map(async ({ id }) => {
-      try {
-        const value = provider === "github"
-          ? await api.listGithubTasks(projectId, id as "issues" | "pulls")
-          : await api.listGitlabTasks(projectId, id as "issues" | "pulls");
-        return {
-          scope: id,
-          items: asItems(value),
-          repository: repositoryName(asRecord(value)?.repository),
-          error: responseError(value),
-          errorCode: responseErrorCode(value),
-        };
-      } catch (reason: unknown) {
-        return {
-          scope: id,
-          items: [] as TaskRecord[],
-          repository: null,
-          error: errorText(reason),
-          errorCode: null,
-        };
+    setItems(currentItems);
+    setRepository(currentRepository);
+    setScopeErrors(currentErrors);
+    setLoading(!cacheFresh);
+    setError(null);
+    if (cacheFresh) return () => { cancelled = true; };
+
+    const applyResult = (result: {
+      scope: TaskScope;
+      items: TaskRecord[];
+      repository: string | null;
+      error: string | null;
+      errorCode: string | null;
+    }) => {
+      if (cancelled) return;
+      const scopedError = result.error
+        ? `${result.errorCode ? `${result.errorCode}: ` : ""}${result.error}`
+        : null;
+      currentItems = { ...currentItems, [result.scope]: result.items };
+      currentRepository = currentRepository ?? result.repository;
+      currentErrors = { ...currentErrors, [result.scope]: scopedError };
+      pending -= 1;
+      taskDataCache.set(cacheKey, {
+        items: cloneTaskItems(currentItems),
+        repository: currentRepository,
+        scopeErrors: { ...currentErrors },
+        cachedAt: pending === 0 ? Date.now() : cached?.cachedAt ?? 0,
+      });
+      if (!cancelled) {
+        setItems(cloneTaskItems(currentItems));
+        setRepository(currentRepository);
+        setScopeErrors({ ...currentErrors });
+        setError(null);
+        if (pending === 0) setLoading(false);
       }
-    })).then((results) => {
-      if (cancelled) return;
-      const nextItems = emptyItems();
-      const nextErrors = emptyErrors();
-      let nextRepository: string | null = null;
-      for (const result of results) {
-        nextItems[result.scope] = result.items;
-        nextErrors[result.scope] = result.error
-          ? `${result.errorCode ? `${result.errorCode}: ` : ""}${result.error}`
-          : null;
-        nextRepository = nextRepository ?? result.repository;
-      }
-      setItems(nextItems);
-      setScopeErrors(nextErrors);
-      setRepository(nextRepository);
-      setError(null);
-    }).catch((reason: unknown) => {
-      if (cancelled) return;
-      setError(errorText(reason));
-    }).finally(() => {
-      if (cancelled) return;
-      setLoading(false);
-    });
+    };
+
+    for (const { id } of supported) {
+      void (async () => {
+        try {
+          const value = provider === "github"
+            ? await api.listGithubTasks(projectId, id as "issues" | "pulls")
+            : await api.listGitlabTasks(projectId, id as "issues" | "pulls");
+          applyResult({
+            scope: id,
+            items: asItems(value),
+            repository: repositoryName(asRecord(value)?.repository),
+            error: responseError(value),
+            errorCode: responseErrorCode(value),
+          });
+        } catch (reason: unknown) {
+          applyResult({
+            scope: id,
+            items: cached?.items[id] ?? [],
+            repository: null,
+            error: errorText(reason),
+            errorCode: null,
+          });
+        }
+      })();
+    }
 
     return () => { cancelled = true; };
   }, [open, projectId, provider, revision]);
@@ -387,6 +436,32 @@ function emptyTaskOptions(): TaskOptionState {
   return { labels: [], assignees: [], branches: [], reviewers: [], loading: false, error: null };
 }
 
+function parseTaskOptions(value: unknown): TaskOptionState {
+  const record = asRecord(value);
+  const labels = Array.isArray(record?.labels)
+    ? [...new Set(record.labels.filter((label): label is string => typeof label === "string" && Boolean(label.trim())).map((label) => label.trim()))].map((label) => ({ id: label, name: label }))
+    : [];
+  const parseOptions = (raw: unknown): TaskOption[] => Array.isArray(raw)
+    ? raw.flatMap((item) => {
+      const option = asRecord(item);
+      const id = option && (typeof option.id === "string" || typeof option.id === "number") ? String(option.id) : "";
+      const name = option && typeof option.name === "string" ? option.name.trim() : "";
+      const avatarUrl = option && typeof option.avatarUrl === "string" ? option.avatarUrl : null;
+      return id && name ? [{ id, name, avatarUrl }] : [];
+    })
+    : [];
+  return {
+    labels,
+    assignees: parseOptions(record?.assignees),
+    branches: parseOptions(record?.branches),
+    reviewers: parseOptions(record?.reviewers),
+    loading: false,
+    error: responseError(value),
+  };
+}
+
+const taskOptionsCache = new Map<string, { state: TaskOptionState; cachedAt: number }>();
+
 function useTaskOptions(projectId: string | null, provider: Provider | null, open: boolean): TaskOptionState {
   const [state, setState] = useState<TaskOptionState>(emptyTaskOptions);
   useEffect(() => {
@@ -395,32 +470,26 @@ function useTaskOptions(projectId: string | null, provider: Provider | null, ope
       return;
     }
     let cancelled = false;
-    setState((current) => ({ ...current, loading: true, error: null }));
+    const cacheKey = taskCacheKey(provider, projectId);
+    const cached = taskOptionsCache.get(cacheKey);
+    const cacheFresh = Boolean(cached && Date.now() - cached.cachedAt < TASK_CACHE_TTL_MS);
+    if (cached) setState(cached.state);
+    else setState((current) => ({ ...current, loading: true, error: null }));
+    if (cacheFresh) return () => { cancelled = true; };
     const request = provider === "github"
       ? api.getGithubTaskOptions(projectId)
       : api.getGitlabTaskOptions(projectId);
     void request.then((value) => {
       if (cancelled) return;
-      const record = asRecord(value);
-      const labels = Array.isArray(record?.labels)
-        ? [...new Set(record.labels.filter((label): label is string => typeof label === "string" && Boolean(label.trim())).map((label) => label.trim()))].map((label) => ({ id: label, name: label }))
-        : [];
-      const parseOptions = (raw: unknown): TaskOption[] => Array.isArray(raw)
-        ? raw.flatMap((item) => {
-          const option = asRecord(item);
-          const id = option && (typeof option.id === "string" || typeof option.id === "number") ? String(option.id) : "";
-          const name = option && typeof option.name === "string" ? option.name.trim() : "";
-          const avatarUrl = option && typeof option.avatarUrl === "string" ? option.avatarUrl : null;
-          return id && name ? [{ id, name, avatarUrl }] : [];
-        })
-        : [];
-      const assignees = parseOptions(record?.assignees);
-      const branches = parseOptions(record?.branches);
-      const reviewers = parseOptions(record?.reviewers);
-      setState({ labels, assignees, branches, reviewers, loading: false, error: responseError(value) });
+      const next = parseTaskOptions(value);
+      taskOptionsCache.set(cacheKey, { state: next, cachedAt: Date.now() });
+      setState(next);
     }).catch((reason: unknown) => {
       if (cancelled) return;
-      setState({ labels: [], assignees: [], branches: [], reviewers: [], loading: false, error: errorText(reason) });
+      const next = cached
+        ? { ...cached.state, error: errorText(reason) }
+        : { ...emptyTaskOptions(), loading: false, error: errorText(reason) };
+      setState(next);
     });
     return () => { cancelled = true; };
   }, [open, projectId, provider]);
@@ -743,8 +812,22 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
       setDetecting(false);
       return () => { cancelled = true; };
     }
+    const detectionCacheKey = taskDeviceKey(activeProjectId);
+    const cachedDetection = taskProviderCache.get(detectionCacheKey);
+    const detectionFresh = Boolean(cachedDetection && Date.now() - cachedDetection.cachedAt < TASK_CACHE_TTL_MS);
+    if (detectionFresh && cachedDetection) {
+      setDetection(cachedDetection.detection);
+      setProvider(cachedDetection.detection.provider);
+      setProviderProjectId(cachedDetection.detection.provider ? activeProjectId : null);
+      setDetectionReady(Boolean(cachedDetection.detection.provider));
+      setActiveScope("issues");
+      setSelectedId(null);
+      setDetecting(false);
+      return () => { cancelled = true; };
+    }
     setDetecting(true);
     void api.detectTaskProvider(activeProjectId).then((detected) => {
+      taskProviderCache.set(detectionCacheKey, { detection: detected, cachedAt: Date.now() });
       if (cancelled) return;
       setDetection(detected);
       setProvider(detected.provider);
@@ -769,7 +852,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     return () => { cancelled = true; };
   }, [activeProjectId, open]);
   const visibleProvider = resolvedProvider;
-  const taskOptions = useTaskOptions(activeProjectId, visibleProvider, open);
+  const taskOptions = useTaskOptions(activeProjectId, visibleProvider, open && (Boolean(composerKind) || filtersOpen));
   useEffect(() => {
     if (!composerKind || (composerKind !== "pull_request" && composerKind !== "merge_request") || taskOptions.branches.length === 0) return;
     setComposerBase((current) => taskOptions.branches.some((option) => option.id === current)
@@ -992,10 +1075,16 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     void performMutation(composerKind, 0, operation, fields);
   };
   const boardColumns = useMemo(() => {
-    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = [
-      { id: "open", label: "Open", items: [] },
-      { id: "done", label: "Closed", items: [] },
-    ];
+    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = activeScope === "pulls"
+      ? [
+        { id: "open", label: "Open", items: [] },
+        { id: "review", label: "In review", items: [] },
+        { id: "done", label: "Done", items: [] },
+      ]
+      : [
+        { id: "open", label: "Open", items: [] },
+        { id: "done", label: "Closed", items: [] },
+      ];
     for (const task of filteredItems) {
       const tone = taskTone(task, activeScope);
       const column = columns.find((candidate) => candidate.id === (tone === "done" ? "done" : tone === "review" ? "review" : "open"));
@@ -1209,7 +1298,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
                 </ul>
               ) : null}
               {filteredItems.length > 0 && viewMode === "board" ? (
-                <div className="task-center-board" aria-label={`${activeScopeMeta.label} board`}>
+                <div className={`task-center-board task-center-board-columns-${boardColumns.length}`} aria-label={`${activeScopeMeta.label} board`}>
                   {boardColumns.map((column) => (
                     <section className="task-center-board-column" key={column.id} aria-labelledby={`task-board-${column.id}`}>
                       <header><span className={`task-center-status-dot task-center-status-dot-${column.id}`} aria-hidden="true" /><h3 id={`task-board-${column.id}`}>{column.label}</h3><span>{column.items.length}</span></header>
