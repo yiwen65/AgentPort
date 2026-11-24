@@ -27,6 +27,10 @@ function CommitFileButton({
   return (
     <button
       className={active ? "active" : ""}
+      aria-pressed={active}
+      title={file.displayOldPath
+        ? `${file.displayOldPath} → ${file.displayPath}`
+        : file.displayPath}
       onClick={onSelect}
       style={virtualized
         ? {

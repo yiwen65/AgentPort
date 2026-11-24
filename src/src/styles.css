@@ -4404,12 +4404,9 @@ body.is-project-dragging .tree-row.project {
   position: sticky;
   top: 0;
   z-index: 2;
+  margin-bottom: 5px;
   padding: 7px 5px 5px;
   background: var(--git-surface-raised);
-}
-
-.git-commit-files > strong {
-  margin-bottom: 5px;
   color: var(--text-muted);
   font-size: 10.5px;
   font-weight: 650;

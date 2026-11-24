@@ -15,21 +15,21 @@ export default function GitCommitPatchPanel() {
 
   if (!cache?.selectedCommitOid) {
     return (
-      <section className="git-commit-patch-panel">
+      <section className="git-commit-patch-panel" aria-label={t("history.diffPreview")}>
         <div className="git-panel-state empty">{t("history.select")}</div>
       </section>
     );
   }
   if (cache.commitDetailPhase === "loading" && !cache.commitDetail) {
     return (
-      <section className="git-commit-patch-panel">
+      <section className="git-commit-patch-panel" aria-label={t("history.diffPreview")}>
         <div className="git-panel-state" role="status">{t("states.loading")}</div>
       </section>
     );
   }
   if (cache.commitDetailPhase === "error" && !cache.commitDetail) {
     return (
-      <section className="git-commit-patch-panel">
+      <section className="git-commit-patch-panel" aria-label={t("history.diffPreview")}>
         <div className="git-panel-state error" role="alert">
           {cache.commitDetailError}
         </div>
@@ -38,11 +38,11 @@ export default function GitCommitPatchPanel() {
   }
 
   return (
-    <section className="git-commit-patch-panel">
+    <section className="git-commit-patch-panel" aria-label={t("history.diffPreview")}>
       <header className="git-commit-patch-head">
         <div>
-          <span className="eyebrow">DIFF PREVIEW</span>
-          <strong>
+          <span className="eyebrow">{t("history.diffPreview")}</span>
+          <strong title={selectedFile?.displayPath ?? t("history.allFiles")}>
             {selectedFile?.displayPath ?? t("history.allFiles")}
           </strong>
         </div>
@@ -61,7 +61,7 @@ export default function GitCommitPatchPanel() {
           <DiffText patch={patch.patch} />
         ) : (
           <div className="git-patch-empty">
-            <span className="git-patch-empty-mark">↗</span>
+            <span className="git-patch-empty-mark" aria-hidden="true">↗</span>
             <strong>{t("history.patchHint")}</strong>
             <span>{t("history.patchHintBody")}</span>
           </div>

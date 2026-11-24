@@ -194,6 +194,7 @@
     "firstParent": "First parent",
     "otherParent": "Parent {{count}}",
     "allFiles": "Full commit diff",
+    "diffPreview": "DIFF PREVIEW",
     "patchHint": "Select a file to inspect its diff",
     "patchHintBody": "Choose a file from the middle panel, or open the full commit diff to review every change.",
     "files": "Files ({{count}})",

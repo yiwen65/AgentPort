@@ -112,7 +112,7 @@ export default function GitCenter() {
               <GitDiffPanel />
             </div>
           ) : (
-              <div className="git-center-body history">
+            <div className="git-center-body history">
               <GitHistoryPanel />
               <GitCommitDetailPanel />
               <GitCommitPatchPanel />
