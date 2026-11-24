@@ -58,20 +58,22 @@ AgentPort Session：在指定项目里用指定 Agent 开一个 Session、把任
 
 | 工具 | 作用 |
 | --- | --- |
-| `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent；`probe: true` 会重新探测（较慢） |
+| `list_agents` | 只列出**已安装且未在设置里关掉**的 Agent。默认返回的是 AgentPort 的**探测缓存**：`cached: true`、`capturedAt` 和每个 Agent 的 `probedAt` 会一起给出，版本号可能落后于实际 CLI，不能当成本机当前版本引用；要事实就用 `probe: true` |
 | `list_roles` | 查询设置中**已启用**的角色 metadata（roleId、名称、说明、输出契约和 revision）；不会返回完整角色指令。委派工具的 tools/list 描述也会直接携带这些 metadata |
 | `resolve_project` | 把绝对路径解析成项目，不存在则注册（幂等）。**通常用不到**：`create_session` 自己解析项目（显式 id/path → 否则当前工作目录；cwd 在已注册项目内时归到那个项目） |
 | `list_sessions` / `session_status` | **只显示本 MCP 创建的会话**；状态带 source / confidence / evidence；完成后 `session_status.completion` 也会给本轮最终答复 |
 | `create_session` | 建单个 Session；模型可根据 tools/list 中的已启用 Role name/description 自行传 `roleId`，也可以省略；带 `prompt` 时在后端等 CLI ready 再发；**默认 `pane=auto`**：渲染层按"整体最优"重排布局并把它放进新窗格 |
 | `create_sessions` | 一次创建多个独立委派任务；每个 task 可传一个 `roleId` 或省略；返回按 index/taskId 对齐的独立结果；批量任务的 pane 只支持 `auto`/`none`，auto 只提交一次整体布局 intent |
 | `handoff` | 接收符合 handoff-writer 完整章节契约的 Markdown 上下文，直接委派到指定 Agent 的新分屏并立即返回；这是一次性移交，不通过 wait 工具获取结果，也不写 `docs/handoff/` |
-| `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车） |
+| `send_prompt` | 给**本 MCP 创建**的 Session 追加一句话（自动回车）。回执区分 `submitted` / `redrew` / `textVisible` / `leftover` / `cleaned`：**文本只在证明第一次没写进去时才会重打**，不会叠加 |
 | `wait_for_task` | 等当前委派回合 settle，返回 `idle` / `needs_input` / `exited` / `timeout`、依据和**本轮最终 `reply`**；`timeout` 是继续等待的结构化结果，应再次调用本工具，不要用 `read_output` 判断完成 |
 | `wait_for_tasks` | 一次同步等待多个 MCP-owned Session；兼容旧客户端，按共享预算返回各项结果 |
 | `start_wait_group` / `get_wait_group` | 注册并非阻塞地并行等待多个 Session；各项独立返回 `waiting` / `completed` / `needs_input` / `failed` / `cancelled` / `timeout` 和最终 reply |
 | `cancel_wait_group` | 取消后台等待，不停止 Agent Session |
-| `read_output` | 读取进度/输出证据：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史）；不是回合完成信号 |
-| `cancel_turn` | 发 Ctrl-C，会话保留 |
+| `read_output` | 读取进度/输出证据：`screen`（Host 的 VT 网格投影）/ `stream`（游标行流）/ `transcript`（Agent 原生历史，含工具调用摘要）/ `reply`（本轮助手正文）；不是回合完成信号 |
+| `cancel_turn` | 中止正在跑的回合：`mode` 为 `interrupt`（SIGINT）或 `escape`（TUI 自己的 esc-to-interrupt，不会退出 CLI）。**没有回合在跑时默认拒绝**（`no_active_turn`），因为 Ctrl-C 对空闲的 Agent TUI 就是退出；要强发用 `force: true`。回执里的 `sessionAlive` / `lifecycle` 是事后实测，不是乐观假设 |
+| `clear_input` | 只用退格把残留在输入框里的文字删掉，不提交、不发信号（`expect` 可用于回读校验）。清残留文本必须用这个，不要用 `cancel_turn` |
+| `restart_session` | 原地重启一个已结束的 Session 并尽量精确 resume（`resumePrecision` / `agentSessionId` / `notices`），id 不变；可附带 `prompt` 在就绪后发送 |
 | `terminate_session` | 停止并清理整个进程组；会话记录仍在（可恢复） |
 | `archive_session` | 从侧栏移出并停止；历史保留，可在 App 里取消归档 |
 | `delete_session` | **彻底删除**：停进程 + 删 Agent 原生 transcript + 删会话记录；需要 `confirm: "delete <sessionId>"` |
@@ -140,10 +142,18 @@ MCP servers，此时打进去的字会被丢弃）。所以：
 - `create_session` / `send_prompt` 都会先过 ready 门：已有输出 + 终端静默 **1.2 s**，并且启动
   宽限期内（6 s）不接受"状态来源仍是 `process`"（那只是 spawn 事实，不代表 TUI 能收键盘）。启动
   宽限后不再等，避免 hooks 装不上的会话永远不就绪。
-- 打完字会**验证文本是否真的进了输入框**（屏幕投影优先；日志里的 tty 回显不算，raw mode 之前的
-  回显是假证据），没进就再打一次；回车后没看到回合开始也会重发回车。整轮最多 4 次。
-- 回执带 `promptAttempts` / `enterRetries` / `promptSubmitted`，并如实给出 `hint`（比如"可能卡在
-  信任/登录弹窗"）。正常路径下调用方**不需要**手工重发。
+- 打字后**先等文本真的出现**（最多 3.5 s 轮询），而不是睡 600 ms 就判定"没写进去"。比对会忽略
+  空白，因为中文提示词在 TUI 里会跨行折行，逐行 `contains` 会把明明在屏幕上的文本判成缺失。
+- **只有证据证明第一次写完全没到**（屏幕和会话日志都看不到这段文字）才会重打；回车可以重发，因为
+  空输入框会忽略回车，而重打会把同一段话叠加进输入框。整轮最多 4 次、回车最多 2 次。
+- 若最终仍未提交且界面全程没有任何重绘，会把这次打进去的字符按数量退格删掉（`cleaned: true`），
+  避免下一条 prompt 拼在残留文本后面；需要手工清理时用 `clear_input`。
+- 打字前、回车前都会检查**模态弹窗**（信任/登录、`1. Update now / 2. Skip` 这类升级菜单、编号选项菜单）。
+  命中时不打字、不回车，直接回 `blockedOn`，把决定权交回调用方 —— 早期版本让首轮 prompt 的回车点中了
+  "Update now"，顺手把 Codex 升级并丢掉了首轮任务。
+- 回执带 `promptAttempts` / `enterRetries` / `promptSubmitted` / `textVisible` / `cleaned`，并如实给出
+  `hint`（比如"可能卡在信任/登录弹窗"、"CLI 没在读输入，文本已删除，请重试"）。正常路径下调用方
+  **不需要**手工重发。
 
 **完成判定**：`wait_for_task` 先看 `needs_input`（Agent 在等审批，这是委派最常见的死结），
 再看**本次 prompt 之后**的 `state` 帧上的 `working → idle` 迁移与 `exited`。`create_session`/`send_prompt` 会返回
@@ -153,6 +163,13 @@ MCP servers，此时打进去的字会被丢弃）。所以：
 非阻塞等待组不会占用 MCP 请求；每个后台任务独立监控，调用 `get_wait_group` 读取结果。兼容模式的同步等待每次最多 45 秒，低于常见 MCP 客户端的 60 秒请求期限。长任务返回 `state: "timeout"`、
 `stillRunning` 和 `nextAction: "wait_for_task"`；保持同一个 Session 和 prompt，不要重新发送，也不要改用
 `read_output` 冒充完成判断，继续调用 `wait_for_task`，直到拿到本轮 `reply`。
+
+**hook 说完成不算数，屏幕还要同意。** 各家 CLI 的完成通知都会提前：codex 0.172 的
+`agent-turn-complete` 会在多步回合的**第一次模型响应**结束时触发，此时屏幕上还写着
+`Working (7s · esc to interrupt)`。所以任何 `idle` / turn_completed 结论在用之前都会再看一眼终端底部：
+只要还画着活动回合标志（`esc to interrupt`、`esc to cancel`、`Working (` 等），这条结论就被驳回，
+而且**同一条状态标记不会被第二次采信**。驳回之后若屏幕连续 4 秒不再显示活动回合，则以屏幕为准
+（`source: "screen"`、`confidence: "medium"`，evidence 会说明"驳回了 N 次提前完成信号"）。
 
 只有当这个 Agent 完全不提供回合信号（例如 Shell：状态只是进程事实）时才退回到"终端静默 4 秒"，
 并且一律报 `confidence: "low"` 与 `source: "quiet_window"`，不会把不确定当成完成。
@@ -166,8 +183,11 @@ MCP servers，此时打进去的字会被丢弃）。所以：
 | `stream` | 从 Host 日志按**不透明游标**继续读行；先不带游标读一次，后续用返回的 `nextCursor` 续读，不会把两段不相干的窗口拼起来 |
 | `transcript` | 读 Agent 自己的历史（Claude/Codex/Pi 的 JSONL），会话结束后仍然可读；没有历史时返回 `transcript-unavailable` + `fallbackReason` |
 
-`source: "reply"` 只给**本轮**助手的回答：从原生历史倒着走，必须匹配本次 prompt 的 user 消息，再跳过 tool 事件
-和 thinking；没有匹配的 prompt fence 时不会泄漏上一轮答案。`wait_for_task` 的 `reply` 字段就是这个东西；`session_status.completion.reply` 是同一份恢复入口；拿不到时给
+`source: "reply"` 只给**本轮**助手的**正文**：从原生历史倒着走，必须匹配本次 prompt 的 user 消息，再跳过
+tool 事件、thinking、以及只含工具调用的助手消息；同一个助手消息里的工具调用摘要
+（`Read {\"file_path\":...}`）也算工具内容，不会被当成回答。原生历史层为此单独给出 `answerText`
+（纯正文，工具调用为 `""`），`text` 仍然保留带工具摘要的完整行给 `transcript` 视图。
+没有匹配的 prompt fence 时不会泄漏上一轮答案；只有当助手正文就是本次 prompt 原文（回显）时才丢弃。`wait_for_task` 的 `reply` 字段就是这个东西；`session_status.completion.reply` 是同一份恢复入口；拿不到时给
 `replyUnavailableReason`，并用 `outputTail`（screen/stream）作为进度证据兜底。
 
 返回 `{source, lines[], returnedLineCount, truncated, limited, nextCursor}`：`truncated` 表示为了 `limit`
@@ -179,6 +199,10 @@ MCP servers，此时打进去的字会被丢弃）。所以：
 你可以继续看、继续追问、直接接管；Host 是独立进程，MCP 退出或 GUI 关掉都不会结束它。
 只有这几种情况会停：调用方显式 `terminate_session`、你在界面里停止/归档/删除、删除所属项目或
 Worktree、或 Agent 进程自己退出。**任务完成不是终止的理由**（MCP 的说明里也是这么写的）。
+
+会话真的结束之后不需要重建：`restart_session` 用同一个 Session id 原地重启，并按适配器能力精确 resume
+（Codex 在拿到 thread id 后用 `resume <id>`，Shell 会明确回 `resume_precision=unavailable` 并只重开一个
+Shell）。这也是 `cancel_turn` 把会话弄退出后的抢救入口。
 
 **会话结束**：`terminate_session` 之后 Host 的内存尾部就没了。再调 `wait_for_task` 会得到
 `state: "exited"`，`read_output` 返回 `ended: true` 并明确提示"正文需从 Agent 原生历史读取"，
@@ -244,6 +268,11 @@ Agent 会长成棋盘，而不是一排越切越窄的竖条。
 | `session_not_owned` | 目标 Session 不是这个 MCP 创建的；用 `create_session` 自己开一个 |
 | `open_pane` 返回 `ui_queue_failed` | 队列超过 1 MiB（桌面 App 长时间未运行），先启动 App 让它消费 |
 | `wait_for_task` 返回 `timeout` | 任务比 `timeoutMs` 更久；继续等或先 `cancel_turn` |
+| `cancel_turn` 返回 `no_active_turn` | 没有回合在跑；Ctrl-C 会直接退出空闲的 Agent TUI。清残留文本用 `clear_input`，确实要发信号再加 `force: true` |
+| `clear_input` 返回 `dialog_open` | 有弹窗占着键盘，任何按键都会被当成回答；先在窗格里处理弹窗 |
+| `create_session` / `send_prompt` 返回 `blockedOn: "dialog"` | CLI 在启动时弹了菜单（升级、信任、登录）；在 AgentPort 窗格里答完再 `send_prompt` |
+| `send_prompt` 返回 `leftover: true` | 文本可能还在输入框里；用 `clear_input` + `expect` 清理后再发，不要重复发送 |
+| `wait_for_task` 的 `source` 是 `screen` / `confidence` 是 `medium` | 完成通知被屏幕驳回后由屏幕确认（见"完成判定"）；这是有效结论，`evidence` 里写了原因 |
 
 ## 验证
 

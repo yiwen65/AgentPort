@@ -10,6 +10,7 @@ use agentport_core::agent_roles::{AgentRole, AgentRoleMetadata};
 use agentport_core::models::AgentType;
 use agentport_remote_protocol::{
     AgentProbeAllParams, ProjectAddParams, RemoteAgentType, SessionCreateParams, SessionIdParams,
+    SessionRestartParams,
 };
 use agentport_service::{RemoteService, SessionSummary};
 use serde_json::{json, Map, Value};
@@ -49,8 +50,10 @@ pub const TOOLS: &[ToolDef] = &[
         name: "list_agents",
         description: "Which Agents you can delegate to right now. You do NOT need this before \
                       create_session: a wrong or unavailable agent id comes back with the \
-                      selectable ids. Use it when the user asks what exists. probe=true re-detects \
-                      (slower).",
+                      selectable ids. Use it when the user asks what exists. Without probe=true the \
+                      answer is AgentPort's cached probe snapshot: versions carry probedAt and the \
+                      whole list is marked cached, so never present them as the CLI's current \
+                      version. probe=true re-detects (slower) and is current.",
         schema: list_agents_schema,
     },
     ToolDef {
@@ -139,9 +142,28 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "cancel_turn",
-        description: "Send Ctrl-C to the Session's Agent (keeps the Session alive). Use this to \
-                      stop a runaway turn.",
+        description: "Stop the turn that is currently running in a Session. Default mode sends \
+                      SIGINT; mode=escape sends the TUI's own esc-to-interrupt, which cannot quit \
+                      the CLI. Refused with no_active_turn when nothing shows a running turn, \
+                      because Ctrl-C at an idle Agent TUI exits it. Returns the measured \
+                      sessionAlive state, never an assumption.",
         schema: cancel_turn_schema,
+    },
+    ToolDef {
+        name: "clear_input",
+        description: "Delete text that is sitting in a Session's composer without submitting it, \
+                      using backspaces (the only editing key every Agent composer shares). Pass \
+                      expect with the leftover text to have the result verified against the \
+                      screen. Never use cancel_turn for this: Ctrl-C quits an idle Agent.",
+        schema: clear_input_schema,
+    },
+    ToolDef {
+        name: "restart_session",
+        description: "Start an ended Session again in place and resume the Agent's own \
+                      conversation where the CLI supports exact resume (see resumePrecision). The \
+                      Session id stays the same. Optionally sends a prompt once the resumed CLI is \
+                      ready.",
+        schema: restart_session_schema,
     },
     ToolDef {
         name: "terminate_session",
@@ -534,7 +556,53 @@ fn read_output_schema() -> Value {
 
 fn cancel_turn_schema() -> Value {
     obj(
-        json!({ "sessionId": { "type": "string" } }),
+        json!({
+            "sessionId": { "type": "string" },
+            "mode": {
+                "type": "string",
+                "enum": ["interrupt", "escape"],
+                "default": "interrupt",
+                "description": "interrupt sends SIGINT (the shell's ^C); escape sends ESC, which is what Agent TUIs advertise as 'esc to interrupt' and which cannot quit the CLI. Refused when no turn is running unless force is set."
+            },
+            "force": {
+                "type": "boolean",
+                "default": false,
+                "description": "Send the signal even though nothing shows a running turn. An idle Agent TUI treats Ctrl-C as quit, so this can end the Session."
+            }
+        }),
+        json!(["sessionId"]),
+    )
+}
+
+fn clear_input_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "characters": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": crate::ops::MAX_CLEAR_CHARS,
+                "default": 200,
+                "description": "How many backspaces to send. Use the length of the text that was left in the composer."
+            },
+            "expect": {
+                "type": "string",
+                "description": "Optional text that must disappear. The result is verified against the rendered screen when given."
+            }
+        }),
+        json!(["sessionId"]),
+    )
+}
+
+fn restart_session_schema() -> Value {
+    obj(
+        json!({
+            "sessionId": { "type": "string" },
+            "prompt": {
+                "type": "string",
+                "description": "Optional prompt sent once the resumed CLI is ready again."
+            }
+        }),
         json!(["sessionId"]),
     )
 }
@@ -889,6 +957,8 @@ impl Toolbox {
             "cancel_wait_group" => self.cancel_wait_group(&args),
             "read_output" => self.read_output(&args),
             "cancel_turn" => self.cancel_turn(&args),
+            "clear_input" => self.clear_input(&args),
+            "restart_session" => self.restart_session(&args),
             "terminate_session" => self.terminate_session(&args),
             "archive_session" => self.archive_session(&args),
             "delete_session" => self.delete_session(&args),
@@ -948,13 +1018,14 @@ impl Toolbox {
                         "displayName": result.display_name.clone(),
                         "path": result.install.as_ref().map(|install| install.executable_path.clone()),
                         "version": result.install.as_ref().map(|install| install.version_text.clone()),
+                        "probedAt": result.install.as_ref().map(|install| install.probed_at.to_rfc3339()),
                         "exactResume": result.install.as_ref().map(|install| install.exact_resume),
                         "approvalModel": result.install.as_ref().map(|install| install.approval_model.as_str()),
                         "defaultTransport": result.install.as_ref().map(|install| install.default_transport.as_str()),
                     })
                 })
                 .collect();
-            return Ok(json!({ "agents": entries, "probed": true }));
+            return Ok(json!({ "agents": entries, "probed": true, "cached": false }));
         }
         let agents = self
             .ops
@@ -971,13 +1042,28 @@ impl Toolbox {
                     "commandNames": agent.command_names.clone(),
                     "path": agent.install.as_ref().map(|install| install.executable_path.clone()),
                     "version": agent.install.as_ref().map(|install| install.version_text.clone()),
+                    // The cached snapshot is what AgentPort probed earlier; a
+                    // bare version string reads like a live `--version` fact and
+                    // was already stale by a release in practice.
+                    "probedAt": agent.install.as_ref().map(|install| install.probed_at.to_rfc3339()),
+                    "versionIsCached": true,
                     "exactResume": agent.install.as_ref().map(|install| install.exact_resume),
                     "approvalModel": agent.install.as_ref().map(|install| install.approval_model.as_str()),
                     "defaultTransport": agent.install.as_ref().map(|install| install.default_transport.as_str()),
                 })
             })
             .collect();
-        Ok(json!({ "agents": entries }))
+        let captured_at = agents
+            .iter()
+            .filter_map(|agent| agent.install.as_ref().map(|install| install.probed_at))
+            .max()
+            .map(|at| at.to_rfc3339());
+        Ok(json!({
+            "agents": entries,
+            "cached": true,
+            "capturedAt": captured_at,
+            "note": "cached AgentPort probe; versions may lag the installed CLI. Use probe=true for a live probe.",
+        }))
     }
 
     /// Agent ids a caller may delegate to right now: installed and not switched
@@ -1649,7 +1735,19 @@ impl Toolbox {
             result["ready"] = json!(ready.ready);
             result["readyEvidence"] = json!(ready.reason);
             result["outputTail"] = json!(ready.tail);
-            if ready.ready {
+            if let Some(dialog) = ready.blocked_on.clone() {
+                // The CLI is asking a question (codex's update menu, a trust
+                // prompt). Typing here would answer it with our prompt's Enter,
+                // so stop and hand the decision to the caller.
+                result["ready"] = json!(false);
+                result["promptSent"] = json!(false);
+                result["blockedOn"] = json!("dialog");
+                result["blockedReason"] = json!(dialog);
+                result["hint"] = json!(
+                    "the CLI is showing a dialog before the Session is ready; answer it in the \
+                     AgentPort pane, then send the prompt with send_prompt"
+                );
+            } else if ready.ready {
                 // Baseline before the prompt so `wait_for_task` can require a
                 // *newer* status transition.
                 let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
@@ -1694,6 +1792,9 @@ impl Toolbox {
                         result["promptRedrew"] = json!(delivery.redrew);
                         result["enterRetries"] = json!(delivery.enter_retries);
                         result["promptAttempts"] = json!(delivery.attempts);
+                        result["promptTextVisible"] = json!(delivery.text_visible);
+                        result["promptCleaned"] = json!(delivery.cleaned);
+                        result["promptLeftover"] = json!(delivery.leftover);
                         if delivery.submitted {
                             if role_snapshot.is_some() {
                                 let recorded = self
@@ -1949,6 +2050,7 @@ impl Toolbox {
                 reason: "already painted".into(),
                 state: None,
                 tail: String::new(),
+                blocked_on: None,
             }
         } else {
             self.ops.wait_ready(&session_id, SEND_READY_MS)?
@@ -1990,6 +2092,12 @@ impl Toolbox {
             "promptAttempts": delivery.attempts,
             "readyBeforeSend": ready.ready,
             "blockedOn": delivery.blocked_on.clone(),
+            // Honest composer state: a delivery that could not be proven
+            // leaves text behind, and the caller needs to know before it sends
+            // anything else.
+            "textVisible": delivery.text_visible,
+            "cleaned": delivery.cleaned,
+            "leftover": delivery.leftover,
             "statusSequence": baseline.map(|mark| mark.sequence),
             "statusRunOrdinal": baseline.map(|mark| mark.run_ordinal),
             "role": role.as_ref().map(public_role_snapshot),
@@ -1998,9 +2106,11 @@ impl Toolbox {
             "hint": if delivery.submitted {
                 Value::Null
             } else if delivery.blocked_on.is_some() {
-                json!("the CLI is waiting on a trust or login prompt in the pane; answer it there, then call send_prompt")
+                json!("a dialog owns the keyboard; answer it in the AgentPort pane, then call send_prompt")
             } else if delivery.redrew {
                 json!("the screen changed but no turn started — the CLI is probably showing a trust, login or permission dialog")
+            } else if delivery.cleaned {
+                json!("the CLI was not reading input; the text was removed again so it cannot be sent twice. Check the pane, then retry")
             } else {
                 json!("Enter was swallowed: no output changed at all")
             },
@@ -2450,6 +2560,7 @@ impl Toolbox {
                 "sessionId": session_id,
                 "source": if transcript.available { "transcript" } else { "transcript-unavailable" },
                 "lines": lines,
+                "text": text,
                 "truncated": truncated,
                 "limited": false,
                 "fallbackReason": transcript.reason,
@@ -2504,8 +2615,225 @@ impl Toolbox {
                 "this Session has already ended; there is no turn to cancel",
             ));
         }
-        let accepted = self.ops.interrupt(&session_id)?;
-        Ok(json!({ "sessionId": session_id, "accepted": accepted, "sessionAlive": true }))
+        let mode = optional_str(args, "mode").unwrap_or_else(|| "interrupt".into());
+        if !matches!(mode.as_str(), "interrupt" | "escape") {
+            return Err(ToolFailure::new(
+                "invalid_arguments",
+                "mode must be \"interrupt\" (SIGINT) or \"escape\" (the TUI's own esc-to-interrupt)",
+            ));
+        }
+        let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+        let summary = self.ops.summary(&session_id)?;
+        // Only a semantic work claim proves a turn: a PTY "working" is also
+        // what a repainting idle composer looks like.
+        let working = summary.latest_status.as_ref().is_some_and(|status| {
+            status.state == "working" && matches!(status.source.as_str(), "hook" | "adapter")
+        });
+        let activity = self.ops.active_work(&session_id)?;
+        // A Generic Shell is safe to interrupt while its prompt is gone (a
+        // command is running) and pointless to interrupt while it is there.
+        let shell_running = summary.adapter_type == "shell"
+            && !self.ops.shell_prompt_present(&session_id).unwrap_or(true);
+        if !working && activity.is_none() && !shell_running && !force {
+            // Ctrl-C is also the quit key of every Agent TUI. Sending it to an
+            // idle composer ends the CLI (codex exits and its context is gone),
+            // which is exactly what happened when a caller used this tool to
+            // clean up leftover input.
+            return Err(ToolFailure::new(
+                "no_active_turn",
+                "this Session shows no running turn, and Ctrl-C at an idle Agent TUI quits it. Use \
+                 clear_input to remove composer text, or pass force:true if you really want the \
+                 signal",
+            ));
+        }
+        let accepted = match mode.as_str() {
+            "escape" => {
+                self.ops.send_bytes(&session_id, b"\x1b")?;
+                true
+            }
+            _ => self.ops.interrupt(&session_id)?,
+        };
+        // Liveness is measured, never asserted: the Host may take a moment to
+        // publish the exit, and a cancel that killed the Session must say so.
+        let mut session_alive = true;
+        let mut last = summary;
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            last = self.ops.summary(&session_id)?;
+            session_alive = matches!(last.lifecycle.as_str(), "running" | "creating")
+                && self.ops.probe_alive(&session_id);
+            if !session_alive {
+                break;
+            }
+        }
+        let lifecycle = last.lifecycle.clone();
+        let turn_state = last.latest_status.as_ref().map(|status| status.state.clone());
+        let mut result = json!({
+            "sessionId": session_id,
+            "mode": mode,
+            "accepted": accepted,
+            "sessionAlive": session_alive,
+            "lifecycle": lifecycle,
+            "turnState": turn_state,
+            "evidence": activity
+                .clone()
+                .or_else(|| working.then(|| "status reported working".to_string()))
+                .or_else(|| shell_running.then(|| "the Shell prompt has not returned".to_string())),
+        });
+        if !session_alive {
+            self.ops.detach(&session_id);
+            self.baselines.remove(&session_id);
+            self.forget_settled(&session_id);
+            result["ended"] = json!(true);
+            result["warning"] = json!(
+                "the Agent exited instead of interrupting. Its native history is still on disk: \
+                 restart_session can resume it, and a new Session starts a fresh context"
+            );
+        }
+        Ok(result)
+    }
+
+    /// Remove text that is sitting in the Agent's composer without submitting it.
+    ///
+    /// Backspace is the one editing key every Agent composer shares; the ESC and
+    /// Ctrl-C alternatives mean "interrupt"/"quit" and would destroy the turn or
+    /// the Session.
+    fn clear_input(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        if self.ops.is_terminal(&session_id)? {
+            return Err(ToolFailure::new(
+                "session_not_running",
+                "this Session has ended; there is no composer to clear",
+            ));
+        }
+        if let Some(dialog) = self.ops.blocking_dialog(&session_id)? {
+            return Err(ToolFailure::new(
+                "dialog_open",
+                format!(
+                    "a dialog owns the keyboard ({dialog}); keys sent now would answer it. Resolve \
+                     it in the AgentPort pane first"
+                ),
+            ));
+        }
+        let characters = optional_u64(args, "characters")
+            .unwrap_or(200)
+            .min(crate::ops::MAX_CLEAR_CHARS as u64) as usize;
+        let expected = optional_str(args, "expect");
+        let bytes = self.ops.clear_input(&session_id, characters)?;
+        let mut result = json!({
+            "sessionId": session_id,
+            "characters": characters,
+            "bytes": bytes,
+            "cleared": Value::Null,
+        });
+        if let Some(expected) = expected {
+            let screen = self.ops.screen_text(&session_id)?;
+            let gone = screen
+                .map(|text| !text.to_ascii_lowercase().contains(&expected.to_ascii_lowercase()))
+                .unwrap_or(true);
+            result["cleared"] = json!(gone);
+            result["hint"] = json!(if gone {
+                "the composer no longer shows that text; the next send_prompt starts clean"
+            } else {
+                "the text is still on screen; it may be part of the transcript above the composer, \
+                 or a placeholder the TUI draws for pasted input. Read the pane before sending again"
+            });
+        } else {
+            result["hint"] = json!(
+                "backspaces were sent, but nothing proves what was in the composer. Pass expect with \
+                 the text you typed to have the result verified"
+            );
+        }
+        Ok(result)
+    }
+
+    /// Restart an ended Session in place, resuming the Agent's own conversation
+    /// where the CLI supports exact resume.
+    fn restart_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {
+        let session_id = require_str(args, "sessionId")?;
+        self.require_owned(&session_id)?;
+        let summary = self.ops.summary(&session_id)?;
+        if matches!(summary.lifecycle.as_str(), "running" | "creating") {
+            return Err(ToolFailure::new(
+                "session_running",
+                "this Session is still running; cancel_turn stops a turn and terminate_session stops \
+                 the Session, after which restart_session can resume it",
+            ));
+        }
+        let permission = self
+            .registry
+            .get(&session_id)
+            .and_then(|entry| entry.permission.clone())
+            .unwrap_or_else(|| summary.permission_mode.clone());
+        let launch = self
+            .ops
+            .service()
+            .restart_session(SessionRestartParams {
+                session_id: session_id.clone(),
+                // The service requires the same acknowledgement as creation for
+                // any mode that relaxes approvals.
+                risk_ack: permission != "native",
+            })
+            .map_err(ToolFailure::from)?;
+        self.ops.detach(&session_id);
+        self.baselines.remove(&session_id);
+        self.forget_settled(&session_id);
+        let notices: Vec<Value> = launch
+            .notices
+            .iter()
+            .map(|notice| json!({ "code": notice.code, "message": notice.message }))
+            .collect();
+        let mut result = json!({
+            "sessionId": session_id,
+            "restarted": true,
+            "resumePrecision": launch.resume_precision,
+            "agentSessionId": launch.agent_session_id,
+            "notices": notices,
+            "promptSent": false,
+            "hint": "the Session is running again; send_prompt continues the resumed conversation",
+        });
+        if let Some(raw) = optional_str(args, "prompt") {
+            let task = text::sanitize_prompt(&raw)
+                .map_err(|message| ToolFailure::new("invalid_prompt", message))?;
+            let ready = self.ops.wait_ready(&session_id, self.ready_timeout_ms)?;
+            result["ready"] = json!(ready.ready);
+            result["readyEvidence"] = json!(ready.reason);
+            if let Some(dialog) = ready.blocked_on.clone() {
+                result["blockedOn"] = json!("dialog");
+                result["blockedReason"] = json!(dialog);
+                result["promptSent"] = json!(false);
+            } else if ready.ready {
+                let baseline = self.ops.status_mark(&session_id).unwrap_or(None);
+                let delivery = self.ops.deliver_prompt(&session_id, &task)?;
+                if let Some(baseline) = baseline {
+                    self.baselines.insert(session_id.clone(), baseline);
+                    result["statusSequence"] = json!(baseline.sequence);
+                    result["statusRunOrdinal"] = json!(baseline.run_ordinal);
+                }
+                self.forget_settled(&session_id);
+                if delivery.submitted {
+                    self.ops.remember_prompt(&session_id, &task);
+                }
+                result["promptSent"] = json!(delivery.submitted);
+                result["promptAttempts"] = json!(delivery.attempts);
+                result["textVisible"] = json!(delivery.text_visible);
+                result["cleaned"] = json!(delivery.cleaned);
+                result["leftover"] = json!(delivery.leftover);
+                if !delivery.submitted {
+                    result["hint"] = json!(
+                        "the Session restarted but the prompt was not accepted; check the pane \
+                         (blockedOn/dialog) and use send_prompt"
+                    );
+                }
+            } else {
+                result["hint"] = json!(
+                    "the Session restarted but never reached a ready terminal; inspect the pane, \
+                     then use send_prompt"
+                );
+            }
+        }
+        Ok(result)
     }
 
     fn terminate_session(&mut self, args: &Map<String, Value>) -> TResult<Value> {

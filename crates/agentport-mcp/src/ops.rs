@@ -46,6 +46,18 @@ const SUBMIT_EVIDENCE: Duration = Duration::from_millis(1_500);
 /// A TUI can paint its frame before its composer exists; type again after this.
 const TYPE_RETRY_GAP: Duration = Duration::from_millis(600);
 const MAX_TYPE_ATTEMPTS: u32 = 4;
+/// How long the typed text has to show up before the write is declared lost.
+///
+/// This is the budget that prevents duplicate pastes: while it is running we
+/// have no right to retype, because the TUI may simply not have painted yet
+/// (codex 0.172 takes over a second on a cold start).
+const TEXT_EVIDENCE_WINDOW: Duration = Duration::from_millis(3_500);
+const TEXT_EVIDENCE_POLL: Duration = Duration::from_millis(150);
+/// Backspaces are sent in small batches so a TUI repaints between them.
+const CLEAR_INPUT_GAP: Duration = Duration::from_millis(20);
+/// Upper bound for one manual `clear_input`; a leftover prompt is at most a few
+/// thousand characters, and this also bounds what a caller can spray at a TUI.
+pub const MAX_CLEAR_CHARS: usize = 4_000;
 /// How long a `process`-only status is treated as "still starting".
 const STARTUP_GRACE: Duration = Duration::from_millis(6_000);
 const MAX_ENTER_RETRIES: u32 = 2;
@@ -65,8 +77,14 @@ const QUIET_READY: Duration = Duration::from_millis(1_200);
 /// Cadence for scanning the rendered screen for trust/login prompts.
 const DIALOG_CHECK: Duration = Duration::from_millis(1_500);
 /// A finished turn's transcript line can lag the completion hook slightly.
-const REPLY_SETTLE_ATTEMPTS: usize = 4;
-const REPLY_SETTLE_GAP: Duration = Duration::from_millis(350);
+/// Longer than one model repaint: codex 0.172 notifies completion after the
+/// first response of a multi-step turn, so the answer can arrive many seconds
+/// after the hook that claimed the turn was over.
+const REPLY_SETTLE_ATTEMPTS: usize = 6;
+const REPLY_SETTLE_GAP: Duration = Duration::from_millis(500);
+/// How long the bottom of the screen must stop advertising an active turn
+/// before a contradicted completion signal may be believed.
+const SCREEN_QUIET_AFTER_CONTRADICTION: Duration = Duration::from_millis(4_000);
 pub const DEFAULT_READY_MS: u64 = 25_000;
 /// Readiness budget for `send_prompt` on a Session that is still starting. It is
 /// shorter than a launch budget because the caller is mid-conversation.
@@ -105,6 +123,18 @@ const BLOCKING_PROMPT_PATTERNS: &[&str] = &[
     // First-run onboarding menus (Cursor CLI) navigate instead of accepting text.
     "use arrow keys to navigate",
     "navigate · enter select",
+    // Self-update and confirmation modals. A stray Enter here answers the
+    // dialog — codex 0.172 offers "1. Update now / 2. Skip", and a first
+    // prompt's Enter once upgraded the CLI instead of submitting it.
+    "update available!",
+    "update now (runs",
+    "skip until next version",
+    "a new version is available",
+    "restart codex to apply",
+    "restart to apply the update",
+    "press enter to continue",
+    "press enter to retry",
+    "continue? (y/n)",
 ];
 
 /// First recognizable blocking prompt in a rendered tail, if any.
@@ -113,15 +143,96 @@ const BLOCKING_PROMPT_PATTERNS: &[&str] = &[
 /// because full-screen TUIs often draw words with cursor positioning and the
 /// captured tail can arrive as `1.Trustfolder`.
 pub fn detect_blocking_prompt(tail: &str) -> Option<&'static str> {
-    let lower = tail.to_ascii_lowercase();
-    let squeezed: String = lower.split_whitespace().collect();
-    BLOCKING_PROMPT_PATTERNS
+    if let Some(pattern) = match_pattern(tail, BLOCKING_PROMPT_PATTERNS) {
+        return Some(pattern);
+    }
+    detect_choice_menu(tail)
+}
+
+/// A modal list with a highlighted option is a question, whatever it asks.
+///
+/// Codex, Claude and Qoder all draw their menus the same way: several numbered
+/// rows, one of them marked with a selection glyph. The marker is what keeps an
+/// Agent's own numbered prose (a plan, a changelog) from looking like a dialog.
+fn detect_choice_menu(tail: &str) -> Option<&'static str> {
+    let lines: Vec<&str> = tail.lines().collect();
+    let recent = &lines[lines.len().saturating_sub(16)..];
+    let numbered = recent.iter().filter(|line| is_numbered_option(line)).count();
+    let marked = recent
         .iter()
-        .find(|pattern| {
-            lower.contains(**pattern)
-                || squeezed.contains(&pattern.split_whitespace().collect::<String>())
-        })
-        .copied()
+        .any(|line| is_numbered_option(line) && has_selection_marker(line));
+    (numbered >= 2 && marked).then_some("a numbered choice menu owns the keyboard")
+}
+
+fn is_numbered_option(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(|c: char| c.is_whitespace());
+    let rest = trimmed
+        .trim_start_matches(|c: char| matches!(c, '›' | '>' | '▸' | '❯' | '●' | '*' | '-'));
+    let rest = rest.trim_start();
+    let mut chars = rest.chars();
+    matches!(chars.next(), Some(digit) if digit.is_ascii_digit())
+        && matches!(chars.next(), Some('.') | Some(')'))
+        && chars.next().is_some_and(|c| c == ' ' || c == '\t')
+}
+
+fn has_selection_marker(line: &str) -> bool {
+    line.trim_start()
+        .starts_with(|c: char| matches!(c, '›' | '▸' | '❯' | '●'))
+}
+
+/// The Agent is visibly still working.
+///
+/// Every full-screen Agent TUI advertises how to stop it while a turn runs
+/// (`esc to interrupt`, `ctrl+c to interrupt`) and drops that affordance when
+/// the turn ends. That makes it a far better completion oracle than a provider
+/// notification: codex 0.172 fires its `agent-turn-complete` notifier after the
+/// first model response of a multi-step turn, while the screen still says
+/// `Working (7s · esc to interrupt)`.
+const ACTIVE_WORK_PATTERNS: &[&str] = &[
+    "esc to interrupt",
+    "esc to cancel",
+    "esc to stop",
+    "ctrl+c to interrupt",
+    "ctrl-c to interrupt",
+    "press esc to interrupt",
+    "working (",
+    "working…",
+    "thinking (",
+];
+
+pub fn detect_active_work(tail: &str) -> Option<&'static str> {
+    // Only the bottom of the screen: that is where every TUI paints its busy
+    // row, and an Agent's own prose must never be mistaken for one.
+    let lines: Vec<&str> = tail.lines().collect();
+    let recent = lines[lines.len().saturating_sub(12)..].join("\n");
+    match_pattern(&recent, ACTIVE_WORK_PATTERNS)
+}
+
+fn match_pattern(tail: &str, patterns: &[&'static str]) -> Option<&'static str> {
+    let lower = tail.to_ascii_lowercase();
+    let squeezed = squeeze(&lower);
+    patterns.iter().copied().find(|pattern| {
+        lower.contains(*pattern) || squeezed.contains(&squeeze(pattern))
+    })
+}
+
+/// Whitespace-free form of a rendered line, for matching text that a TUI may
+/// have wrapped or drawn with cursor positioning.
+fn squeeze(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Does a rendered screen or log contain our token, ignoring wraps?
+///
+/// A prompt is compared without whitespace on either side: a wide (CJK) prompt
+/// wraps mid-character-run, so a literal per-line `contains` reports "missing"
+/// for text that is plainly there — and "missing" is what licenses retyping.
+fn contains_token(haystack: &str, token: &str) -> bool {
+    let needle = squeeze(&token.to_ascii_lowercase());
+    if needle.is_empty() {
+        return true;
+    }
+    squeeze(&haystack.to_ascii_lowercase()).contains(&needle)
 }
 
 /// `AGENTPORT_MCP_WAIT_TRACE=1` explains why a wait has not settled yet.
@@ -365,6 +476,14 @@ fn mark_is_fresh(mark: Option<StatusMark>, since: Option<StatusMark>) -> bool {
     since.is_none_or(|baseline| mark.is_some_and(|mark| mark.is_newer_than(baseline)))
 }
 
+/// Has this exact completion claim (or an older one) already been refuted?
+fn mark_is_contradicted(mark: Option<StatusMark>, refuted: Option<StatusMark>) -> bool {
+    match (mark, refuted) {
+        (Some(mark), Some(refuted)) => !mark.is_newer_than(refuted),
+        _ => false,
+    }
+}
+
 /// Result of `wait_for_task`.
 #[derive(Debug, Clone)]
 pub struct WaitOutcome {
@@ -547,7 +666,7 @@ impl SessionOps {
         }
     }
 
-    /// Type a prompt and submit it.
+    /// Type a prompt and submit it, proving each step where it can be proven.
     ///
     /// The text and the Enter keypress are written separately on purpose. A
     /// full-screen TUI receives one read per write, and Ink-based CLIs treat a
@@ -556,13 +675,17 @@ impl SessionOps {
     /// Claude Code). Writing them apart, then retrying Enter while no redraw
     /// appears, makes submission robust instead of a race against PTY packet
     /// boundaries.
-    /// Type a prompt and submit it, proving each step where it can be proven.
     ///
-    /// Three things can go wrong and each is checked instead of assumed:
-    /// the text can be dropped because the TUI is still starting, the Enter can
-    /// be swallowed, and a dialog can own the keyboard. Typing is therefore
-    /// retried until the text is visible on the session, and Enter until a turn
-    /// actually starts. A caller should never have to re-send by hand.
+    /// Three things can go wrong and each is checked instead of assumed: the
+    /// text can be dropped because the TUI is still starting, the Enter can be
+    /// swallowed, and a dialog can own the keyboard.
+    ///
+    /// The rule that keeps the composer clean: **the text is typed again only
+    /// when nothing on the session shows the first write** — neither the
+    /// rendered screen nor the session log. "I could not see it yet" is not
+    /// evidence of a lost write; codex 0.172 needs over a second to paint a
+    /// composer, and retyping on that guess pasted one 120-character prompt
+    /// four times. Enter may be retried, because an empty composer ignores it.
     pub fn deliver_prompt(&mut self, session_id: &str, text: &str) -> TResult<PromptDelivery> {
         // A distinctive prefix identifies our own text in the composer echo.
         let token: String = text.trim().chars().take(10).collect();
@@ -579,22 +702,36 @@ impl SessionOps {
         evidence_token: &str,
     ) -> TResult<PromptDelivery> {
         let token: String = evidence_token.trim().chars().take(10).collect();
-        let mut typed = false;
-        let mut entered = 0;
-        let mut bytes = 0;
+        let mut bytes = 0u64;
+        let mut attempts = 0u32;
+        let mut typed_times = 0u32;
+        let mut entered = 0u32;
+        let mut redrew = false;
+
+        // A dialog that already owns the keyboard must not receive our text:
+        // on a codex update menu that text plus an Enter answers "Update now".
+        if let Some(dialog) = self.peek_blocking_prompt(session_id) {
+            return Ok(PromptDelivery::blocked_on_dialog(dialog));
+        }
+
         for attempt in 0..MAX_TYPE_ATTEMPTS {
+            attempts = attempt + 1;
             // Flush the paint that arrived while we were waiting.
             let _ = self.drain(session_id);
-            if !typed || !self.text_is_present(session_id, &token) {
-                bytes += self.send_bytes(session_id, text.as_bytes())?;
-                typed = true;
-                std::thread::sleep(ENTER_GAP);
-                let _ = self.drain(session_id);
-                // Nothing on screen and nothing in the log means the TUI was
-                // not accepting input yet. Wait for it and type again rather
-                // than sending Enter into an empty box.
-                if !self.text_is_present(session_id, &token) {
+            if !self.text_is_present(session_id, &token) {
+                if typed_times > 0 {
+                    // Our earlier write never showed up anywhere. Give the TUI
+                    // the same gap an ordinary ready-gate wait uses.
                     std::thread::sleep(TYPE_RETRY_GAP);
+                    let _ = self.drain(session_id);
+                }
+                bytes += self.send_bytes(session_id, text.as_bytes())?;
+                typed_times += 1;
+                std::thread::sleep(ENTER_GAP);
+                if !self.wait_for_text(session_id, &token, TEXT_EVIDENCE_WINDOW) {
+                    // Nothing on screen, nothing in the log: the bytes never
+                    // reached a composer. Typing again is safe *because* no
+                    // copy of the text exists anywhere on the session.
                     continue;
                 }
             }
@@ -605,8 +742,14 @@ impl SessionOps {
                     redrew: false,
                     enter_retries: entered,
                     blocked_on: Some(dialog),
-                    attempts: attempt + 1,
+                    attempts,
+                    text_visible: true,
+                    cleaned: false,
+                    leftover: true,
                 });
+            }
+            if entered >= MAX_ENTER_RETRIES {
+                break;
             }
             bytes += self.send_bytes(session_id, b"\r")?;
             entered += 1;
@@ -618,36 +761,55 @@ impl SessionOps {
                         redrew: true,
                         enter_retries: entered.saturating_sub(1),
                         blocked_on: None,
-                        attempts: attempt + 1,
+                        attempts,
+                        text_visible: false,
+                        cleaned: false,
+                        leftover: false,
                     })
                 }
                 SubmitEvidence::RedrewOnly => {
                     // The screen changed without a turn starting: a dialog owns
                     // the keyboard, and another Enter could pick a menu item.
+                    redrew = true;
                     return Ok(PromptDelivery {
                         bytes,
                         submitted: false,
-                        redrew: true,
+                        redrew,
                         enter_retries: entered.saturating_sub(1),
                         blocked_on: self.peek_blocking_prompt(session_id),
-                        attempts: attempt + 1,
-                    })
+                        attempts,
+                        text_visible: self.text_is_present(session_id, &token),
+                        cleaned: false,
+                        leftover: self.text_is_present(session_id, &token),
+                    });
                 }
                 SubmitEvidence::Silent => {
-                    // Enter was swallowed and the text is still in the box (or
-                    // gone with it); loop re-types when needed and presses
-                    // Enter again.
+                    // Enter was swallowed; the composer very likely still
+                    // holds the text. Loop presses Enter again without typing.
                     std::thread::sleep(ENTER_GAP);
                 }
             }
         }
+
+        // Give up honestly. If nothing ever repainted, the CLI was deaf and
+        // our text is sitting in its composer: delete exactly what we typed so
+        // the next prompt is not concatenated onto it.
+        let leftover = self.text_is_present(session_id, &token);
+        let mut cleaned = false;
+        if !redrew && leftover && typed_times > 0 {
+            let characters = text.chars().count().saturating_mul(typed_times as usize);
+            cleaned = self.clear_input(session_id, characters).is_ok();
+        }
         Ok(PromptDelivery {
             bytes,
             submitted: false,
-            redrew: false,
+            redrew,
             enter_retries: entered.saturating_sub(1),
             blocked_on: self.peek_blocking_prompt(session_id),
-            attempts: MAX_TYPE_ATTEMPTS,
+            attempts,
+            text_visible: leftover && !cleaned,
+            cleaned,
+            leftover: leftover && !cleaned,
         })
     }
 
@@ -674,8 +836,12 @@ impl SessionOps {
                 enter_retries: 0,
                 blocked_on: Some(dialog),
                 attempts: 0,
+                text_visible: true,
+                cleaned: false,
+                leftover: true,
             });
         }
+        let mut redrew = false;
         for attempt in 0..=MAX_ENTER_RETRIES {
             bytes += self.send_bytes(session_id, b"\r")?;
             match self.await_turn_start(session_id, &token)? {
@@ -687,16 +853,23 @@ impl SessionOps {
                         enter_retries: attempt,
                         blocked_on: None,
                         attempts: attempt + 1,
+                        text_visible: false,
+                        cleaned: false,
+                        leftover: false,
                     })
                 }
                 SubmitEvidence::RedrewOnly => {
+                    redrew = true;
                     return Ok(PromptDelivery {
                         bytes,
                         submitted: false,
-                        redrew: true,
+                        redrew,
                         enter_retries: attempt,
                         blocked_on: self.peek_blocking_prompt(session_id),
                         attempts: attempt + 1,
+                        text_visible: self.text_is_present(session_id, &token),
+                        cleaned: false,
+                        leftover: self.text_is_present(session_id, &token),
                     })
                 }
                 SubmitEvidence::Silent if attempt < MAX_ENTER_RETRIES => {
@@ -705,13 +878,22 @@ impl SessionOps {
                 SubmitEvidence::Silent => {}
             }
         }
+        let leftover = self.text_is_present(session_id, &token);
+        let mut cleaned = false;
+        if !redrew && leftover {
+            let characters = text.chars().count();
+            cleaned = self.clear_input(session_id, characters).is_ok();
+        }
         Ok(PromptDelivery {
             bytes,
             submitted: false,
-            redrew: false,
+            redrew,
             enter_retries: MAX_ENTER_RETRIES,
             blocked_on: self.peek_blocking_prompt(session_id),
             attempts: MAX_ENTER_RETRIES + 1,
+            text_visible: leftover && !cleaned,
+            cleaned,
+            leftover: leftover && !cleaned,
         })
     }
 
@@ -734,22 +916,67 @@ impl SessionOps {
     ///
     /// The screen is the direct witness for a TUI whose composer is still
     /// initialising; the accumulated log covers Sessions whose screen cannot be
-    /// serialized.
+    /// serialized. Both are consulted, because "not visible" is the one answer
+    /// that must not be guessed: it is what licenses typing the text a second
+    /// time.
+    ///
+    /// Matching ignores whitespace on both sides. A wrapped CJK prompt splits
+    /// its first characters across two rendered rows, so a literal `contains`
+    /// on a single row reports "missing" for text that is plainly on screen —
+    /// the 600 ms retry then pasted the whole prompt twice.
     fn text_is_present(&mut self, session_id: &str, token: &str) -> bool {
         if token.is_empty() {
             return true;
         }
-        // The rendered composer is the authoritative witness. The log is not:
-        // before the TUI installs raw mode the tty itself echoes our bytes, so
-        // the log "contains" text that the Agent never received — exactly the
-        // case where a prompt typed during startup vanishes.
         if let Ok(screen) = self.read_screen(session_id, text::DEFAULT_READ_LINES) {
-            if screen.source == "screen" {
-                return screen.lines.iter().any(|line| line.contains(token));
+            if screen.source == "screen" && contains_token(&screen.text(), token) {
+                return true;
             }
         }
         self.peek_stream(session_id)
-            .is_some_and(|tail| tail.contains(token))
+            .is_some_and(|tail| contains_token(&tail, token))
+    }
+
+    /// Wait until the text we typed is visible somewhere.
+    ///
+    /// Fixed sleeps are the wrong tool here: codex 0.172 needs well over a
+    /// second to paint its composer, so a short sleep followed by "retype" is
+    /// exactly how a prompt ended up pasted four times. Poll instead.
+    fn wait_for_text(&mut self, session_id: &str, token: &str, budget: Duration) -> bool {
+        let deadline = Instant::now() + budget;
+        loop {
+            let _ = self.drain(session_id);
+            if self.text_is_present(session_id, token) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(TEXT_EVIDENCE_POLL);
+        }
+    }
+
+    /// Delete what we typed into the composer without submitting it.
+    ///
+    /// Backspace is the only editing key every Agent composer shares: Ctrl-U,
+    /// Ctrl-K and ESC all mean something different per CLI, and on codex an
+    /// idle Ctrl-C is "quit". The count is bounded and the cursor sits at the
+    /// end of our own text, so the keystrokes only remove characters that this
+    /// MCP typed.
+    pub fn clear_input(&mut self, session_id: &str, characters: usize) -> TResult<u64> {
+        const CHUNK: usize = 32;
+        let mut sent = 0u64;
+        let mut remaining = characters.min(MAX_CLEAR_CHARS);
+        while remaining > 0 {
+            let batch = remaining.min(CHUNK);
+            let mut bytes = vec![0x7f_u8; batch];
+            bytes.shrink_to_fit();
+            sent += self.send_bytes(session_id, &bytes)?;
+            remaining -= batch;
+            std::thread::sleep(CLEAR_INPUT_GAP);
+        }
+        let _ = self.drain(session_id);
+        Ok(sent)
     }
 
     fn peek_blocking_prompt(&mut self, session_id: &str) -> Option<String> {
@@ -838,6 +1065,28 @@ impl SessionOps {
         }
     }
 
+    /// Is the bottom of the screen still advertising an active turn?
+    ///
+    /// Cached for a moment because every read replays the Host grid; a wait
+    /// loop asks several times per second and the answer cannot change faster
+    /// than a repaint.
+    fn active_work_on_screen(
+        &mut self,
+        session_id: &str,
+        cache: &mut Option<(Instant, Option<String>)>,
+    ) -> Option<String> {
+        if let Some((at, value)) = cache.as_ref() {
+            if at.elapsed() < Duration::from_millis(700) {
+                return value.clone();
+            }
+        }
+        let value = self
+            .peek_screen(session_id)
+            .and_then(|tail| detect_active_work(&tail).map(str::to_string));
+        *cache = Some((Instant::now(), value.clone()));
+        value
+    }
+
     /// Current screen text. Dialogs and menus are screen facts, so this is the
     /// right oracle for "is the CLI asking me something".
     fn peek_screen(&mut self, session_id: &str) -> Option<String> {
@@ -877,6 +1126,58 @@ impl SessionOps {
             })
             .map(|_| bytes.len() as u64)
             .map_err(ToolFailure::from)
+    }
+
+    /// Is the CLI visibly working right now?
+    ///
+    /// Used to decide whether an interrupt is safe: Ctrl-C is also "quit" for
+    /// an idle Agent TUI (codex exits), so a cancel must have evidence that a
+    /// turn is actually in flight.
+    pub fn active_work(&mut self, session_id: &str) -> TResult<Option<String>> {
+        Ok(self
+            .peek_screen(session_id)
+            .and_then(|tail| detect_active_work(&tail).map(str::to_string)))
+    }
+
+    /// Rendered screen text, when the Host can serialize one.
+    pub fn screen_text(&mut self, session_id: &str) -> TResult<Option<String>> {
+        let outcome = self.read_screen(session_id, text::DEFAULT_READ_LINES)?;
+        Ok((outcome.source == "screen" && !outcome.lines.is_empty()).then(|| outcome.text()))
+    }
+
+    /// Is a Generic Shell waiting at its prompt, i.e. is nothing running?
+    ///
+    /// A Shell has no turn hook, but its prompt is proof that the previous
+    /// command returned — the same evidence `wait_for_task` uses.
+    pub fn shell_prompt_present(&mut self, session_id: &str) -> TResult<bool> {
+        let text = match self.screen_text(session_id)? {
+            Some(text) => text,
+            None => self.peek_stream(session_id).unwrap_or_default(),
+        };
+        Ok(text
+            .lines()
+            .rev()
+            .take(8)
+            .any(|line| is_shell_prompt_line(line)))
+    }
+
+    /// The dialog that currently owns the keyboard, if any.
+    pub fn blocking_dialog(&mut self, session_id: &str) -> TResult<Option<String>> {
+        Ok(self.peek_blocking_prompt(session_id))
+    }
+
+    /// Does the Session still have a live Host and a live attachment?
+    ///
+    /// A registry row can lag a process that is already gone, so this asks the
+    /// Host to serve one poll instead of trusting the projection.
+    pub fn probe_alive(&mut self, session_id: &str) -> bool {
+        match self.poll(session_id, 8, 0) {
+            Ok(result) => !result.closed,
+            Err(_) => {
+                self.detach(session_id);
+                false
+            }
+        }
     }
 
     pub fn interrupt(&mut self, session_id: &str) -> TResult<bool> {
@@ -960,6 +1261,7 @@ impl SessionOps {
                     reason: format!("Agent exited during startup ({:?})", exit.code),
                     state: stream.latest_state.clone(),
                     tail: stream.tail_text(),
+                    blocked_on: None,
                 });
             }
             if self.is_terminal(session_id)? {
@@ -968,44 +1270,59 @@ impl SessionOps {
                     reason: "Session ended during startup".into(),
                     state: stream.latest_state.clone(),
                     tail: stream.tail_text(),
+                    blocked_on: None,
                 });
             }
-            if let Some(state) = stream.latest_state.clone() {
-                if state.state == "idle" && stream.wrote_output {
-                    return Ok(ReadyOutcome {
-                        ready: true,
-                        reason: "status reported idle".into(),
-                        state: Some(state),
-                        tail: stream.tail_text(),
-                    });
-                }
-            }
-            if stream.wrote_output {
-                let quiet = stream
+            let quiet_ready = stream.wrote_output
+                && stream
                     .last_output_at
                     .map(|at| at.elapsed())
-                    .unwrap_or_default();
-                // A `process`-sourced status means the Host has only seen the
-                // spawn; Qoder paints its frame at that point but keeps loading
-                // MCP servers, and a prompt typed now is discarded. That claim
-                // is only trusted during the startup grace: an Agent whose
-                // hooks never install reports `process` for its whole life, and
-                // blocking on it forever would never become ready.
-                let strict = started.elapsed() < STARTUP_GRACE;
-                let still_spawning = strict
-                    && self
-                        .summary(session_id)
-                        .ok()
-                        .and_then(|summary| summary.latest_status)
-                        .is_some_and(|status| status.source == "process");
-                if quiet >= QUIET_READY && !still_spawning {
+                    .unwrap_or_default()
+                    >= QUIET_READY
+                && {
+                    let strict = started.elapsed() < STARTUP_GRACE;
+                    !(strict
+                        && self
+                            .summary(session_id)
+                            .ok()
+                            .and_then(|summary| summary.latest_status)
+                            .is_some_and(|status| status.source == "process"))
+                };
+            let idle_ready = stream
+                .latest_state
+                .as_ref()
+                .is_some_and(|state| state.state == "idle")
+                && stream.wrote_output;
+            if idle_ready || quiet_ready {
+                // Quiet is not readiness when the CLI is asking a question: a
+                // modal menu (codex's "1. Update now / 2. Skip") is perfectly
+                // quiet, and the Enter meant for a prompt answers it instead.
+                if let Some(dialog) = self.peek_blocking_prompt(session_id) {
                     return Ok(ReadyOutcome {
-                        ready: true,
-                        reason: format!("terminal quiet for {}ms", quiet.as_millis()),
+                        ready: false,
+                        reason: format!("the CLI is showing a dialog ({dialog})"),
                         state: stream.latest_state.clone(),
                         tail: stream.tail_text(),
+                        blocked_on: Some(dialog),
                     });
                 }
+                return Ok(ReadyOutcome {
+                    ready: true,
+                    reason: if idle_ready {
+                        "status reported idle".into()
+                    } else {
+                        format!(
+                            "terminal quiet for {}ms",
+                            stream
+                                .last_output_at
+                                .map(|at| at.elapsed().as_millis())
+                                .unwrap_or_default()
+                        )
+                    },
+                    state: stream.latest_state.clone(),
+                    tail: stream.tail_text(),
+                    blocked_on: None,
+                });
             }
             if Instant::now() >= deadline {
                 return Ok(ReadyOutcome {
@@ -1013,6 +1330,7 @@ impl SessionOps {
                     reason: format!("no quiet window within {timeout_ms}ms"),
                     state: stream.latest_state.clone(),
                     tail: stream.tail_text(),
+                    blocked_on: None,
                 });
             }
         }
@@ -1046,6 +1364,16 @@ impl SessionOps {
         let mut last_dialog_check = Instant::now();
         let mut last_shell_prompt_check = Instant::now();
         let mut shell_prompt_returned = false;
+        // A provider's "turn complete" is a claim, not proof: codex 0.172
+        // notifies after its first model response while the TUI still shows
+        // `esc to interrupt`. The screen is the witness that can refute it.
+        let mut busy_cache: Option<(Instant, Option<String>)> = None;
+        let mut contradicted_idle = 0u32;
+        let mut quiet_since: Option<Instant> = None;
+        // The status mark whose completion claim the screen refuted. It must
+        // never settle this wait afterwards, however briefly the screen looks
+        // quiet: a refuted claim cannot become true by being asked twice.
+        let mut contradicted_through: Option<StatusMark> = None;
         loop {
             if self.wait_was_cancelled() {
                 return Err(ToolFailure::new(
@@ -1127,6 +1455,7 @@ impl SessionOps {
                     // baseline and must not settle this turn.
                     "idle"
                         if fresh
+                            && !mark_is_contradicted(Some(mark), contradicted_through)
                             && (attention == Some("turn_completed")
                                 || turn_source
                                 // No prompt is pending and nothing moved since we
@@ -1141,15 +1470,31 @@ impl SessionOps {
                         } else {
                             "status was already idle and no prompt is pending".to_string()
                         };
-                        return Ok(self.settle(
-                            session_id,
-                            "idle",
-                            &status.source,
-                            &status.confidence,
-                            evidence,
-                            &stream,
-                            started,
-                        ))
+                        if let Some(busy) = self.active_work_on_screen(session_id, &mut busy_cache)
+                        {
+                            contradicted_idle += 1;
+                            contradicted_through = Some(match contradicted_through {
+                                Some(previous) if previous.is_newer_than(mark) => previous,
+                                _ => mark,
+                            });
+                            quiet_since = None;
+                            if wait_trace_enabled() {
+                                eprintln!(
+                                    "wait_trace ignored idle from {}: screen still shows {busy:?}",
+                                    status.source
+                                );
+                            }
+                        } else {
+                            return Ok(self.settle(
+                                session_id,
+                                "idle",
+                                &status.source,
+                                &status.confidence,
+                                evidence,
+                                &stream,
+                                started,
+                            ));
+                        }
                     }
                     _ => {}
                 }
@@ -1210,16 +1555,38 @@ impl SessionOps {
                             started,
                         ))
                     }
-                    "idle" if turn_source && fresh => {
-                        return Ok(self.settle(
-                            session_id,
-                            "idle",
-                            &state.source,
-                            &state.confidence,
-                            state.evidence.unwrap_or_else(|| "turn boundary reported".into()),
-                            &stream,
-                            started,
-                        ))
+                    "idle"
+                        if turn_source
+                            && fresh
+                            && !mark_is_contradicted(state.mark, contradicted_through) =>
+                    {
+                        if let Some(busy) = self.active_work_on_screen(session_id, &mut busy_cache)
+                        {
+                            contradicted_idle += 1;
+                            if let Some(mark) = state.mark {
+                                contradicted_through = Some(match contradicted_through {
+                                    Some(previous) if previous.is_newer_than(mark) => previous,
+                                    _ => mark,
+                                });
+                            }
+                            quiet_since = None;
+                            if wait_trace_enabled() {
+                                eprintln!(
+                                    "wait_trace ignored stream idle from {}: screen shows {busy:?}",
+                                    state.source
+                                );
+                            }
+                        } else {
+                            return Ok(self.settle(
+                                session_id,
+                                "idle",
+                                &state.source,
+                                &state.confidence,
+                                state.evidence.unwrap_or_else(|| "turn boundary reported".into()),
+                                &stream,
+                                started,
+                            ));
+                        }
                     }
                     _ => {}
                 }
@@ -1280,6 +1647,32 @@ impl SessionOps {
                 }
             }
 
+            // The completion signal was refuted. Once the Agent stops
+            // advertising an active turn, the screen *is* the completion
+            // evidence — but only after it has stayed quiet, so a repaint gap
+            // between two tool calls cannot be mistaken for a finished turn.
+            if contradicted_idle > 0 {
+                match self.active_work_on_screen(session_id, &mut busy_cache) {
+                    Some(_) => quiet_since = None,
+                    None => {
+                        let since = *quiet_since.get_or_insert_with(Instant::now);
+                        if since.elapsed() >= SCREEN_QUIET_AFTER_CONTRADICTION {
+                            return Ok(self.settle(
+                                session_id,
+                                "idle",
+                                "screen",
+                                "medium",
+                                format!(
+                                    "the Agent stopped showing an active turn after {contradicted_idle} premature completion signal(s)"
+                                ),
+                                &stream,
+                                started,
+                            ));
+                        }
+                    }
+                }
+            }
+
             if self.wait_was_cancelled() {
                 return Err(ToolFailure::new(
                     "wait_cancelled",
@@ -1292,7 +1685,13 @@ impl SessionOps {
                     "timeout",
                     "watchdog",
                     "low",
-                    format!("no turn boundary within {timeout_ms}ms"),
+                    if contradicted_idle > 0 {
+                        format!(
+                            "no turn boundary within {timeout_ms}ms; {contradicted_idle} completion signal(s) were contradicted by the screen"
+                        )
+                    } else {
+                        format!("no turn boundary within {timeout_ms}ms")
+                    },
                     &stream,
                     started,
                 ));
@@ -1552,28 +1951,62 @@ impl SessionOps {
                 events: Vec::new(),
             });
         }
+        if wait_trace_enabled() {
+            if let Some(events) = page.get("events").and_then(|events| events.as_array()) {
+                for event in events {
+                    eprintln!(
+                        "history_event role={:?} kind={:?} answer={:?} text={:?}",
+                        event.get("role").and_then(|value| value.as_str()),
+                        event.get("kind").and_then(|value| value.as_str()),
+                        event.get("answerText").and_then(|value| value.as_str()),
+                        event
+                            .get("text")
+                            .and_then(|value| value.as_str())
+                            .map(|text| text.chars().take(60).collect::<String>())
+                    );
+                }
+            }
+        }
         let events = page
             .get("events")
             .and_then(|events| events.as_array())
             .map(|events| {
                 events
                     .iter()
-                    .map(|event| TranscriptEvent {
-                        role: event
+                    .map(|event| {
+                        let role = event
                             .get("role")
                             .and_then(|role| role.as_str())
                             .unwrap_or("unknown")
-                            .to_string(),
-                        kind: event
-                            .get("kind")
-                            .and_then(|kind| kind.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        text: event
+                            .to_string();
+                        let text = event
                             .get("text")
                             .and_then(|text| text.as_str())
                             .unwrap_or_default()
-                            .to_string(),
+                            .to_string();
+                        // A Host that predates `answerText` cannot separate an
+                        // answer from a tool call; its assistant text is the best
+                        // available prose. A Host that sends the field says so
+                        // exactly, including "no prose in this message".
+                        let answer_text = match event.get("answerText") {
+                            Some(serde_json::Value::String(prose)) => Some(prose.clone()),
+                            // An explicit null: the Host looked, and this event
+                            // is not assistant prose.
+                            Some(_) => Some(String::new()),
+                            // No field at all: an older Host, whose assistant
+                            // text is the only prose available.
+                            None => (role == "assistant").then(|| text.clone()),
+                        };
+                        TranscriptEvent {
+                            role,
+                            kind: event
+                                .get("kind")
+                                .and_then(|kind| kind.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            text,
+                            answer_text,
+                        }
                     })
                     .collect()
             })
@@ -1695,6 +2128,9 @@ pub struct ReadyOutcome {
     pub reason: String,
     pub state: Option<StateObservation>,
     pub tail: String,
+    /// A modal dialog owns the keyboard: the CLI is asking a question and an
+    /// Enter sent for a prompt would answer it.
+    pub blocked_on: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1710,6 +2146,29 @@ pub struct PromptDelivery {
     pub blocked_on: Option<String>,
     /// How many type-and-submit rounds this delivery needed.
     pub attempts: u32,
+    /// Our text is still visible on the session (normally: in the composer).
+    pub text_visible: bool,
+    /// The text this call typed was deleted again after a failed send.
+    pub cleaned: bool,
+    /// Text this MCP typed may still sit in the composer.
+    pub leftover: bool,
+}
+
+impl PromptDelivery {
+    /// A dialog owned the keyboard before anything was typed.
+    pub fn blocked_on_dialog(dialog: String) -> PromptDelivery {
+        PromptDelivery {
+            bytes: 0,
+            submitted: false,
+            redrew: false,
+            enter_retries: 0,
+            blocked_on: Some(dialog),
+            attempts: 0,
+            text_visible: false,
+            cleaned: false,
+            leftover: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1767,7 +2226,12 @@ impl ReadOutcome {
 pub struct TranscriptEvent {
     pub role: String,
     pub kind: String,
+    /// The transcript line: includes tool-call summaries.
     pub text: String,
+    /// Assistant prose only. `Some("")` means the Host looked and found none
+    /// (a tool-only message, a tool result, a user prompt); `None` means the
+    /// Host did not report prose at all, so `text` is all there is.
+    pub answer_text: Option<String>,
 }
 
 /// Result of reading the Agent's own transcript.
@@ -1806,6 +2270,10 @@ impl ReplyOutcome {
 }
 
 /// Assistant text of the newest turn, reading the events backwards.
+///
+/// Only assistant *prose* counts. A transcript line mixes the Agent's words
+/// with the tool calls it made ("Read {\"file_path\":...}"), and quoting that
+/// as the answer is how a Qoder turn reported the tool summary as its reply.
 fn last_assistant_turn(events: &[TranscriptEvent], prompt_fence: Option<&str>) -> String {
     let mut collected: Vec<&str> = Vec::new();
     let mut found_prompt = false;
@@ -1813,8 +2281,18 @@ fn last_assistant_turn(events: &[TranscriptEvent], prompt_fence: Option<&str>) -
         match event.role.as_str() {
             "assistant"
                 if !event.kind.contains("tool") && !event.kind.contains("thinking") => {
-                if !event.text.trim().is_empty() {
-                    collected.push(event.text.trim());
+                let prose = event
+                    .answer_text
+                    .as_deref()
+                    .unwrap_or(event.text.as_str())
+                    .trim();
+                // An Agent that merely echoes the prompt has not answered it.
+                let echoed = prompt_fence.is_some_and(|fence| {
+                    let fence = squeeze(&fence.to_ascii_lowercase());
+                    !fence.is_empty() && squeeze(&prose.to_ascii_lowercase()) == fence
+                });
+                if !prose.is_empty() && !echoed {
+                    collected.push(prose);
                 }
             }
             // Tool calls and results are not part of the answer, and they must
@@ -1848,6 +2326,7 @@ mod tests {
             role: role.into(),
             kind: kind.into(),
             text: text.into(),
+            answer_text: (role == "assistant").then(|| text.to_string()),
         };
         // Previous turn, then our prompt, then a turn that used tools.
         let events = vec![
@@ -1878,6 +2357,69 @@ mod tests {
             "first part\n\nmessage-shaped answer\n\nfinal answer"
         );
         assert_eq!(last_assistant_turn(&events, Some("a different prompt")), "");
+    }
+
+    #[test]
+    fn a_tool_call_or_a_prompt_echo_is_not_an_answer() {
+        // Claude and Qoder keep the tool call in the same assistant message as
+        // the answer. The transcript line shows both; the reply must be prose.
+        let events = vec![
+            TranscriptEvent {
+                role: "user".into(),
+                kind: "message".into(),
+                text: "Read /tmp/x.md and answer".into(),
+                answer_text: None,
+            },
+            TranscriptEvent {
+                role: "assistant".into(),
+                kind: "assistant".into(),
+                text: "Read /tmp/x.md\n{\"file_path\":\"/tmp/x.md\"}".into(),
+                answer_text: Some(String::new()),
+            },
+            TranscriptEvent {
+                role: "assistant".into(),
+                kind: "assistant".into(),
+                text: "the real answer".into(),
+                answer_text: Some("the real answer".into()),
+            },
+        ];
+        assert_eq!(last_assistant_turn(&events, Some("Read /tmp/x.md")), "the real answer");
+        // A turn that only produced a tool call has no reply yet; it must not
+        // report the tool summary as if the Agent had said it.
+        let tools_only = vec![
+            TranscriptEvent {
+                role: "user".into(),
+                kind: "message".into(),
+                text: "Read /tmp/x.md".into(),
+                answer_text: None,
+            },
+            TranscriptEvent {
+                role: "assistant".into(),
+                kind: "assistant".into(),
+                text: "Read /tmp/x.md".into(),
+                answer_text: Some(String::new()),
+            },
+        ];
+        assert_eq!(last_assistant_turn(&tools_only, Some("Read /tmp/x.md")), "");
+        // An assistant message that is exactly the prompt is an echo, not an answer.
+        let echo = vec![
+            TranscriptEvent {
+                role: "user".into(),
+                kind: "message".into(),
+                text: "Read /tmp/x.md and answer".into(),
+                answer_text: None,
+            },
+            TranscriptEvent {
+                role: "assistant".into(),
+                kind: "assistant".into(),
+                text: "Read  /tmp/x.md and answer".into(),
+                answer_text: Some("Read  /tmp/x.md and answer".into()),
+            },
+        ];
+        assert_eq!(
+            last_assistant_turn(&echo, Some("Read /tmp/x.md and answer")),
+            ""
+        );
     }
 
     #[test]
@@ -2008,5 +2550,74 @@ mod tests {
         // Ordinary agent output must never be mistaken for a dialog.
         assert_eq!(detect_blocking_prompt("❯ fix the failing test\n⏺ done"), None);
         assert_eq!(detect_blocking_prompt("trustworthiness is not a dialog"), None);
+        // A numbered plan in the Agent's own prose is not a menu: no option is
+        // highlighted and no navigation hint is drawn.
+        assert_eq!(
+            detect_blocking_prompt("1. change the parser\n2. add a test\n3. commit"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cli_update_menu_is_a_dialog() {
+        // codex 0.172, verbatim from a real pane: the first prompt's Enter
+        // picked "Update now" and upgraded the CLI mid-session.
+        let screen = concat!(
+            "  >_ OpenAI Codex (v0.171.0)\n",
+            "  Update available! 0.171.0 -> 0.172.0\n",
+            "› 1. Update now (runs `npm install -g @openai/codex`)\n",
+            "  2. Skip\n",
+            "  3. Skip until next version\n",
+            "  Press enter to continue"
+        );
+        assert!(detect_blocking_prompt(screen).is_some());
+        // Even without the explicit phrases, a marked numbered menu is a
+        // question that owns the keyboard.
+        let menu = "What should I do next?\n› 1. continue\n  2. stop\n  3. ask";
+        assert_eq!(
+            detect_blocking_prompt(menu),
+            Some("a numbered choice menu owns the keyboard")
+        );
+    }
+
+    #[test]
+    fn active_work_is_read_from_the_bottom_of_the_screen() {
+        let working = concat!(
+            "› read the README\n",
+            "\n",
+            "• Working (7s • esc to interrupt)\n",
+            "\n",
+            "› Ask Codex to do anything"
+        );
+        assert_eq!(detect_active_work(working), Some("esc to interrupt"));
+        // The finished turn drops the affordance.
+        let done = concat!(
+            "› read the README\n",
+            "\n",
+            "• # AgentPort PROBE-OK.\n",
+            "\n",
+            "  Worked for 6s • 00:19\n",
+            "\n",
+            "› Ask Codex to do anything"
+        );
+        assert_eq!(detect_active_work(done), None);
+        // An Agent *talking* about interrupting itself is not a running turn:
+        // only the bottom rows are considered.
+        let quoted = concat!(
+            "press esc to interrupt in most TUIs\n",
+            "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n",
+            "› next"
+        );
+        assert_eq!(detect_active_work(quoted), None);
+    }
+
+    #[test]
+    fn wrapped_prompt_text_is_still_evidence() {
+        // The same prompt, and the row a 40-column TUI wraps it into.
+        let typed = "请你只用一句话回答：请先读取 README.md 的第一行";
+        let screen = "› 请你只用一句话回答：请先读取 README.md 的第\n  一行，并包含 PROBE-OK";
+        let token: String = typed.chars().take(10).collect();
+        assert!(contains_token(screen, &token));
+        assert!(!contains_token("› something else entirely", &token));
     }
 }

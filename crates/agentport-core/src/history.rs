@@ -43,6 +43,17 @@ pub struct HistoryEvent {
     pub role: Option<HistoryRole>,
     pub timestamp: Option<String>,
     pub text: String,
+    /// Assistant prose only, for an assistant event.
+    ///
+    /// `text` is the transcript line: it deliberately includes tool-call
+    /// summaries ("Read {\"file_path\":...}"), because the transcript view
+    /// shows them. A caller that wants *the answer* must not quote tool calls
+    /// as if the Agent had said them, so the prose of the same message is
+    /// carried separately. An assistant event reports a string, empty when the
+    /// message was tool calls only; `null` means the event is not assistant
+    /// prose at all (tool result, user or system event).
+    #[serde(default)]
+    pub answer_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1088,6 +1099,13 @@ fn normalize_event(source: &NativeSource, offset: u64, value: &Value) -> Option<
     hasher.update(source.id.as_bytes());
     hasher.update(offset.to_le_bytes());
     let digest = format!("{:x}", hasher.finalize());
+    let answer_text = match role {
+        // An assistant event always reports its prose, even when that is the
+        // empty string: "this message was only a tool call" is a fact the reply
+        // reader needs, and `null` is reserved for non-assistant events.
+        Some(HistoryRole::Assistant) => Some(assistant_prose(&value).trim().to_string()),
+        _ => None,
+    };
     Some(HistoryEvent {
         id: digest[..24].to_string(),
         source_id: source.id.clone(),
@@ -1096,7 +1114,35 @@ fn normalize_event(source: &NativeSource, offset: u64, value: &Value) -> Option<
         role,
         timestamp,
         text: text.trim().to_string(),
+        answer_text,
     })
+}
+
+/// Assistant prose of one transcript record, never tool input or results.
+///
+/// Provider transcripts keep an assistant message as content blocks; the
+/// answer is the text blocks only. Codex names them `output_text`, Claude and
+/// Qoder `text`; tool calls and reasoning blocks are not prose.
+fn assistant_prose(value: &Value) -> String {
+    let content = value
+        .pointer("/message/content")
+        .or_else(|| value.pointer("/payload/content"))
+        .or_else(|| value.get("content"));
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| match block.get("type").and_then(Value::as_str) {
+                Some("text") | Some("output_text") => {
+                    block.get("text").and_then(Value::as_str).map(str::to_string)
+                }
+                _ => None,
+            })
+            .filter(|text| !text.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 fn is_auxiliary_transcript_record(value: &Value) -> bool {
@@ -1765,6 +1811,35 @@ mod tests {
             *text,
             "sidechain" | "meta" | "internal" | "segment question"
         )));
+        // The answer of an assistant message never includes its tool calls.
+        assert_eq!(page.events[1].answer_text.as_deref(), Some("assistant answer"));
+        assert_eq!(page.events[2].answer_text.as_deref(), Some(""));
+        assert_eq!(page.events[0].answer_text, None);
+    }
+
+    #[test]
+    fn assistant_prose_skips_tool_blocks_and_provider_shapes() {
+        let claude = serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "the answer"},
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/x"}}
+            ]}
+        });
+        assert_eq!(assistant_prose(&claude), "the answer");
+        let codex = serde_json::json!({
+            "payload": {"type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "codex answer"}]}
+        });
+        assert_eq!(assistant_prose(&codex), "codex answer");
+        let tool_only = serde_json::json!({
+            "message": {"role": "assistant",
+                        "content": [{"type": "tool_use", "name": "Bash",
+                                     "input": {"command": "ls"}}]}
+        });
+        assert_eq!(assistant_prose(&tool_only), "");
+        let plain = serde_json::json!({"content": "plain string content"});
+        assert_eq!(assistant_prose(&plain), "plain string content");
     }
 
     #[test]

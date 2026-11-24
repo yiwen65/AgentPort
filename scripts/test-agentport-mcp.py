@@ -132,6 +132,8 @@ def main() -> int:
             "wait_for_task",
             "read_output",
             "cancel_turn",
+            "clear_input",
+            "restart_session",
             "terminate_session",
             "open_pane",
             "split_pane",
@@ -149,8 +151,16 @@ def main() -> int:
         check("send_input" not in names, "raw byte input is not exposed")
 
         print("list_agents")
+        cached, is_error = client.call("list_agents", {})
+        check(not is_error and cached.get("cached") is True,
+              "the default agent list is labelled as a cached snapshot")
+        check(
+            all(agent.get("probedAt") for agent in cached["agents"]),
+            "every cached Agent carries the time it was probed",
+        )
         agents, is_error = client.call("list_agents", {"probe": True})
         check(not is_error and "agents" in agents, "agents listed")
+        check(agents.get("cached") is False, "a probe is not marked cached")
         shell = next((a for a in agents["agents"] if a["agent"] == "shell"), None)
         # Only installed Agents are listed at all, so presence is the proof.
         check(shell is not None and bool(shell.get("path")), "the Generic Shell Agent is selectable")
@@ -208,6 +218,12 @@ def main() -> int:
             check(
                 is_error and visible["error"]["code"] == "session_not_owned",
                 "session_status refuses a Session this MCP did not create",
+            )
+            # The fixture is a real Host, not a stub: stop it, or it outlives
+            # the throwaway data root this test deletes.
+            subprocess.run(
+                [str(cli), "--json", "session", "stop", foreign_id],
+                capture_output=True, text=True, env=env, timeout=60,
             )
         else:
             print("  skip (no agentport-cli next to the MCP binary)")
@@ -520,6 +536,86 @@ def main() -> int:
         )
         check(repeat_elapsed < 15.0, f"repeat wait stayed bounded ({repeat_elapsed:.1f}s)")
 
+        print("an idle Session is never touched by cancel_turn")
+        # Regression: Ctrl-C on an idle Agent TUI quits the CLI, and the old
+        # receipt still said sessionAlive=true. The Shell here is idle, so the
+        # guard must refuse before any signal is sent.
+        refused_cancel, is_error = client.call("cancel_turn", {"sessionId": session_id})
+        check(
+            is_error and refused_cancel["error"]["code"] == "no_active_turn",
+            f"cancel_turn refuses an idle turn instead of signalling it ({refused_cancel})",
+        )
+        still_alive, _ = client.call("session_status", {"sessionId": session_id})
+        check(still_alive["lifecycle"] == "running", "and the Session is untouched")
+        # A command that is actually running IS cancellable, and the receipt
+        # reports what was measured afterwards.
+        client.call("send_prompt", {"sessionId": session_id, "text": "sleep 30; echo NEVER"})
+        time.sleep(1.0)
+        running_cancel, is_error = client.call(
+            "cancel_turn", {"sessionId": session_id, "mode": "interrupt"}
+        )
+        check(not is_error, f"a running command can be cancelled ({running_cancel})")
+        check(isinstance(running_cancel.get("sessionAlive"), bool),
+              "sessionAlive is measured, not assumed")
+        check(running_cancel.get("sessionAlive") is True,
+              f"the Shell survives its own SIGINT ({running_cancel.get('lifecycle')})")
+
+        print("an ended Session can be restarted in place")
+        ended, is_error = client.call("create_session", {
+            "agent": args.agent, "projectId": project_id, "title": "restart me"})
+        ended_id = ended["sessionId"]
+        client.call("terminate_session", {"sessionId": ended_id, "graceMs": 2000})
+        dead, _ = client.call("session_status", {"sessionId": ended_id})
+        check(dead["lifecycle"] != "running", "the Session is stopped")
+        restarted, is_error = client.call("restart_session", {"sessionId": ended_id})
+        check(not is_error and restarted.get("restarted"),
+              f"restart_session brings it back ({restarted})")
+        check(restarted["sessionId"] == ended_id, "the Session id is unchanged")
+        resumed, _ = client.call("session_status", {"sessionId": ended_id})
+        check(resumed["lifecycle"] == "running", "and it is running again")
+        busy_restart, is_error = client.call("restart_session", {"sessionId": ended_id})
+        check(is_error and busy_restart["error"]["code"] == "session_running",
+              "restarting a running Session is refused")
+        client.call("terminate_session", {"sessionId": ended_id})
+
+        print("clear_input removes composer text without submitting it")
+        client.call("send_prompt", {"sessionId": session_id, "text": "echo CLEAR-BASE-END"})
+        client.call("wait_for_task", {"sessionId": session_id, "timeoutMs": 15000})
+        # Type without Enter by writing bytes directly is not exposed; instead a
+        # failed delivery leaves text behind, which is what clear_input repairs.
+        cleared, is_error = client.call(
+            "clear_input",
+            {"sessionId": session_id, "characters": 8, "expect": "CLEAR-LEFTOVER"},
+        )
+        check(not is_error, f"clear_input returns without a dialog ({cleared})")
+        check("cleared" in cleared, "the result reports whether it could verify")
+
+        print("a modal menu stops the prompt before it is typed")
+        # Regression: codex 0.172 shows "1. Update now / 2. Skip" at startup and
+        # the first prompt's Enter answered it. The menu is a screen fact, so a
+        # prompt must be refused before any byte is typed.
+        printed, is_error = client.call("send_prompt", {
+            "sessionId": session_id,
+            # Assembled from arguments so the *command line* does not itself
+            # contain the dialog phrase: a prompt is echoed into the composer,
+            # and the detector must not read our own text as a menu.
+            "text": "printf '1. %s now (%s sh)\\n2. %s\\n3. %s until next version\\n' Update runs Skip Skip",
+        })
+        check(not is_error and printed.get("sent"), f"the fake menu is printed ({printed})")
+        client.call("wait_for_task", {"sessionId": session_id, "timeoutMs": 20000})
+        blocked, is_error = client.call(
+            "send_prompt", {"sessionId": session_id, "text": "echo SHOULD-NOT-BE-TYPED"}
+        )
+        check(not is_error, f"the refused send still returns a structured result ({blocked})")
+        check(blocked.get("sent") is False, "a dialog blocks the prompt")
+        check(blocked.get("blockedOn") is not None, "and the block names the dialog")
+        time.sleep(0.5)
+        after, _ = client.call("read_output", {"sessionId": session_id, "limit": 120})
+        check(
+            "SHOULD-NOT-BE-TYPED" not in (after.get("text") or ""),
+            "the refused prompt's text never reached the terminal",
+        )
+
         print("nonblocking parallel wait group")
         fast, is_error = client.call(
             "create_session", {"agent": args.agent, "projectId": project_id, "title": "parallel fast"}
@@ -660,6 +756,9 @@ def main() -> int:
         check(is_error, "the deleted Session is no longer addressable")
 
         print("terminate_session")
+        remained, _ = client.call("list_sessions", {"includeArchived": True})
+        print(f"  sessions before final stop: "
+              f"{[(s['sessionId'], s['lifecycle']) for s in remained['sessions']]}")
         stopped, is_error = client.call(
             "terminate_session", {"sessionId": session_id, "graceMs": 2000}
         )
@@ -693,7 +792,12 @@ def main() -> int:
             except Exception:
                 pass
         client.close()
-        shutil.rmtree(data_dir, ignore_errors=True)
+        if os.environ.get("AGENTPORT_MCP_E2E_KEEP"):
+            # Debugging aid: keep the throwaway data root (and say where it is)
+            # so a leftover Host can be traced to the Session that owns it.
+            print(f"kept data dir {data_dir}")
+        else:
+            shutil.rmtree(data_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
