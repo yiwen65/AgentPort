@@ -4276,6 +4276,8 @@ body.is-project-dragging .tree-row.project {
 }
 
 .git-commit-detail-panel {
+  display: flex;
+  flex-direction: column;
   padding-bottom: 20px;
 }
 
@@ -4372,7 +4374,8 @@ body.is-project-dragging .tree-row.project {
   text-transform: uppercase;
 }
 
-.git-commit-files > button {
+.git-commit-files > button,
+.git-commit-file-list-virtualized > div > button {
   width: 100%;
   min-height: 32px;
   display: flex;
@@ -4390,12 +4393,28 @@ body.is-project-dragging .tree-row.project {
     border-color 0.12s ease;
 }
 
-.git-commit-files > button:hover {
+.git-commit-file-list-virtualized {
+  height: 340px;
+  overflow: auto;
+}
+
+.git-commit-file-list-content {
+  position: relative;
+  min-width: 0;
+}
+
+.git-commit-file-list-virtualized > div > button {
+  overflow: hidden;
+}
+
+.git-commit-files > button:hover,
+.git-commit-file-list-virtualized > div > button:hover {
   background: var(--overlay-hover);
   color: var(--text);
 }
 
-.git-commit-files > button.active {
+.git-commit-files > button.active,
+.git-commit-file-list-virtualized > div > button.active {
   border-color: color-mix(in srgb, var(--accent) 22%, transparent);
   background: var(--overlay-selected);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
@@ -4404,12 +4423,16 @@ body.is-project-dragging .tree-row.project {
 
 .git-commit-patch {
   min-height: 180px;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   overflow: auto;
   border-top: 1px solid var(--overlay-divider);
 }
 
 .git-commit-patch .git-diff-code {
-  min-height: 180px;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .git-review {

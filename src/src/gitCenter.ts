@@ -999,10 +999,7 @@ export async function refreshGitHistory(
   }
 }
 
-export async function selectGitCommit(
-  commitOid: string,
-  parentOid?: string | null,
-): Promise<void> {
+export async function selectGitCommit(commitOid: string): Promise<void> {
   const target = activeTarget();
   if (!target) return;
   const { checkoutId, locator } = target;
@@ -1030,11 +1027,9 @@ export async function selectGitCommit(
       commitDetailPhase: "ready",
       commitDetailError: null,
     }));
-    await loadGitCommitPatch(
-      commitOid,
-      parentOid === undefined ? detail.selectedParentOid : parentOid,
-      null,
-    );
+    // Keep selecting a commit responsive: the metadata/file list is enough to
+    // populate the detail panel. Fetch the potentially large full diff only
+    // when the user asks for it (or selects a specific file below).
   } catch (error) {
     if (!requestIsCurrent(checkoutId, "commitDetail", request)) return;
     updateCheckout(checkoutId, (current) => ({
