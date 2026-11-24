@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import { loadGitCommitPatch } from "../gitCenter";
 import { useStore } from "../store";
 import type { GitCommitFile } from "../types";
-import { DiffText } from "./GitDiffPanel";
 
 const FILE_EAGER_RENDER_LIMIT = 500;
 const FILE_ROW_HEIGHT = 34;
@@ -221,22 +220,6 @@ export default function GitCommitDetailPanel() {
             )
           }
         />
-      </div>
-      <div className="git-commit-patch">
-        {cache.commitDetailPhase === "refreshing" ? (
-          <div className="git-panel-state" role="status">{t("states.loading")}</div>
-        ) : cache.commitDetailPhase === "error" ? (
-          <div className="git-panel-state error">{cache.commitDetailError}</div>
-        ) : patch?.format === "binary" ? (
-          <div className="git-panel-state binary">{t("diff.binary")}</div>
-        ) : patch?.patch !== null && patch?.patch !== undefined ? (
-          <>
-            {patch.truncated ? (
-              <div className="git-inline-state warn">{t("diff.large")}</div>
-            ) : null}
-            <DiffText patch={patch.patch} />
-          </>
-        ) : null}
       </div>
     </section>
   );

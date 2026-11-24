@@ -9,6 +9,7 @@ import { useStore } from "../store";
 import GitChangesPanel from "./GitChangesPanel";
 import GitCommitComposer from "./GitCommitComposer";
 import GitCommitDetailPanel from "./GitCommitDetailPanel";
+import GitCommitPatchPanel from "./GitCommitPatchPanel";
 import GitCommitReviewDialog from "./GitCommitReviewDialog";
 import GitContextHeader from "./GitContextHeader";
 import GitDiffPanel from "./GitDiffPanel";
@@ -111,9 +112,10 @@ export default function GitCenter() {
               <GitDiffPanel />
             </div>
           ) : (
-            <div className="git-center-body history">
+              <div className="git-center-body history">
               <GitHistoryPanel />
               <GitCommitDetailPanel />
+              <GitCommitPatchPanel />
             </div>
           )}
           <GitCommitReviewDialog />

@@ -4,15 +4,22 @@ import { readFileSync } from "node:fs";
 
 const styles = readFileSync("src/styles.css", "utf8");
 
-function ruleBody(selector: string) {
-  const start = styles.lastIndexOf(`${selector} {`);
+function ruleBody(selector: string, last = true) {
+  const needle = `${selector} {`;
+  const start = last ? styles.lastIndexOf(needle) : styles.indexOf(needle);
   expect(start, `missing ${selector}`).toBeGreaterThanOrEqual(0);
   const open = styles.indexOf("{", start);
   const close = styles.indexOf("}", open);
   return styles.slice(open + 1, close);
 }
 
-describe("long commit detail layout", () => {
+describe("Git Center history layout", () => {
+  it("uses a three-column hierarchy for history, detail, and diff", () => {
+    const history = ruleBody(".git-center-body.history", false);
+    expect(history).toMatch(/grid-template-columns:\s*minmax\(260px,\s*24%\)\s+minmax\(300px,\s*31%\)\s+minmax\(0,\s*1fr\)/);
+    expect(ruleBody(".git-commit-patch-panel")).toMatch(/display:\s*flex/);
+  });
+
   it("bounds the commit patch so its virtualized rows do not expand the whole panel", () => {
     expect(ruleBody(".git-commit-detail-panel")).toMatch(/display:\s*flex/);
     expect(ruleBody(".git-commit-detail-panel")).toMatch(/flex-direction:\s*column/);

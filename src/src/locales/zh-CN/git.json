@@ -194,6 +194,8 @@
     "firstParent": "第一父提交",
     "otherParent": "第 {{count}} 父提交",
     "allFiles": "完整提交 Diff",
+    "patchHint": "选择文件查看 Diff",
+    "patchHintBody": "从左侧文件列表选择文件，或点击“完整提交 Diff”查看全部变更。",
     "files": "文件（{{count}}）",
     "message": "完整提交信息",
     "preview": {
