@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStore } from "../store";
 
@@ -89,23 +90,110 @@ export function parseDiffLines(patch: string): DiffLine[] {
   return lines;
 }
 
+const EAGER_RENDER_LIMIT = 500;
+const DIFF_LINE_HEIGHT = 18.4;
+const VIRTUAL_OVERSCAN = 20;
+const DEFAULT_VIEWPORT_ROWS = 80;
+
+function DiffLineView({
+  line,
+  index,
+  virtualized = false,
+}: {
+  line: DiffLine;
+  index: number;
+  virtualized?: boolean;
+}) {
+  return (
+    <span
+      className={line.kind}
+      key={`${index}:${line.text.slice(0, 20)}`}
+      style={virtualized
+        ? {
+          position: "absolute",
+          top: `${index * DIFF_LINE_HEIGHT}px`,
+          left: 0,
+          minWidth: "100%",
+        }
+        : undefined}
+    >
+      <span className="git-diff-line-no" aria-hidden="true">
+        {line.oldNumber ?? ""}
+      </span>
+      <span className="git-diff-line-no" aria-hidden="true">
+        {line.newNumber ?? ""}
+      </span>
+      <span className="git-diff-line-text">
+        {line.text}
+        {"\n"}
+      </span>
+    </span>
+  );
+}
+
+function VirtualizedDiffLines({ lines }: { lines: DiffLine[] }) {
+  const codeRef = useRef<HTMLPreElement | null>(null);
+  const [range, setRange] = useState({ start: 0, end: DEFAULT_VIEWPORT_ROWS });
+
+  const updateRange = (element: HTMLElement) => {
+    const viewportRows = Math.ceil(
+      (element.clientHeight || DEFAULT_VIEWPORT_ROWS * DIFF_LINE_HEIGHT) / DIFF_LINE_HEIGHT,
+    );
+    const requestedStart = Math.max(
+      0,
+      Math.floor(element.scrollTop / DIFF_LINE_HEIGHT) - VIRTUAL_OVERSCAN,
+    );
+    const start = Math.min(
+      requestedStart,
+      Math.max(0, lines.length - viewportRows),
+    );
+    const end = Math.min(lines.length, start + viewportRows + VIRTUAL_OVERSCAN * 2);
+    setRange((current) => current.start === start && current.end === end ? current : { start, end });
+  };
+
+  useEffect(() => {
+    const element = codeRef.current;
+    if (!element) return;
+    updateRange(element);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(() => updateRange(element));
+    resizeObserver?.observe(element);
+    return () => resizeObserver?.disconnect();
+  }, [lines.length]);
+
+  return (
+    <pre
+      ref={codeRef}
+      className="git-diff-code git-diff-code-virtualized"
+      tabIndex={0}
+      onScroll={(event) => updateRange(event.currentTarget)}
+    >
+      <span
+        className="git-diff-virtual-content"
+        style={{ height: `${lines.length * DIFF_LINE_HEIGHT}px` }}
+      >
+        {lines.slice(range.start, range.end).map((line, offset) => (
+          <DiffLineView
+            line={line}
+            index={range.start + offset}
+            virtualized
+            key={`${range.start + offset}:${line.text.slice(0, 20)}`}
+          />
+        ))}
+      </span>
+    </pre>
+  );
+}
+
 export function DiffText({ patch }: { patch: string }) {
+  const lines = useMemo(() => parseDiffLines(patch), [patch]);
+  if (lines.length > EAGER_RENDER_LIMIT) {
+    return <VirtualizedDiffLines lines={lines} />;
+  }
   return (
     <pre className="git-diff-code" tabIndex={0}>
-      {parseDiffLines(patch).map((line, index) => (
-        <span className={line.kind} key={`${index}:${line.text.slice(0, 20)}`}>
-          <span className="git-diff-line-no" aria-hidden="true">
-            {line.oldNumber ?? ""}
-          </span>
-          <span className="git-diff-line-no" aria-hidden="true">
-            {line.newNumber ?? ""}
-          </span>
-          <span className="git-diff-line-text">
-            {line.text}
-            {"\n"}
-          </span>
-        </span>
-      ))}
+      {lines.map((line, index) => <DiffLineView line={line} index={index} key={`${index}:${line.text.slice(0, 20)}`} />)}
     </pre>
   );
 }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DiffText } from "./components/GitDiffPanel";
@@ -90,5 +90,27 @@ describe("diff line numbers", () => {
       ["41", ""],
       ["", "41"],
     ]);
+  });
+
+  it("virtualizes long patches instead of mounting every diff row", () => {
+    const patch = Array.from({ length: 2_000 }, (_, index) => `+line ${index}`).join("\n");
+    const { container } = render(<DiffText patch={patch} />);
+    const rows = container.querySelectorAll(".git-diff-virtual-content > span");
+    const content = container.querySelector(".git-diff-virtual-content") as HTMLElement;
+
+    expect(rows.length).toBeLessThan(2_000);
+    expect(content.style.height).toBe("36800px");
+  });
+
+  it("moves the rendered window when scrolling a long patch", () => {
+    const patch = Array.from({ length: 2_000 }, (_, index) => `+line ${index}`).join("\n");
+    const { container } = render(<DiffText patch={patch} />);
+    const code = container.querySelector(".git-diff-code") as HTMLElement;
+
+    code.scrollTop = 1_000;
+    fireEvent.scroll(code);
+
+    expect(container.textContent).toContain("+line 54");
+    expect(container.textContent).not.toContain("+line 0");
   });
 });
