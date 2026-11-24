@@ -117,9 +117,11 @@ pub struct GithubIssue {
     pub state: String,
     pub url: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub updated_at: Option<String>,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
+    pub assignee_avatar_urls: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -130,11 +132,13 @@ pub struct GithubPullRequest {
     pub state: String,
     pub url: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub updated_at: Option<String>,
     pub draft: bool,
     pub review_statuses: Vec<String>,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
+    pub assignee_avatar_urls: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,6 +146,7 @@ pub struct GithubPullRequest {
 pub struct GithubTaskComment {
     pub id: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub body: String,
     pub created_at: Option<String>,
     pub url: Option<String>,
@@ -152,6 +157,7 @@ pub struct GithubTaskComment {
 pub struct GithubTaskReview {
     pub id: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub state: String,
     pub body: String,
     pub submitted_at: Option<String>,
@@ -175,12 +181,14 @@ pub struct GithubTaskDetail {
     pub state: String,
     pub url: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub updated_at: Option<String>,
     pub body: String,
     pub draft: bool,
     pub merged: bool,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
+    pub assignee_avatar_urls: Vec<Option<String>>,
     pub comments: Vec<GithubTaskComment>,
     pub reviews: Vec<GithubTaskReview>,
     pub checks: Vec<GithubTaskCheck>,
@@ -277,6 +285,8 @@ struct PullApi {
 #[derive(Debug, Deserialize)]
 struct UserApi {
     login: String,
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -552,10 +562,16 @@ fn fetch_github_detail(
         .and_then(|value| value.get("login"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let author_avatar_url = main
+        .get("user")
+        .and_then(|value| value.get("avatar_url"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let updated_at = json_string(&main, "updated_at");
     let body = json_string(&main, "body").unwrap_or_default();
     let labels = json_names(main.get("labels"));
     let assignees = json_users(main.get("assignees"));
+    let assignee_avatar_urls = json_user_avatars(main.get("assignees"));
     let draft = main.get("draft").and_then(Value::as_bool).unwrap_or(false);
     let merged = main.get("merged").and_then(Value::as_bool).unwrap_or(false)
         || main.get("merged_at").is_some_and(|value| !value.is_null());
@@ -626,12 +642,14 @@ fn fetch_github_detail(
         state,
         url,
         author,
+        author_avatar_url,
         updated_at,
         body,
         draft,
         merged,
         labels,
         assignees,
+        assignee_avatar_urls,
         comments,
         reviews,
         checks,
@@ -691,6 +709,22 @@ fn json_users(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn json_user_avatars(value: Option<&Value>) -> Vec<Option<String>> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    json_string(item, "login").or_else(|| json_string(item, "username")).is_some()
+                })
+                .take(MAX_ITEMS)
+                .map(|item| json_string(item, "avatar_url"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn json_comments(value: &Value) -> Vec<GithubTaskComment> {
     value
         .as_array()
@@ -704,6 +738,11 @@ fn json_comments(value: &Value) -> Vec<GithubTaskComment> {
                         author: item
                             .get("user")
                             .and_then(|value| value.get("login"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        author_avatar_url: item
+                            .get("user")
+                            .and_then(|value| value.get("avatar_url"))
                             .and_then(Value::as_str)
                             .map(str::to_owned),
                         body: json_string(item, "body").unwrap_or_default(),
@@ -730,6 +769,11 @@ fn json_reviews(value: &Value) -> Vec<GithubTaskReview> {
                             .get("user")
                             .and_then(|value| value.get("login"))
                             .map(|value| value.as_str().unwrap_or_default().to_owned()),
+                        author_avatar_url: item
+                            .get("user")
+                            .and_then(|value| value.get("avatar_url"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         state: json_string(item, "state").unwrap_or_else(|| "unknown".into()),
                         body: json_string(item, "body").unwrap_or_default(),
                         submitted_at: json_string(item, "submitted_at"),
@@ -1265,7 +1309,11 @@ fn load_github_task_options(
     .into_iter()
     .filter_map(|value| {
         let name = json_string(&value, "name")?;
-        Some(TaskOption { id: name.clone(), name })
+        Some(TaskOption {
+            id: name.clone(),
+            name,
+            avatar_url: None,
+        })
     })
     .take(MAX_ITEMS)
     .collect();
@@ -1292,6 +1340,7 @@ fn task_option_from_login(value: Value) -> Option<TaskOption> {
     Some(TaskOption {
         id: login.clone(),
         name: login,
+        avatar_url: json_string(&value, "avatar_url"),
     })
 }
 
@@ -1657,15 +1706,26 @@ fn fetch_issues(
     let issues = entries
         .into_iter()
         .filter(|entry| entry.pull_request.is_none())
-        .map(|entry| GithubIssue {
-            number: entry.number,
-            title: entry.title,
-            state: entry.state,
-            url: entry.html_url,
-            author: entry.user.map(|user| user.login),
-            updated_at: entry.updated_at,
-            labels: entry.labels.into_iter().map(|label| label.name).collect(),
-            assignees: entry.assignees.into_iter().map(|user| user.login).collect(),
+        .map(|entry| {
+            let author = entry.user.as_ref().map(|user| user.login.clone());
+            let author_avatar_url = entry.user.as_ref().and_then(|user| user.avatar_url.clone());
+            let assignee_avatar_urls = entry
+                .assignees
+                .iter()
+                .map(|user| user.avatar_url.clone())
+                .collect();
+            GithubIssue {
+                number: entry.number,
+                title: entry.title,
+                state: entry.state,
+                url: entry.html_url,
+                author,
+                author_avatar_url,
+                updated_at: entry.updated_at,
+                labels: entry.labels.into_iter().map(|label| label.name).collect(),
+                assignees: entry.assignees.into_iter().map(|user| user.login).collect(),
+                assignee_avatar_urls,
+            }
         })
         .collect();
     Ok(GithubTaskData::Issues(issues))
@@ -1792,17 +1852,28 @@ fn fetch_pulls(
     Ok(GithubTaskData::Pulls(
         entries
             .into_iter()
-            .map(|entry| GithubPullRequest {
-                number: entry.number,
-                title: entry.title,
-                state: entry.state,
-                url: entry.html_url,
-                author: entry.user.map(|user| user.login),
-                updated_at: entry.updated_at,
-                draft: entry.draft,
-                review_statuses: review_statuses.get(&entry.number).cloned().unwrap_or_default(),
-                labels: entry.labels.into_iter().map(|label| label.name).collect(),
-                assignees: entry.assignees.into_iter().map(|user| user.login).collect(),
+            .map(|entry| {
+                let author = entry.user.as_ref().map(|user| user.login.clone());
+                let author_avatar_url = entry.user.as_ref().and_then(|user| user.avatar_url.clone());
+                let assignee_avatar_urls = entry
+                    .assignees
+                    .iter()
+                    .map(|user| user.avatar_url.clone())
+                    .collect();
+                GithubPullRequest {
+                    number: entry.number,
+                    title: entry.title,
+                    state: entry.state,
+                    url: entry.html_url,
+                    author,
+                    author_avatar_url,
+                    updated_at: entry.updated_at,
+                    draft: entry.draft,
+                    review_statuses: review_statuses.get(&entry.number).cloned().unwrap_or_default(),
+                    labels: entry.labels.into_iter().map(|label| label.name).collect(),
+                    assignees: entry.assignees.into_iter().map(|user| user.login).collect(),
+                    assignee_avatar_urls,
+                }
             })
             .collect(),
     ))
@@ -2047,5 +2118,23 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].pull_request.is_none());
         assert_eq!(entries[0].assignees[0].login, "assignee");
+    }
+
+    #[test]
+    fn preserves_github_member_avatar_data() {
+        let option = task_option_from_login(serde_json::json!({
+            "login": "octo",
+            "avatar_url": "https://avatars.example.test/octo.png"
+        }))
+        .unwrap();
+        assert_eq!(option.avatar_url.as_deref(), Some("https://avatars.example.test/octo.png"));
+        let avatars = json_user_avatars(Some(&serde_json::json!([
+            { "login": "octo", "avatar_url": "https://avatars.example.test/octo.png" },
+            { "avatar_url": "https://avatars.example.test/ignored.png" },
+            { "login": "dev" }
+        ])));
+        assert_eq!(avatars.len(), 2);
+        assert_eq!(avatars[0].as_deref(), Some("https://avatars.example.test/octo.png"));
+        assert_eq!(avatars[1], None);
     }
 }

@@ -67,6 +67,7 @@ fn gitlab_capabilities() -> GitlabTaskCapabilities {
 pub struct GitlabTaskComment {
     pub id: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub body: String,
     pub created_at: Option<String>,
     pub url: Option<String>,
@@ -77,6 +78,7 @@ pub struct GitlabTaskComment {
 pub struct GitlabTaskReview {
     pub id: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub state: String,
     pub body: String,
     pub submitted_at: Option<String>,
@@ -100,12 +102,14 @@ pub struct GitlabTaskDetail {
     pub state: String,
     pub url: String,
     pub author: Option<String>,
+    pub author_avatar_url: Option<String>,
     pub updated_at: Option<String>,
     pub body: String,
     pub draft: bool,
     pub merged: bool,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
+    pub assignee_avatar_urls: Vec<Option<String>>,
     pub comments: Vec<GitlabTaskComment>,
     pub reviews: Vec<GitlabTaskReview>,
     pub checks: Vec<GitlabTaskCheck>,
@@ -312,6 +316,11 @@ fn load_gitlab_detail(
             .and_then(|v| v.get("username"))
             .and_then(Value::as_str)
             .map(str::to_owned),
+        author_avatar_url: value
+            .get("author")
+            .and_then(|v| v.get("avatar_url"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         updated_at: value
             .get("updated_at")
             .and_then(Value::as_str)
@@ -343,6 +352,16 @@ fn load_gitlab_detail(
                     .collect()
             })
             .unwrap_or_default(),
+        assignee_avatar_urls: value
+            .get("assignees")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter(|v| v.get("username").and_then(Value::as_str).is_some())
+                    .map(|v| v.get("avatar_url").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
         comments: glab_api(
             &root,
             &identity.host,
@@ -364,6 +383,11 @@ fn load_gitlab_detail(
                     author: v
                         .get("author")
                         .and_then(|a| a.get("username"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    author_avatar_url: v
+                        .get("author")
+                        .and_then(|a| a.get("avatar_url"))
                         .and_then(Value::as_str)
                         .map(str::to_owned),
                     body: v
@@ -402,7 +426,14 @@ fn load_gitlab_detail(
                             .and_then(Value::as_u64)
                             .map(|n| n.to_string())
                             .unwrap_or_default(),
-                        author: None,
+                        author: gitlab_approval_user(&v)
+                            .and_then(|a| a.get("username"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        author_avatar_url: gitlab_approval_user(&v)
+                            .and_then(|a| a.get("avatar_url"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         state: v
                             .get("approved")
                             .and_then(Value::as_bool)
@@ -865,6 +896,16 @@ impl GitlabTaskMutationOutcome {
     }
 }
 
+fn gitlab_approval_user(value: &Value) -> Option<&Value> {
+    value.get("user").or_else(|| {
+        value
+            .get("approved_by")
+            .and_then(Value::as_array)
+            .and_then(|users| users.first())
+            .and_then(|entry| entry.get("user").or(Some(entry)))
+    })
+}
+
 fn load_gitlab_task_options(
     paths: &agentport_core::paths::AppPaths,
     project_id: &str,
@@ -899,7 +940,11 @@ fn load_gitlab_task_options(
     ) {
         Ok(values) => values.into_iter().filter_map(|value| {
             let name = value.get("name").and_then(Value::as_str)?.trim();
-            (!name.is_empty()).then(|| TaskOption { id: name.to_owned(), name: name.to_owned() })
+            (!name.is_empty()).then(|| TaskOption {
+                id: name.to_owned(),
+                name: name.to_owned(),
+                avatar_url: None,
+            })
         }).take(MAX_ITEMS).collect(),
         Err((code, message)) => { errors.push(format!("{code}: {message}")); Vec::new() }
     };
@@ -926,6 +971,10 @@ fn gitlab_member_option(value: Value) -> Option<TaskOption> {
     (!name.is_empty()).then(|| TaskOption {
         id: id.to_string(),
         name: name.to_owned(),
+        avatar_url: value
+            .get("avatar_url")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -1190,5 +1239,30 @@ mod tests {
     #[test]
     fn encodes_nested_project_paths() {
         assert_eq!(encode_path("group/sub/repo"), "group%2Fsub%2Frepo");
+    }
+
+    #[test]
+    fn preserves_gitlab_member_avatar_data() {
+        let option = gitlab_member_option(serde_json::json!({
+            "id": 42,
+            "username": "octo",
+            "avatar_url": "http://git.example.test/uploads/octo.png"
+        }))
+        .unwrap();
+        assert_eq!(option.id, "42");
+        assert_eq!(option.avatar_url.as_deref(), Some("http://git.example.test/uploads/octo.png"));
+    }
+
+    #[test]
+    fn reads_gitlab_approval_member_avatar() {
+        let value = serde_json::json!({
+            "approved_by": [{"user": {
+                "username": "reviewer",
+                "avatar_url": "http://git.example.test/uploads/reviewer.png"
+            }}]
+        });
+        let user = gitlab_approval_user(&value).unwrap();
+        assert_eq!(user.get("username").and_then(Value::as_str), Some("reviewer"));
+        assert_eq!(user.get("avatar_url").and_then(Value::as_str), Some("http://git.example.test/uploads/reviewer.png"));
     }
 }

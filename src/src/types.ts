@@ -583,6 +583,7 @@ export type GithubTaskScope = "issues" | "pulls";
 export interface TaskOption {
   id: string;
   name: string;
+  avatarUrl?: string | null;
 }
 
 export interface TaskOptionsError {
@@ -611,8 +612,11 @@ export interface GithubIssue {
   state: string;
   url: string;
   author: string | null;
+  authorAvatarUrl?: string | null;
   updatedAt: string | null;
   labels: string[];
+  assignees?: string[];
+  assigneeAvatarUrls?: Array<string | null>;
 }
 
 export interface GithubPullRequest {
@@ -621,9 +625,13 @@ export interface GithubPullRequest {
   state: string;
   url: string;
   author: string | null;
+  authorAvatarUrl?: string | null;
   updatedAt: string | null;
   draft: boolean;
   reviewStatuses?: string[];
+  labels?: string[];
+  assignees?: string[];
+  assigneeAvatarUrls?: Array<string | null>;
 }
 
 export type GithubTaskData =

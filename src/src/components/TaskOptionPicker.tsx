@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TaskOption } from "../types";
+import { TaskAvatar } from "./TaskAvatar";
 
 type TaskOptionPickerProps = {
   label: string;
@@ -10,6 +11,7 @@ type TaskOptionPickerProps = {
   loading?: boolean;
   error?: string | null;
   placeholder?: string;
+  showAvatar?: boolean;
 };
 
 export function TaskOptionPicker({
@@ -21,6 +23,7 @@ export function TaskOptionPicker({
   loading = false,
   error = null,
   placeholder = "Choose from repository",
+  showAvatar = false,
 }: TaskOptionPickerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -79,6 +82,7 @@ export function TaskOptionPicker({
       >
         {selectedOptions.length > 0 ? selectedOptions.map((option) => (
           <span className="task-option-picker-chip" key={option.id}>
+            {showAvatar ? <TaskAvatar name={option.name} avatarUrl={option.avatarUrl} size="xs" decorative /> : null}
             <span>{option.name}</span>
             <button
               type="button"
@@ -116,6 +120,7 @@ export function TaskOptionPicker({
               onClick={(event) => { event.stopPropagation(); toggleOption(option); }}
             >
               <span className="task-option-picker-check" aria-hidden="true">{selectedSet.has(option.id) ? "✓" : ""}</span>
+              {showAvatar ? <TaskAvatar name={option.name} avatarUrl={option.avatarUrl} size="sm" decorative /> : null}
               <span>{option.name}</span>
               {option.name !== option.id ? <small>{option.id}</small> : null}
             </button>

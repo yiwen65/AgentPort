@@ -6,12 +6,14 @@ import { MarkdownImageSession, imageTransport } from "../markdownImages";
 import { MarkdownView } from "../markdown";
 import { findSession, useStore } from "../store";
 import { TaskOptionPicker } from "./TaskOptionPicker";
+import { TaskAvatar } from "./TaskAvatar";
 import { safeTaskImageUrl, TaskRichEditor, type TaskRichEditorHandle } from "./TaskRichEditor";
 import type { TaskOption, TaskProviderDetection } from "../types";
 
 type Provider = "github" | "gitlab";
 type TaskScope = "issues" | "pulls";
 type TaskRecord = Record<string, unknown>;
+type TaskAccount = { name: string; avatarUrl?: string | null };
 type TaskItems = Record<TaskScope, TaskRecord[]>;
 type ScopeErrors = Record<TaskScope, string | null>;
 type TaskResponse = {
@@ -108,6 +110,16 @@ function firstText(record: TaskRecord, keys: string[], fallback = ""): string {
   return fallback;
 }
 
+function accountFromValue(value: unknown): TaskAccount | null {
+  if (typeof value === "string" && value.trim()) return { name: value.trim() };
+  const record = asRecord(value);
+  if (!record) return null;
+  const name = firstText(record, ["login", "username", "name", "handle", "email"]);
+  if (!name) return null;
+  const avatarUrl = firstText(record, ["avatarUrl", "avatar_url", "avatar", "profileImageUrl"]) || null;
+  return { name, avatarUrl };
+}
+
 function taskTitle(task: TaskRecord): string {
   return firstText(task, ["title", "name"], "Untitled task");
 }
@@ -143,27 +155,48 @@ function taskSummary(task: TaskRecord): string | null {
   return value ? value : null;
 }
 
-function taskAuthor(task: TaskRecord): string | null {
-  const direct = firstText(task, ["author", "assignee", "username"]);
-  if (direct) return direct;
+function taskAuthorAccount(task: TaskRecord): TaskAccount | null {
+  const direct = accountFromValue(task.author) ?? accountFromValue(task.assignee) ?? accountFromValue(task.username);
+  if (direct) {
+    const avatarUrl = firstText(task, ["authorAvatarUrl", "author_avatar_url"]) || direct.avatarUrl || null;
+    return { ...direct, avatarUrl };
+  }
   for (const key of ["user", "author", "assignee", "createdBy"]) {
-    const value = asRecord(task[key]);
-    const name = value ? firstText(value, ["name", "login", "username", "handle"]) : "";
-    if (name) return name;
+    const account = accountFromValue(task[key]);
+    if (account) return account;
   }
   return null;
 }
 
-function taskAssignees(task: TaskRecord): string[] {
+function taskAuthor(task: TaskRecord): string | null {
+  return taskAuthorAccount(task)?.name ?? null;
+}
+
+function taskAssigneeAccounts(task: TaskRecord): TaskAccount[] {
   const raw = task.assignees ?? task.assignee ?? [];
-  if (typeof raw === "string") return raw.trim() ? [raw.trim()] : [];
   const values = Array.isArray(raw) ? raw : [raw];
-  return values.flatMap((value) => {
-    if (typeof value === "string" && value.trim()) return [value.trim()];
-    const record = asRecord(value);
-    const name = record ? firstText(record, ["login", "username", "name", "handle"]) : "";
-    return name ? [name] : [];
+  const avatarUrls = Array.isArray(task.assigneeAvatarUrls)
+    ? task.assigneeAvatarUrls
+    : Array.isArray(task.assignee_avatar_urls) ? task.assignee_avatar_urls : [];
+  return values.flatMap((value, index) => {
+    const account = accountFromValue(value);
+    if (!account) return [];
+    const avatarUrl = account.avatarUrl || (typeof avatarUrls[index] === "string" ? avatarUrls[index] : null);
+    return [{ ...account, avatarUrl }];
   });
+}
+
+function taskAssignees(task: TaskRecord): string[] {
+  return taskAssigneeAccounts(task).map((account) => account.name);
+}
+
+function taskAccountFromDiscussion(value: TaskRecord): TaskAccount | null {
+  const direct = accountFromValue(value.author) ?? accountFromValue(value.username) ?? accountFromValue(value.login);
+  if (direct) {
+    const avatarUrl = firstText(value, ["authorAvatarUrl", "author_avatar_url"]) || direct.avatarUrl || null;
+    return { ...direct, avatarUrl };
+  }
+  return accountFromValue(value.user) ?? accountFromValue(value.author);
 }
 
 function taskReviewStatuses(task: TaskRecord): string[] {
@@ -377,7 +410,8 @@ function useTaskOptions(projectId: string | null, provider: Provider | null, ope
           const option = asRecord(item);
           const id = option && (typeof option.id === "string" || typeof option.id === "number") ? String(option.id) : "";
           const name = option && typeof option.name === "string" ? option.name.trim() : "";
-          return id && name ? [{ id, name }] : [];
+          const avatarUrl = option && typeof option.avatarUrl === "string" ? option.avatarUrl : null;
+          return id && name ? [{ id, name, avatarUrl }] : [];
         })
         : [];
       const assignees = parseOptions(record?.assignees);
@@ -414,7 +448,8 @@ function TaskRow({
 }) {
   const state = taskState(task);
   const number = taskNumber(task);
-  const author = taskAuthor(task);
+  const author = taskAuthorAccount(task);
+  const assignees = taskAssigneeAccounts(task);
   const labels = taskLabels(task);
   return (
     <li>
@@ -430,9 +465,15 @@ function TaskRow({
           <span className="task-center-row-meta">
             <span>{number ?? scopeMeta(scope).shortLabel}</span>
             <span>{state}</span>
-            {author ? <span>by {author}</span> : null}
+            {author ? <span className="task-center-row-owner"><TaskAvatar name={author.name} avatarUrl={author.avatarUrl} size="xs" decorative />by {author.name}</span> : null}
           </span>
-          {labels.length > 0 ? <span className="task-center-row-labels">{labels.slice(0, 3).map((label) => <span key={label}>{label}</span>)}</span> : null}
+          <span className="task-center-row-submeta">
+            {assignees.length > 0 ? <span className="task-center-row-assignees" aria-label={`Assigned to ${assignees.map((account) => account.name).join(", ")}`}>
+              <span className="task-center-row-avatar-stack">{assignees.slice(0, 4).map((account) => <TaskAvatar key={account.name} name={account.name} avatarUrl={account.avatarUrl} size="xs" decorative />)}{assignees.length > 4 ? <span className="task-center-row-avatar-more">+{assignees.length - 4}</span> : null}</span>
+              <span>{assignees.length} {assignees.length === 1 ? "assignee" : "assignees"}</span>
+            </span> : null}
+            {labels.length > 0 ? <span className="task-center-row-labels">{labels.slice(0, 3).map((label) => <span key={label}>{label}</span>)}</span> : null}
+          </span>
         </span>
         <span className="task-center-row-chevron" aria-hidden="true">›</span>
       </button>
@@ -501,7 +542,8 @@ function TaskDetail({
   const summary = taskSummary(shownTask);
   const comments = taskDiscussionItems(shownTask, "comments");
   const reviews = taskDiscussionItems(shownTask, "reviews");
-  const author = taskAuthor(shownTask);
+  const author = taskAuthorAccount(shownTask);
+  const assignees = taskAssigneeAccounts(shownTask);
   const updatedAt = taskUpdatedAt(shownTask);
   const state = taskState(shownTask);
   const review = firstText(shownTask, ["reviewDecision", "reviewStatus", "pipelineStatus", "checkState"]);
@@ -532,6 +574,7 @@ function TaskDetail({
           {taskNumber(shownTask) ? <span className="task-center-detail-number">{taskNumber(shownTask)}</span> : null}
         </div>
         <h4 className="task-center-detail-title">{taskTitle(shownTask)}</h4>
+        {author ? <div className="task-center-detail-author"><TaskAvatar name={author.name} avatarUrl={author.avatarUrl} size="md" decorative /><span><strong>{author.name}</strong><small>Author{updatedAt ? ` · updated ${updatedAt}` : ""}</small></span></div> : null}
         <div className="task-center-detail-actions">
           {url ? <a className="task-center-open-link" href={url} onClick={(event) => { event.preventDefault(); void api.openExternalUrl(url).catch((reason: unknown) => setDetailError(errorText(reason))); }}>Open in {providerLabels[provider]} <span aria-hidden="true">↗</span></a> : <span className="task-center-no-link">No provider link</span>}
           {!editing && !isClosed ? <button className="task-center-inline-action" type="button" disabled={mutationBusy} onClick={startEditing}>Edit</button> : null}
@@ -575,19 +618,21 @@ function TaskDetail({
           <h5 id="task-center-comments-heading">Comments ({comments.length})</h5>
           <div className="task-center-discussion-list">{comments.map((comment, index) => {
             const body = firstText(comment, ["body", "text", "note"], "");
-            const commentAuthor = firstText(comment, ["author", "username", "login"], "Unknown author");
+            const commentAccount = taskAccountFromDiscussion(comment);
+            const commentAuthor = commentAccount?.name ?? "Unknown author";
             const createdAt = firstText(comment, ["createdAt", "created_at", "submittedAt", "submitted_at"]);
-            return <article className="task-center-discussion-item" key={String(comment.id ?? index)}><header><strong>{commentAuthor}</strong>{createdAt ? <time>{taskActivityTime(createdAt)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} onLinkClick={openDetailLink} /></div> : null}</article>;
+            return <article className="task-center-discussion-item" key={String(comment.id ?? index)}><header><span className="task-center-discussion-author"><TaskAvatar name={commentAuthor} avatarUrl={commentAccount?.avatarUrl} size="sm" decorative /><strong>{commentAuthor}</strong></span>{createdAt ? <time>{taskActivityTime(createdAt)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} onLinkClick={openDetailLink} /></div> : null}</article>;
           })}</div>
         </section> : null}
         {reviews.length > 0 ? <section className="task-center-detail-section" aria-labelledby="task-center-reviews-heading">
           <h5 id="task-center-reviews-heading">Reviews ({reviews.length})</h5>
           <div className="task-center-discussion-list">{reviews.map((reviewItem, index) => {
             const body = firstText(reviewItem, ["body", "text", "note"], "");
-            const reviewAuthor = firstText(reviewItem, ["author", "username", "login"], "Unknown reviewer");
+            const reviewAccount = taskAccountFromDiscussion(reviewItem);
+            const reviewAuthor = reviewAccount?.name ?? "Unknown reviewer";
             const reviewState = firstText(reviewItem, ["state", "status"]);
             const reviewTime = firstText(reviewItem, ["submittedAt", "submitted_at", "createdAt", "created_at"]);
-            return <article className="task-center-discussion-item" key={String(reviewItem.id ?? index)}><header><strong>{reviewAuthor}</strong>{reviewState ? <span className="task-center-discussion-state">{reviewState}</span> : null}{reviewTime ? <time>{taskActivityTime(reviewTime)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} onLinkClick={openDetailLink} /></div> : null}</article>;
+            return <article className="task-center-discussion-item" key={String(reviewItem.id ?? index)}><header><span className="task-center-discussion-author"><TaskAvatar name={reviewAuthor} avatarUrl={reviewAccount?.avatarUrl} size="sm" decorative /><strong>{reviewAuthor}</strong></span>{reviewState ? <span className="task-center-discussion-state">{reviewState}</span> : null}{reviewTime ? <time>{taskActivityTime(reviewTime)}</time> : null}</header>{body ? <div className="task-center-detail-markdown"><MarkdownView source={body} imageSession={detailImageSession} onLinkClick={openDetailLink} /></div> : null}</article>;
           })}</div>
         </section> : null}
         <section className="task-center-detail-section" aria-labelledby="task-center-facts-heading">
@@ -595,7 +640,8 @@ function TaskDetail({
           <dl className="task-center-detail-facts">
             <div><dt>Provider</dt><dd>{providerLabels[provider]}</dd></div>
             <div><dt>Type</dt><dd>{scopeMeta(scope).label}</dd></div>
-            {author ? <div><dt>Author</dt><dd>{author}</dd></div> : null}
+            {author ? <div><dt>Author</dt><dd className="task-center-fact-account"><TaskAvatar name={author.name} avatarUrl={author.avatarUrl} size="xs" decorative /><span>{author.name}</span></dd></div> : null}
+            {assignees.length > 0 ? <div><dt>Assignees</dt><dd className="task-center-fact-account-list">{assignees.slice(0, 5).map((account) => <span className="task-center-fact-account" key={account.name}><TaskAvatar name={account.name} avatarUrl={account.avatarUrl} size="xs" decorative /><span>{account.name}</span></span>)}{assignees.length > 5 ? <span>+{assignees.length - 5}</span> : null}</dd></div> : null}
             {updatedAt ? <div><dt>Updated</dt><dd>{updatedAt}</dd></div> : null}
             {branch ? <div><dt>Branch</dt><dd className="mono">{branch}</dd></div> : null}
             {review ? <div><dt>Checks</dt><dd>{review}</dd></div> : null}
@@ -742,8 +788,8 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
   const authorOptions = useMemo(() => {
     const unique = new Map<string, TaskOption>();
     for (const task of activeItems) {
-      const author = taskAuthor(task);
-      if (author) unique.set(author, { id: author, name: author });
+      const author = taskAuthorAccount(task);
+      if (author) unique.set(author.name, { id: author.name, name: author.name, avatarUrl: author.avatarUrl });
     }
     return [...unique.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [activeItems]);
@@ -752,8 +798,13 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     return [...unique].sort((left, right) => left.localeCompare(right)).map((name) => ({ id: name, name }));
   }, [activeItems]);
   const filterAssigneeOptions = useMemo(() => {
-    const unique = new Set(activeItems.flatMap(taskAssignees));
-    return [...unique].sort((left, right) => left.localeCompare(right)).map((name) => ({ id: name, name }));
+    const unique = new Map<string, TaskOption>();
+    for (const task of activeItems) {
+      for (const account of taskAssigneeAccounts(task)) {
+        unique.set(account.name, { id: account.name, name: account.name, avatarUrl: account.avatarUrl });
+      }
+    }
+    return [...unique.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [activeItems]);
   const normalizedAuthor = filterAuthor.trim().toLowerCase();
   const filteredItems = useMemo(() => activeItems.filter((task) => {
@@ -1123,9 +1174,9 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               <div className="task-center-filter-popover-head"><strong>Filter tasks</strong><button type="button" onClick={() => { setFilterStatus("all"); setAssignedOnly(false); setFilterLabel(""); setFilterAssignee(""); setFilterAuthor(""); setFilterReview("all"); setQuery(""); }}>Clear all</button></div>
               <div className="task-center-filter-grid">
                 <label>Status<select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value as "all" | "open" | "closed")}><option value="all">All</option><option value="open">Open</option><option value="closed">Closed</option></select></label>
-                <TaskOptionPicker label="Author" options={authorOptions} selected={filterAuthor ? [filterAuthor] : []} onChange={(values) => setFilterAuthor(values[0] ?? "")} placeholder="All authors" multiple={false} />
+                <TaskOptionPicker label="Author" options={authorOptions} selected={filterAuthor ? [filterAuthor] : []} onChange={(values) => setFilterAuthor(values[0] ?? "")} placeholder="All authors" multiple={false} showAvatar />
                 <TaskOptionPicker label="Label" options={filterLabelOptions} selected={filterLabel ? [filterLabel] : []} onChange={(values) => setFilterLabel(values[0] ?? "")} placeholder="All labels" />
-                <TaskOptionPicker label="Assignee" options={filterAssigneeOptions} selected={filterAssignee ? [filterAssignee] : []} onChange={(values) => setFilterAssignee(values[0] ?? "")} placeholder="All assignees" multiple={false} />
+                <TaskOptionPicker label="Assignee" options={filterAssigneeOptions} selected={filterAssignee ? [filterAssignee] : []} onChange={(values) => setFilterAssignee(values[0] ?? "")} placeholder="All assignees" multiple={false} showAvatar />
                 {activeScope === "pulls" ? <label>Reviews<select value={filterReview} onChange={(event) => setFilterReview(event.target.value as ReviewFilter)}><option value="all">All reviews</option>{reviewFilterOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label> : null}
               </div>
             </div> : null}
@@ -1216,8 +1267,8 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
               {composerUploading ? <p className="task-center-composer-status" role="status">Uploading image… it will appear in the editor when ready.</p> : null}
               {composerError ? <p className="task-center-composer-error" role="alert">{composerError}</p> : null}
               {taskOptions.error ? <p className="task-center-composer-status" role="status">Repository labels, branches, assignees, and reviewers are unavailable: {taskOptions.error}</p> : null}
-              <div className="task-center-composer-grid"><TaskOptionPicker label="Labels" options={taskOptions.labels} selected={composerLabels} onChange={setComposerLabels} loading={taskOptions.loading} placeholder="Choose repository labels" /><TaskOptionPicker label="Assignees" options={taskOptions.assignees} selected={composerAssignees} onChange={setComposerAssignees} loading={taskOptions.loading} placeholder="Choose repository assignees" /></div>
-              {(composerKind === "pull_request" || composerKind === "merge_request") ? <div className="task-center-composer-grid"><TaskOptionPicker label="Reviewers" options={taskOptions.reviewers} selected={composerReviewers} onChange={setComposerReviewers} loading={taskOptions.loading} placeholder="Choose repository reviewers" /></div> : null}
+              <div className="task-center-composer-grid"><TaskOptionPicker label="Labels" options={taskOptions.labels} selected={composerLabels} onChange={setComposerLabels} loading={taskOptions.loading} placeholder="Choose repository labels" /><TaskOptionPicker label="Assignees" options={taskOptions.assignees} selected={composerAssignees} onChange={setComposerAssignees} loading={taskOptions.loading} placeholder="Choose repository assignees" showAvatar /></div>
+              {(composerKind === "pull_request" || composerKind === "merge_request") ? <div className="task-center-composer-grid"><TaskOptionPicker label="Reviewers" options={taskOptions.reviewers} selected={composerReviewers} onChange={setComposerReviewers} loading={taskOptions.loading} placeholder="Choose repository reviewers" showAvatar /></div> : null}
             </div>
             <footer className="task-center-composer-foot"><button type="button" className="task-center-composer-cancel" onClick={() => setComposerKind(null)} disabled={mutationBusy || composerUploading}>Cancel</button><button type="submit" className="task-center-composer-submit" disabled={mutationBusy || composerUploading || composerBody.length > 20_000 || !composerTitle.trim() || ((composerKind === "pull_request" || composerKind === "merge_request") && (!composerHead.trim() || !composerBase.trim()))}>{mutationBusy ? "Creating…" : composerUploading ? "Uploading…" : "Create"}</button></footer>
           </form>
