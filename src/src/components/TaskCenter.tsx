@@ -167,10 +167,10 @@ function taskState(task: TaskRecord): string {
   return "Open";
 }
 
-function taskTone(task: TaskRecord, _scope: TaskScope): "open" | "review" | "done" | "muted" {
+function taskTone(task: TaskRecord, scope: TaskScope, provider: Provider | null = null): "open" | "review" | "done" | "muted" {
   const state = taskState(task).toLowerCase();
   if (state.includes("closed") || state.includes("merged") || state.includes("done") || state.includes("complete")) return "done";
-  if (_scope === "pulls" && task.draft !== true && taskReviewStatuses(task).some((status) => status !== "no_reviews")) return "review";
+  if (provider !== "gitlab" && scope === "pulls" && task.draft !== true && taskReviewStatuses(task).some((status) => status !== "no_reviews")) return "review";
   if (state.includes("open") || state.includes("active") || state.includes("created") || state.includes("reopen")) return "open";
   return "muted";
 }
@@ -509,11 +509,13 @@ function TaskRow({
   scope,
   selected,
   onSelect,
+  provider,
 }: {
   task: TaskRecord;
   scope: TaskScope;
   selected: boolean;
   onSelect: () => void;
+  provider?: Provider;
 }) {
   const state = taskState(task);
   const number = taskNumber(task);
@@ -528,7 +530,7 @@ function TaskRow({
         aria-pressed={selected}
         onClick={onSelect}
       >
-        <span className={`task-center-status-dot task-center-status-dot-${taskTone(task, scope)}`} aria-hidden="true" />
+        <span className={`task-center-status-dot task-center-status-dot-${taskTone(task, scope, provider ?? null)}`} aria-hidden="true" />
         <span className="task-center-row-copy">
           <span className="task-center-row-title">{taskTitle(task)}</span>
           <span className="task-center-row-meta">
@@ -638,7 +640,7 @@ function TaskDetail({
       </header>
       <div className="task-center-detail-body">
         <div className="task-center-detail-title-row">
-          <span className={`task-center-status-dot task-center-status-dot-${taskTone(shownTask, scope)}`} aria-hidden="true" />
+          <span className={`task-center-status-dot task-center-status-dot-${taskTone(shownTask, scope, provider)}`} aria-hidden="true" />
           <span className="task-center-detail-state">{state}</span>
           {taskNumber(shownTask) ? <span className="task-center-detail-number">{taskNumber(shownTask)}</span> : null}
         </div>
@@ -1075,7 +1077,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
     void performMutation(composerKind, 0, operation, fields);
   };
   const boardColumns = useMemo(() => {
-    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = activeScope === "pulls"
+    const columns: Array<{ id: "open" | "review" | "done"; label: string; items: TaskRecord[] }> = activeScope === "pulls" && visibleProvider !== "gitlab"
       ? [
         { id: "open", label: "Open", items: [] },
         { id: "review", label: "In review", items: [] },
@@ -1086,7 +1088,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
         { id: "done", label: "Closed", items: [] },
       ];
     for (const task of filteredItems) {
-      const tone = taskTone(task, activeScope);
+      const tone = taskTone(task, activeScope, visibleProvider);
       const column = columns.find((candidate) => candidate.id === (tone === "done" ? "done" : tone === "review" ? "review" : "open"));
       column?.items.push(task);
     }
@@ -1293,7 +1295,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
                 <ul className="task-center-list" aria-label={`${activeScopeMeta.label} list`}>
                   {filteredItems.map((task) => {
                     const identity = taskIdentity(task);
-                    return <TaskRow key={identity} task={task} scope={activeScope} selected={selectedTask === task} onSelect={() => setSelectedId(identity)} />;
+                    return <TaskRow key={identity} task={task} scope={activeScope} provider={visibleProvider ?? undefined} selected={selectedTask === task} onSelect={() => setSelectedId(identity)} />;
                   })}
                 </ul>
               ) : null}
@@ -1305,7 +1307,7 @@ export default function TaskCenter({ open, onClose }: { open: boolean; onClose: 
                       <ul>
                         {column.items.map((task) => {
                           const identity = taskIdentity(task);
-                          return <TaskRow key={identity} task={task} scope={activeScope} selected={selectedTask === task} onSelect={() => setSelectedId(identity)} />;
+                          return <TaskRow key={identity} task={task} scope={activeScope} provider={visibleProvider ?? undefined} selected={selectedTask === task} onSelect={() => setSelectedId(identity)} />;
                         })}
                       </ul>
                     </section>
